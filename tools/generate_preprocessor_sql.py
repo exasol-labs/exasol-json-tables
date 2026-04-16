@@ -354,6 +354,10 @@ COMMON_LUA = """
 JOIN_MODE_LUA = """
     local PATH_PLACEHOLDER_PREFIX = "__JVS_PATH_REF_"
 
+    local function raise_path_error(path, message)
+        error('JVS-PATH-ERROR: "' .. path .. '": ' .. message, 0)
+    end
+
     local function encode_path_component(name)
         local out = {}
         for i = 1, string.len(name) do
@@ -445,17 +449,29 @@ JOIN_MODE_LUA = """
             return {
                 kind = "index",
                 index = tonumber(trimmed)
-            }
+            }, nil
+        end
+        if trimmed == "" then
+            return nil, "Empty array selector is not allowed."
+        end
+        if trimmed == "*" then
+            return nil, 'Wildcard selectors are not supported yet. Use JOIN ... IN row."path" for full array traversal.'
+        end
+        if string.find(trimmed, ":", 1, true) ~= nil then
+            return nil, 'Array slices are not supported yet. Use JOIN ... IN row."path" and filter on _index instead.'
+        end
+        if string.sub(trimmed, 1, 1) == "-" then
+            return nil, 'Negative array indexes are not supported yet. Use LAST for the final element or JOIN ... IN row."path".'
         end
         local normalized = string.upper(trimmed)
         if normalized == "FIRST" then
-            return {kind = "first"}
+            return {kind = "first"}, nil
         elseif normalized == "LAST" then
-            return {kind = "last"}
+            return {kind = "last"}, nil
         elseif normalized == "SIZE" then
-            return {kind = "size"}
+            return {kind = "size"}, nil
         end
-        return nil
+        return nil, 'Unsupported array selector "' .. trimmed .. '". Supported selectors are numeric indexes, FIRST, LAST, and SIZE.'
     end
 
     local function serialize_array_selector(selector)
@@ -489,18 +505,24 @@ JOIN_MODE_LUA = """
                 next_special = next_special + 1
             end
             if next_special == index then
-                return nil
+                local current = string.sub(path, index, index)
+                if current == "." then
+                    return nil, "Empty path segment is not allowed."
+                elseif current == "[" then
+                    return nil, "An array selector must follow a property name."
+                end
+                return nil, "Invalid path syntax."
             end
             local segment = string.sub(path, index, next_special - 1)
             local special = string.sub(path, next_special, next_special)
             if special == "[" then
                 local closing = string.find(path, "]", next_special + 1, true)
                 if closing == nil then
-                    return nil
+                    return nil, "Missing closing ] in array selector."
                 end
-                local selector = parse_array_selector(string.sub(path, next_special + 1, closing - 1))
+                local selector, selector_error = parse_array_selector(string.sub(path, next_special + 1, closing - 1))
                 if selector == nil then
-                    return nil
+                    return nil, selector_error
                 end
                 steps[#steps + 1] = {
                     type = "array",
@@ -508,8 +530,12 @@ JOIN_MODE_LUA = """
                     selector = selector
                 }
                 if closing < #path then
-                    if string.sub(path, closing + 1, closing + 1) ~= "." then
-                        return nil
+                    local next_char = string.sub(path, closing + 1, closing + 1)
+                    if next_char == "[" then
+                        return nil, 'Chained array indexing is not supported. Use JOIN ... IN row."path" to iterate nested arrays.'
+                    end
+                    if next_char ~= "." then
+                        return nil, "Expected '.' after array selector."
                     end
                     index = closing + 2
                 else
@@ -521,13 +547,16 @@ JOIN_MODE_LUA = """
                     name = segment
                 }
                 if special == "." then
+                    if next_special == #path then
+                        return nil, "Path cannot end with '.'."
+                    end
                     index = next_special + 1
                 else
                     index = next_special
                 end
             end
         end
-        return steps
+        return steps, nil
     end
 
     local function serialize_step(step)
@@ -574,7 +603,7 @@ JOIN_MODE_LUA = """
         local tokens = sqlparsing.tokenize(placeholder_sql)
         local base_table = read_table_reference(tokens)
         if base_table == nil then
-            return placeholder_sql
+            error("JVS-PATH-ERROR: Path rewrite currently requires a query with a single base table in FROM.", 0)
         end
 
         local root_ref = encode_quoted_identifier(base_table.alias_name or base_table.table_name)
@@ -584,9 +613,9 @@ JOIN_MODE_LUA = """
         local next_alias_id = 1
 
         for _, reference in ipairs(path_references) do
-            local steps = parse_path_steps(reference.path)
+            local steps, parse_error = parse_path_steps(reference.path)
             if steps == nil or #steps == 0 then
-                return placeholder_sql
+                raise_path_error(reference.path, parse_error or "Invalid path syntax.")
             end
             local current_ref = root_ref
             local current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
@@ -625,7 +654,7 @@ JOIN_MODE_LUA = """
                 elseif step.type == "array" then
                     if step.selector.kind == "size" then
                         if not is_last then
-                            return placeholder_sql
+                            raise_path_error(reference.path, "SIZE must be the last selector in a path.")
                         end
                         replacement = current_ref .. "." .. encode_quoted_identifier(step.name .. "|array")
                     else
@@ -634,7 +663,7 @@ JOIN_MODE_LUA = """
                         local alias_name = "__jvs_path_" .. tostring(next_alias_id)
                         local selector_sql = build_array_selector_sql(current_ref, step)
                         if selector_sql == nil then
-                            return placeholder_sql
+                            raise_path_error(reference.path, "Unsupported array selector.")
                         end
                         if existing == nil then
                             next_alias_id = next_alias_id + 1
@@ -662,7 +691,7 @@ JOIN_MODE_LUA = """
                 end
             end
             if replacement == nil then
-                return placeholder_sql
+                raise_path_error(reference.path, "Unable to rewrite the path expression.")
             end
             replacements[reference.placeholder] = replacement
         end
@@ -716,6 +745,10 @@ CREATE SCHEMA IF NOT EXISTS {schema};
 
 CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
     local TARGET_FUNCTIONS = {function_set_lua}
+
+    local function raise_function_error(function_name, message)
+        error("JVS-FUNCTION-ERROR: " .. function_name .. ": " .. message, 0)
+    end
 
     local function normalize(token)
         return sqlparsing.normalize(token)
@@ -805,6 +838,15 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
         return nil, nil
     end
 
+    local function has_expression_argument(tokens, opening_paren, closing_paren)
+        for index = opening_paren + 1, closing_paren - 1 do
+            if not is_ignored(tokens[index]) then
+                return true
+            end
+        end
+        return false
+    end
+
     local function rewrite(sqltext)
         local rewritten_sql = rewrite_path_identifiers_in_sql(sqltext)
         local tokens = sqlparsing.tokenize(rewritten_sql)
@@ -814,16 +856,19 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
             local call = read_call(tokens, index)
             if call and TARGET_FUNCTIONS[call.last_identifier] then
                 local closing_paren, top_level_commas = find_matching_paren(tokens, call.opening_paren)
-                if closing_paren ~= nil and top_level_commas == 0 then
+                if closing_paren == nil then
+                    raise_function_error(call.last_identifier, "Missing closing parenthesis.")
+                elseif top_level_commas ~= 0 then
+                    raise_function_error(call.last_identifier, "Expected exactly one argument.")
+                elseif not has_expression_argument(tokens, call.opening_paren, closing_paren) then
+                    raise_function_error(call.last_identifier, "Expected exactly one argument.")
+                else
                     out[#out + 1] = "(CASE WHEN "
                     for argument_index = call.opening_paren + 1, closing_paren - 1 do
                         out[#out + 1] = tokens[argument_index]
                     end
                     out[#out + 1] = " IS NULL THEN TRUE ELSE FALSE END)"
                     index = closing_paren + 1
-                else
-                    out[#out + 1] = tokens[index]
-                    index = index + 1
                 end
             else
                 out[#out + 1] = tokens[index]

@@ -386,6 +386,20 @@ This verifies:
 - missing-vs-explicit-null predicates
 - `EXPLAIN VIRTUAL` output for rewritten mask references and join-based path expansion
 
+Preprocessor error regression test:
+
+```bash
+python3 tools/test_nano_preprocessor_errors.py
+```
+
+This verifies:
+
+- clear errors for unsupported array selectors and malformed path syntax
+- clear errors when `SIZE` is used as a non-terminal selector
+- clear errors for unsupported query shapes that cannot be path-rewritten safely
+- clear errors when helper functions are called with the wrong arity or malformed parentheses
+- generator-side validation of invalid installer identifiers
+
 Comprehensive end-to-end test:
 
 ```bash
