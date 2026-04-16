@@ -22,6 +22,12 @@ def assert_query_error(con, sql: str, expected_fragments: list[str], label: str)
     raise AssertionError(f"{label} should have failed, but the query succeeded: {sql}")
 
 
+def assert_query_rows(con, sql: str, expected_rows, label: str) -> None:
+    actual_rows = con.execute(sql).fetchall()
+    if actual_rows != expected_rows:
+        raise AssertionError(f"{label} mismatch.\nExpected: {expected_rows}\nActual:   {actual_rows}")
+
+
 def assert_subprocess_error(cmd: list[str], expected_fragments: list[str], label: str) -> None:
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
@@ -36,6 +42,13 @@ def main() -> None:
     try:
         install_virtual_schema_fixture(con, adapter_code, include_deep_fixture=True)
         install_preprocessor(con, ["JSON_IS_EXPLICIT_NULL", "JNULL"], rewrite_path_identifiers=True)
+
+        assert_query_rows(
+            con,
+            'SELECT CAST("id" AS VARCHAR(10)) FROM JVS_SRC.SAMPLE ORDER BY "id"',
+            [("1",), ("2",), ("3",)],
+            "regular table baseline query",
+        )
 
         assert_query_error(
             con,
@@ -117,8 +130,22 @@ def main() -> None:
         assert_query_error(
             con,
             'SELECT "child.value" FROM (SELECT * FROM JSON_VS.SAMPLE) s',
-            ["JVS-PATH-ERROR", "single base table in FROM"],
+            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VS"],
             "unsupported query shape error",
+        )
+
+        assert_query_error(
+            con,
+            'SELECT "child.value" FROM JVS_SRC.SAMPLE',
+            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VS"],
+            "regular table path scope error",
+        )
+
+        assert_query_error(
+            con,
+            'SELECT "tags[0]" FROM JVS_SRC.SAMPLE',
+            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VS"],
+            "regular table array scope error",
         )
 
         assert_query_error(
@@ -140,6 +167,24 @@ def main() -> None:
             'SELECT JSON_IS_EXPLICIT_NULL("note" FROM JSON_VS.SAMPLE',
             ["JVS-FUNCTION-ERROR", "JSON_IS_EXPLICIT_NULL", "Missing closing parenthesis"],
             "missing closing parenthesis helper error",
+        )
+
+        assert_query_error(
+            con,
+            'SELECT JSON_IS_EXPLICIT_NULL("note") FROM JVS_SRC.SAMPLE',
+            ["JVS-SCOPE-ERROR", "JSON helper functions", "JSON_VS"],
+            "regular table helper scope error",
+        )
+
+        assert_query_error(
+            con,
+            '''
+            SELECT JSON_IS_EXPLICIT_NULL("note")
+            FROM JSON_VS.SAMPLE S
+            JOIN JVS_SRC.SAMPLE T ON S."id" = T."id"
+            ''',
+            ["JVS-SCOPE-ERROR", "JSON helper functions", "single top-level JSON virtual-schema table"],
+            "unqualified multi-table helper scope error",
         )
 
         invalid_output_path = Path(ROOT / "dist" / "should_not_exist.sql")

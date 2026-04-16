@@ -19,11 +19,18 @@ def connect():
     return pyexasol.connect(dsn="127.0.0.1:8563", user="sys", password="exasol", schema="SYS")
 
 
-def install_preprocessor(con, function_names: list[str], rewrite_path_identifiers: bool = False) -> None:
+def install_preprocessor(
+    con,
+    function_names: list[str],
+    rewrite_path_identifiers: bool = False,
+    virtual_schemas: Optional[list[str]] = None,
+) -> None:
     output_path = ROOT / "dist" / "json_null_preprocessor_test.sql"
     cmd = ["python3", str(ROOT / "tools" / "generate_preprocessor_sql.py"), "--output", str(output_path)]
     for function_name in function_names:
         cmd.extend(["--function-name", function_name])
+    for virtual_schema in (virtual_schemas or ["JSON_VS"]):
+        cmd.extend(["--virtual-schema", virtual_schema])
     if rewrite_path_identifiers:
         cmd.append("--rewrite-path-identifiers")
     subprocess.run(cmd, check=True)

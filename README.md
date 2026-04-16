@@ -92,11 +92,14 @@ Generate a preprocessor that enables both features:
 ```bash
 python3 tools/generate_preprocessor_sql.py \
   --function-name JSON_IS_EXPLICIT_NULL \
+  --virtual-schema JSON_VS \
   --rewrite-path-identifiers \
   --output ./dist/json_user_preprocessor.sql
 ```
 
 The generated installer is safe by default: it creates the schema and script, but it does not change the current schema or enable preprocessing for the session unless you ask for that explicitly.
+
+The generated preprocessor is also scope-gated by default: the JSON helper/path syntax only activates for queries over the configured JSON virtual schemas. On regular tables it fails fast with `JVS-SCOPE-ERROR` instead of silently rewriting.
 
 Path rewriting is join-based. Both dotted paths and bracket access are expanded to explicit `LEFT OUTER JOIN`s instead of synthetic `__path__...` columns or scalar subqueries.
 
@@ -127,6 +130,12 @@ ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_PP.JSON_NULL_PREPROCESSOR;
 ```
 
 That activation step is intentionally separate from installation. It avoids surprising session-level behavior during rollout, and it keeps later DDL in the same session from being preprocessed accidentally.
+
+Recommended usage pattern:
+
+- schema-qualify JSON virtual schema tables, for example `FROM JSON_VS.SAMPLE`
+- if you install multiple JSON virtual schemas, repeat `--virtual-schema` for each one when generating the preprocessor
+- treat `JSON_IS_EXPLICIT_NULL(...)` as a direct JSON virtual-schema query feature; joined regular-table queries are intentionally rejected instead of being rewritten ambiguously
 
 ## Mental Model
 
@@ -323,6 +332,8 @@ Exasol currently strips both of these before normal virtual-schema pushdown:
 - quoted array access such as `"tags[0]"` and `"meta.items[1].value"`
 
 That is why the companion `SQL_PREPROCESSOR_SCRIPT` is part of the recommended setup.
+
+The generated preprocessor also intentionally restricts this syntax to the configured JSON virtual schemas. That prevents accidental rewrites on ordinary tables in source schemas such as `JVS_SRC`.
 
 ### Join-Based Path Rewriting
 

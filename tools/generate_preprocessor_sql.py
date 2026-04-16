@@ -34,6 +34,16 @@ def parse_args() -> argparse.Namespace:
         help='Rewrite quoted dotted identifiers like "child.value" and array access like "items[0].value".',
     )
     parser.add_argument(
+        "--virtual-schema",
+        dest="virtual_schemas",
+        action="append",
+        default=None,
+        help=(
+            "Virtual schema name that is allowed to use the JSON helper/path syntax. "
+            "Repeat to allow multiple virtual schemas. Default: JSON_VS."
+        ),
+    )
+    parser.add_argument(
         "--activate-session",
         action="store_true",
         help="Append an ALTER SESSION statement that activates the generated preprocessor for the current session.",
@@ -277,12 +287,141 @@ COMMON_LUA = """
         return current
     end
 
-    local function is_clause_keyword(token)
+    local is_clause_keyword
+    local is_join_keyword
+
+    local function normalize_identifier_value(value)
+        if value == nil then
+            return nil
+        end
+        return string.upper(value)
+    end
+
+    local function read_alias_after_table(tokens, table_index)
+        local alias_name = nil
+        local alias_end_index = table_index
+        local maybe_alias_index = next_significant_raw(tokens, table_index + 1)
+        if maybe_alias_index <= #tokens and normalize(tokens[maybe_alias_index]) == "AS" then
+            local alias_index = next_significant_raw(tokens, maybe_alias_index + 1)
+            local alias_parts = parse_identifier_token(tokens[alias_index])
+            if alias_parts ~= nil and #alias_parts == 1 then
+                alias_name = alias_parts[1]
+                alias_end_index = alias_index
+            end
+        else
+            local alias_parts = parse_identifier_token(tokens[maybe_alias_index])
+            if alias_parts ~= nil and #alias_parts == 1 and not is_clause_keyword(tokens[maybe_alias_index])
+                    and not is_join_keyword(tokens[maybe_alias_index]) and tokens[maybe_alias_index] ~= ","
+                    and tokens[maybe_alias_index] ~= ")" then
+                alias_name = alias_parts[1]
+                alias_end_index = maybe_alias_index
+            end
+        end
+        return alias_name, alias_end_index
+    end
+
+    local function collect_top_level_table_references(tokens)
+        local out = {}
+        local depth = 0
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if token == "(" then
+                depth = depth + 1
+            elseif token == ")" then
+                depth = depth - 1
+            elseif depth == 0 then
+                local normalized = normalize(token)
+                if normalized == "FROM" or normalized == "JOIN" then
+                    local table_index = next_significant_raw(tokens, index + 1)
+                    local table_parts = parse_identifier_token(tokens[table_index])
+                    if table_parts ~= nil then
+                        local alias_name, alias_end_index = read_alias_after_table(tokens, table_index)
+                        out[#out + 1] = {
+                            catalog_name = (#table_parts >= 3) and table_parts[#table_parts - 2] or nil,
+                            schema_name = (#table_parts >= 2) and table_parts[#table_parts - 1] or nil,
+                            table_name = table_parts[#table_parts],
+                            alias_name = alias_name,
+                            insert_after_index = alias_end_index
+                        }
+                        index = alias_end_index
+                    end
+                end
+            end
+            index = index + 1
+        end
+        return out
+    end
+
+    local function table_reference_is_allowed_virtual_schema(table_reference)
+        if table_reference == nil or table_reference.schema_name == nil then
+            return false
+        end
+        return ALLOWED_VIRTUAL_SCHEMAS[normalize_identifier_value(table_reference.schema_name)] == true
+    end
+
+    local function collect_allowed_virtual_table_references(table_references)
+        local out = {}
+        for _, table_reference in ipairs(table_references) do
+            if table_reference_is_allowed_virtual_schema(table_reference) then
+                out[#out + 1] = table_reference
+            end
+        end
+        return out
+    end
+
+    local function read_base_table_reference(tokens)
+        local depth = 0
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if token == "(" then
+                depth = depth + 1
+            elseif token == ")" then
+                depth = depth - 1
+            elseif depth == 0 and normalize(token) == "FROM" then
+                local table_index = next_significant_raw(tokens, index + 1)
+                local table_parts = parse_identifier_token(tokens[table_index])
+                if table_parts == nil then
+                    return nil
+                end
+                local alias_name, alias_end_index = read_alias_after_table(tokens, table_index)
+                return {
+                    catalog_name = (#table_parts >= 3) and table_parts[#table_parts - 2] or nil,
+                    schema_name = (#table_parts >= 2) and table_parts[#table_parts - 1] or nil,
+                    table_name = table_parts[#table_parts],
+                    alias_name = alias_name,
+                    insert_after_index = alias_end_index
+                }
+            end
+            index = index + 1
+        end
+        return nil
+    end
+
+    local function query_has_top_level_join(tokens)
+        local depth = 0
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if token == "(" then
+                depth = depth + 1
+            elseif token == ")" then
+                depth = depth - 1
+            elseif depth == 0 and normalize(token) == "JOIN" then
+                return true
+            end
+            index = index + 1
+        end
+        return false
+    end
+
+    is_clause_keyword = function(token)
         local normalized = normalize(token)
         return normalized ~= nil and CLAUSE_KEYWORDS[normalized] == true
     end
 
-    local function is_join_keyword(token)
+    is_join_keyword = function(token)
         local normalized = normalize(token)
         return normalized == "JOIN" or normalized == "LEFT" or normalized == "RIGHT"
                 or normalized == "FULL" or normalized == "INNER" or normalized == "CROSS"
@@ -348,6 +487,87 @@ COMMON_LUA = """
         end
         return nil
     end
+
+    local function read_identifier_parts_from_path_tokens(tokens, index)
+        local token, token_index = next_significant_path_token(tokens, index)
+        if token == nil then
+            return nil, nil
+        end
+
+        local parts = nil
+        if token.type == "word" then
+            parts = {token.text}
+        elseif token.type == "quoted_identifier" then
+            parts = {token.identifier}
+        else
+            return nil, nil
+        end
+
+        local current_index = token_index
+        while true do
+            local dot_token, dot_index = next_significant_path_token(tokens, current_index + 1)
+            if dot_token == nil or dot_token.type ~= "punct" or dot_token.text ~= "." then
+                break
+            end
+
+            local next_token, next_index = next_significant_path_token(tokens, dot_index + 1)
+            if next_token == nil then
+                break
+            end
+            if next_token.type == "word" then
+                parts[#parts + 1] = next_token.text
+            elseif next_token.type == "quoted_identifier" then
+                parts[#parts + 1] = next_token.identifier
+            else
+                break
+            end
+            current_index = next_index
+        end
+
+        return parts, current_index
+    end
+
+    local function read_base_table_reference_from_path_tokens(tokens)
+        local depth = 0
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if token.type == "punct" and token.text == "(" then
+                depth = depth + 1
+            elseif token.type == "punct" and token.text == ")" then
+                depth = depth - 1
+            elseif depth == 0 and normalize_path_token(token) == "FROM" then
+                local parts = nil
+                parts, index = read_identifier_parts_from_path_tokens(tokens, index + 1)
+                if parts == nil then
+                    return nil
+                end
+                return {
+                    schema_name = (#parts >= 2) and parts[#parts - 1] or nil,
+                    table_name = parts[#parts]
+                }
+            end
+            index = index + 1
+        end
+        return nil
+    end
+
+    local function path_tokens_have_top_level_join(tokens)
+        local depth = 0
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if token.type == "punct" and token.text == "(" then
+                depth = depth + 1
+            elseif token.type == "punct" and token.text == ")" then
+                depth = depth - 1
+            elseif depth == 0 and normalize_path_token(token) == "JOIN" then
+                return true
+            end
+            index = index + 1
+        end
+        return false
+    end
 """
 
 
@@ -373,50 +593,7 @@ JOIN_MODE_LUA = """
     end
 
     local function read_table_reference(tokens)
-        local depth = 0
-        local index = 1
-        while index <= #tokens do
-            local token = tokens[index]
-            if token == "(" then
-                depth = depth + 1
-            elseif token == ")" then
-                depth = depth - 1
-            elseif depth == 0 and normalize(token) == "FROM" then
-                local table_index = next_significant_raw(tokens, index + 1)
-                local table_parts = parse_identifier_token(tokens[table_index])
-                if table_parts == nil then
-                    return nil
-                end
-                local alias_name = nil
-                local alias_end_index = table_index
-                local maybe_alias_index = next_significant_raw(tokens, table_index + 1)
-                if maybe_alias_index <= #tokens and normalize(tokens[maybe_alias_index]) == "AS" then
-                    local alias_index = next_significant_raw(tokens, maybe_alias_index + 1)
-                    local alias_parts = parse_identifier_token(tokens[alias_index])
-                    if alias_parts ~= nil and #alias_parts == 1 then
-                        alias_name = alias_parts[1]
-                        alias_end_index = alias_index
-                    end
-                else
-                    local alias_parts = parse_identifier_token(tokens[maybe_alias_index])
-                    if alias_parts ~= nil and #alias_parts == 1 and not is_clause_keyword(tokens[maybe_alias_index])
-                            and not is_join_keyword(tokens[maybe_alias_index]) and tokens[maybe_alias_index] ~= ","
-                            and tokens[maybe_alias_index] ~= ")" then
-                        alias_name = alias_parts[1]
-                        alias_end_index = maybe_alias_index
-                    end
-                end
-                return {
-                    catalog_name = (#table_parts >= 3) and table_parts[#table_parts - 2] or nil,
-                    schema_name = (#table_parts >= 2) and table_parts[#table_parts - 1] or nil,
-                    table_name = table_parts[#table_parts],
-                    alias_name = alias_name,
-                    insert_after_index = alias_end_index
-                }
-            end
-            index = index + 1
-        end
-        return nil
+        return read_base_table_reference(tokens)
     end
 
     local function qualify_table_name(base_table, child_table_name)
@@ -601,9 +778,22 @@ JOIN_MODE_LUA = """
         end
 
         local tokens = sqlparsing.tokenize(placeholder_sql)
+        local table_references = collect_top_level_table_references(tokens)
+        local allowed_references = collect_allowed_virtual_table_references(table_references)
+        if #allowed_references == 0 then
+            raise_scope_error(
+                "JSON path syntax",
+                'Qualify the JSON virtual-schema table in FROM/JOIN, for example FROM "JSON_VS"."SAMPLE".'
+            )
+        end
         local base_table = read_table_reference(tokens)
         if base_table == nil then
             error("JVS-PATH-ERROR: Path rewrite currently requires a query with a single base table in FROM.", 0)
+        elseif not table_reference_is_allowed_virtual_schema(base_table) then
+            raise_scope_error(
+                "JSON path syntax",
+                'Path rewriting currently requires the base table in FROM to be one of the configured JSON virtual schemas.'
+            )
         end
 
         local root_ref = encode_quoted_identifier(base_table.alias_name or base_table.table_name)
@@ -719,12 +909,16 @@ def render_sql(
     schema: str,
     script: str,
     function_names: list[str],
+    virtual_schemas: list[str],
     rewrite_path_identifiers: bool,
     activate_session: bool,
 ) -> str:
     function_rows = "\n".join(f"        {name} = true," for name in function_names)
     function_set_lua = "{\n" + function_rows + "\n    }"
     function_list_sql = ", ".join(function_names)
+    virtual_schema_rows = "\n".join(f"        {name} = true," for name in virtual_schemas)
+    virtual_schema_set_lua = "{\n" + virtual_schema_rows + "\n    }"
+    virtual_schema_list_sql = ", ".join(virtual_schemas)
     if not rewrite_path_identifiers:
         path_comment = "disabled"
         path_lua = DISABLED_MODE_LUA
@@ -739,15 +933,28 @@ def render_sql(
     return f"""-- Generated by tools/generate_preprocessor_sql.py
 -- Rewrites configured function calls to a CASE marker before virtual-schema optimization.
 -- Configured function names: {function_list_sql}
+-- JSON syntax allowed only for virtual schemas: {virtual_schema_list_sql}
 -- Path identifier rewrite: {path_comment}
 
 CREATE SCHEMA IF NOT EXISTS {schema};
 
 CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
     local TARGET_FUNCTIONS = {function_set_lua}
+    local ALLOWED_VIRTUAL_SCHEMAS = {virtual_schema_set_lua}
+    local ALLOWED_VIRTUAL_SCHEMA_LIST = {virtual_schema_list_sql!r}
 
     local function raise_function_error(function_name, message)
         error("JVS-FUNCTION-ERROR: " .. function_name .. ": " .. message, 0)
+    end
+
+    local function raise_scope_error(feature_name, message)
+        error(
+            "JVS-SCOPE-ERROR: " .. feature_name
+                .. " is only available for configured JSON virtual schemas ("
+                .. ALLOWED_VIRTUAL_SCHEMA_LIST .. "). "
+                .. message,
+            0
+        )
     end
 
     local function normalize(token)
@@ -847,6 +1054,21 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
         return false
     end
 
+    local function helper_query_targets_allowed_virtual_schema(sqltext)
+        local path_tokens = tokenize_path_sql(sqltext)
+        local base_table = read_base_table_reference_from_path_tokens(path_tokens)
+        if base_table == nil then
+            return false, 'Qualify the JSON virtual-schema table in FROM/JOIN, for example FROM "JSON_VS"."SAMPLE".'
+        end
+        if not table_reference_is_allowed_virtual_schema(base_table) then
+            return false, 'Qualify the JSON virtual-schema table in FROM/JOIN, for example FROM "JSON_VS"."SAMPLE".'
+        end
+        if path_tokens_have_top_level_join(path_tokens) then
+            return false, "JSON helper functions currently require a query with a single top-level JSON virtual-schema table in FROM."
+        end
+        return true, nil
+    end
+
     local function rewrite(sqltext)
         local rewritten_sql = rewrite_path_identifiers_in_sql(sqltext)
         local tokens = sqlparsing.tokenize(rewritten_sql)
@@ -863,6 +1085,10 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
                 elseif not has_expression_argument(tokens, call.opening_paren, closing_paren) then
                     raise_function_error(call.last_identifier, "Expected exactly one argument.")
                 else
+                    local helper_allowed, helper_scope_message = helper_query_targets_allowed_virtual_schema(sqltext)
+                    if not helper_allowed then
+                        raise_scope_error("JSON helper functions", helper_scope_message)
+                    end
                     out[#out + 1] = "(CASE WHEN "
                     for argument_index = call.opening_paren + 1, closing_paren - 1 do
                         out[#out + 1] = tokens[argument_index]
@@ -900,10 +1126,13 @@ def main() -> None:
     script = validate_identifier("Script name", args.script)
     raw_function_names = args.function_names or ["JSON_IS_EXPLICIT_NULL"]
     function_names = [validate_identifier("Function name", value) for value in raw_function_names]
+    raw_virtual_schemas = args.virtual_schemas or ["JSON_VS"]
+    virtual_schemas = [validate_identifier("Virtual schema name", value) for value in raw_virtual_schemas]
     sql = render_sql(
         schema,
         script,
         function_names,
+        virtual_schemas,
         args.rewrite_path_identifiers,
         args.activate_session,
     )
