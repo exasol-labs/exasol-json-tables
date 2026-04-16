@@ -347,6 +347,15 @@ Current boundaries:
 
 ## Testing
 
+Install the Python test dependency first:
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+```
+
+The Nano integration tests assume a local Exasol Nano instance on `127.0.0.1:8563`
+with the default `sys` / `exasol` credentials used by the test helpers.
+
 Smoke test against the local Nano fixture:
 
 ```bash
@@ -407,7 +416,8 @@ This verifies:
 
 ## Related Files
 
-- Adapter bundle: [dist/adapter.lua](dist/adapter.lua)
+- Adapter entrypoint: [src/entry.lua](src/entry.lua)
+- Adapter bundle tool: [tools/bundle.py](tools/bundle.py)
 - Preprocessor generator: [tools/generate_preprocessor_sql.py](tools/generate_preprocessor_sql.py)
 - Example preprocessor: [examples/json_path_preprocessor.sql](examples/json_path_preprocessor.sql)
-- Example join-mode preprocessor: [examples/json_path_join_preprocessor.sql](examples/json_path_join_preprocessor.sql)
+- UDF pushdown MRE write-up: [examples/udf_pushdown_stripping_mre.md](examples/udf_pushdown_stripping_mre.md)

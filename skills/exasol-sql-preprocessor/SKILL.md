@@ -49,7 +49,6 @@ If you are working in this repository, also inspect:
 - `tools/generate_preprocessor_sql.py`
 - `examples/json_is_explicit_null_preprocessor.sql`
 - `examples/json_path_preprocessor.sql`
-- `examples/json_path_join_preprocessor.sql`
 - `tools/test_nano_preprocessor.py`
 - `tools/test_nano_preprocessor_join_paths.py`
 - `tools/test_nano_e2e.py`
