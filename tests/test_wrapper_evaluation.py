@@ -4,19 +4,20 @@ from __future__ import annotations
 
 import json
 import subprocess
-from pathlib import Path
 
-from nano_support import ROOT, bundle_adapter, connect, install_preprocessor, install_virtual_schema_fixture
+import _bootstrap  # noqa: F401
+
+from nano_support import ROOT, connect, install_source_fixture
 
 
-PACKAGE_DIR = ROOT / "dist" / "wrapper_phase6_eval"
-PACKAGE_NAME = "json_wrapper_phase6"
+PACKAGE_DIR = ROOT / "dist" / "wrapper_evaluation"
+PACKAGE_NAME = "json_wrapper_evaluation"
 PACKAGE_CONFIG_PATH = PACKAGE_DIR / f"{PACKAGE_NAME}_package.json"
-WRAPPER_SCHEMA = "JSON_VIEW_P6"
-HELPER_SCHEMA = "JSON_VIEW_P6_INTERNAL"
-PREPROCESSOR_SCHEMA = "JVS_WRAP_P6_PP"
-PREPROCESSOR_SCRIPT = "JSON_WRAPPER_PHASE6_PREPROCESSOR"
-UDF_SCHEMA = "JVS_PHASE6_UDF"
+WRAPPER_SCHEMA = "JSON_VIEW_EVAL"
+HELPER_SCHEMA = "JSON_VIEW_EVAL_INTERNAL"
+PREPROCESSOR_SCHEMA = "JVS_WRAP_EVAL_PP"
+PREPROCESSOR_SCRIPT = "JSON_WRAPPER_EVAL_PREPROCESSOR"
+UDF_SCHEMA = "JVS_WRAPPER_EVAL_UDF"
 
 
 def assert_equal(actual, expected, label: str) -> None:
@@ -42,21 +43,6 @@ def fetch_wrapper(sql: str) -> list[tuple]:
     con = connect()
     try:
         con.execute(f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {PREPROCESSOR_SCHEMA}.{PREPROCESSOR_SCRIPT}")
-        return con.execute(sql).fetchall()
-    finally:
-        con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")
-        con.close()
-
-
-def fetch_virtual(sql: str) -> list[tuple]:
-    con = connect()
-    try:
-        install_preprocessor(
-            con,
-            function_names=["JSON_IS_EXPLICIT_NULL"],
-            rewrite_path_identifiers=True,
-            virtual_schemas=["JSON_VS"],
-        )
         return con.execute(sql).fetchall()
     finally:
         con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")
@@ -100,7 +86,7 @@ end
 def setup_fixture() -> None:
     con = connect()
     try:
-        install_virtual_schema_fixture(con, bundle_adapter(), include_deep_fixture=True)
+        install_source_fixture(con, include_deep_fixture=True)
     finally:
         con.close()
 
@@ -148,18 +134,11 @@ def main() -> None:
         ORDER BY "id"
         """
     )
-    virtual_variant_rows = fetch_virtual(
-        """
-        SELECT
-          CAST("id" AS VARCHAR(10)),
-          COALESCE(TYPEOF("value"), 'MISSING'),
-          COALESCE(CAST("value" AS VARCHAR(100)), 'NULL'),
-          COALESCE(CAST(CAST("value" AS DECIMAL(36,18)) AS VARCHAR(60)), 'NULL')
-        FROM JSON_VS.SAMPLE
-        ORDER BY "id"
-        """
+    assert_equal(
+        helper_variant_rows,
+        [("1", "NUMBER", "42", "42"), ("2", "STRING", "43", "43"), ("3", "NULL", "NULL", "NULL")],
+        "wrapper helper variant semantics",
     )
-    assert_equal(helper_variant_rows, virtual_variant_rows, "wrapper helper variant parity")
 
     helper_null_rows = fetch_wrapper(
         f"""
@@ -172,18 +151,11 @@ def main() -> None:
         ORDER BY "id"
         """
     )
-    virtual_null_rows = fetch_virtual(
-        """
-        SELECT
-          CAST("id" AS VARCHAR(10)),
-          CASE WHEN JSON_IS_EXPLICIT_NULL("note") THEN '1' ELSE '0' END,
-          CASE WHEN "note" IS NULL AND NOT JSON_IS_EXPLICIT_NULL("note") THEN '1' ELSE '0' END,
-          CASE WHEN JSON_IS_EXPLICIT_NULL("value") THEN '1' ELSE '0' END
-        FROM JSON_VS.SAMPLE
-        ORDER BY "id"
-        """
+    assert_equal(
+        helper_null_rows,
+        [("1", "0", "0", "0"), ("2", "1", "0", "0"), ("3", "0", "1", "1")],
+        "wrapper explicit-null semantics",
     )
-    assert_equal(helper_null_rows, virtual_null_rows, "wrapper explicit-null parity")
 
     udf_rows = fetch_wrapper(
         f"""
@@ -213,23 +185,15 @@ def main() -> None:
         ORDER BY "id"
         """
     )
-    virtual_builtin_rows = fetch_virtual(
-        """
-        SELECT
-          CAST("id" AS VARCHAR(10)),
-          TYPEOF("value"),
-          TYPEOF("shape"),
-          COALESCE(CAST("value" AS VARCHAR(100)), 'NULL'),
-          COALESCE(CAST("shape" AS VARCHAR(100)), 'NULL')
-        FROM JSON_VS.SAMPLE
-        ORDER BY "id"
-        """
+    assert_equal(
+        wrapper_builtin_rows,
+        [
+            ("1", "VARCHAR(2000000) UTF8", "DECIMAL(18,0)", "42", "10"),
+            ("2", "VARCHAR(2000000) UTF8", "DECIMAL(18,0)", "43", "3"),
+            ("3", "VARCHAR(2000000) UTF8", "DECIMAL(18,0)", "NULL", "NULL"),
+        ],
+        "wrapper built-in SQL typing behavior",
     )
-    assert_true(wrapper_builtin_rows != virtual_builtin_rows, "wrapper built-in variant behavior should differ from virtual-schema built-ins")
-    assert_true(len({row[1] for row in wrapper_builtin_rows}) == 1, "wrapper built-in TYPEOF(value) should reflect one projected SQL type")
-    assert_true(len({row[2] for row in wrapper_builtin_rows}) == 1, "wrapper built-in TYPEOF(shape) should reflect one projected SQL type")
-    assert_true(len({row[1] for row in virtual_builtin_rows}) > 1, "virtual built-in TYPEOF(value) should vary by JSON variant")
-    assert_true(len({row[2] for row in virtual_builtin_rows}) > 1, "virtual built-in TYPEOF(shape) should vary by JSON variant")
 
     wrapper_columns_before_refresh = column_names(WRAPPER_SCHEMA, "SAMPLE")
     assert_true("status" not in {name.lower() for name in wrapper_columns_before_refresh}, "status should not exist before refresh")
@@ -266,13 +230,12 @@ def main() -> None:
         "refreshed wrapper package query",
     )
 
-    print("-- phase 6 wrapper evaluation --")
+    print("-- wrapper package evaluation --")
     print("package config:", PACKAGE_CONFIG_PATH)
     print("helper variant parity:", helper_variant_rows)
     print("explicit-null parity:", helper_null_rows)
     print("udf interoperability:", udf_rows)
     print("wrapper built-in rows:", wrapper_builtin_rows)
-    print("virtual built-in rows:", virtual_builtin_rows)
     print("pre-refresh columns:", wrapper_columns_before_refresh)
     print("post-refresh columns:", wrapper_columns_after_refresh)
     print("refreshed rows:", refreshed_rows)

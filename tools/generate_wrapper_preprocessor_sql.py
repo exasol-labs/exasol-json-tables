@@ -21,7 +21,7 @@ DEFAULT_VARIANT_BOOLEAN_FUNCTION_NAMES = ["JSON_AS_BOOLEAN"]
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate the Phase 4 Exasol SQL preprocessor for the wrapper-view architecture. "
+            "Generate the Exasol SQL preprocessor for the wrapper-view architecture. "
             "It enables path, bracket, rowset, explicit-null, and variant helper syntax over "
             "the public wrapper schema using the generated manifest/helper contract."
         )

@@ -26,7 +26,6 @@ venv/
 
 # Generated build artifacts
 dist/
-submission/
 
 # Logs
 *.log

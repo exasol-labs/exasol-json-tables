@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Generate installable Exasol SQL for the wrapper-view architecture: public root views, "
-            "an internal helper schema, a machine-readable manifest, and optionally the Phase 4 "
+            "an internal helper schema, a machine-readable manifest, and optionally the companion "
             "wrapper preprocessor package."
         )
     )
@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
         "--preprocessor-output",
         type=Path,
         default=None,
-        help="Optional output SQL file for the companion Phase 4 wrapper preprocessor.",
+        help="Optional output SQL file for the companion wrapper preprocessor.",
     )
     parser.add_argument(
         "--preprocessor-schema",

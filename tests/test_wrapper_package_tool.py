@@ -6,7 +6,9 @@ import json
 import subprocess
 from pathlib import Path
 
-from nano_support import ROOT, bundle_adapter, connect, install_virtual_schema_fixture
+import _bootstrap  # noqa: F401
+
+from nano_support import ROOT, connect, install_source_fixture
 
 
 PACKAGE_DIR = ROOT / "dist" / "wrapper_package_tool_test"
@@ -27,7 +29,7 @@ def assert_equal(actual, expected, label: str) -> None:
 def main() -> None:
     con = connect()
     try:
-        install_virtual_schema_fixture(con, bundle_adapter(), include_deep_fixture=True)
+        install_source_fixture(con, include_deep_fixture=True)
     finally:
         con.close()
 

@@ -3,15 +3,9 @@
 from pathlib import Path
 import subprocess
 
-from nano_support import (
-    ROOT,
-    bundle_adapter,
-    connect,
-    install_preprocessor,
-    install_virtual_schema_fixture,
-    install_wrapper_preprocessor,
-    install_wrapper_views,
-)
+import _bootstrap  # noqa: F401
+
+from nano_support import ROOT, connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
 
 
 def assert_contains_all(text: str, fragments: list[str], label: str) -> None:
@@ -45,11 +39,17 @@ def assert_subprocess_error(cmd: list[str], expected_fragments: list[str], label
 
 
 def main() -> None:
-    adapter_code = bundle_adapter()
     con = connect()
     try:
-        install_virtual_schema_fixture(con, adapter_code, include_deep_fixture=True)
-        install_preprocessor(con, ["JSON_IS_EXPLICIT_NULL", "JNULL"], rewrite_path_identifiers=True)
+        install_source_fixture(con, include_deep_fixture=True)
+        install_wrapper_views(
+            con,
+            source_schema="JVS_SRC",
+            wrapper_schema="JSON_VIEW",
+            helper_schema="JSON_VIEW_INTERNAL",
+            generate_preprocessor=True,
+        )
+        install_wrapper_preprocessor(con, ["JSON_VIEW"], ["JSON_VIEW_INTERNAL"])
 
         assert_query_rows(
             con,
@@ -60,102 +60,88 @@ def main() -> None:
 
         assert_query_error(
             con,
-            'SELECT "tags[NOPE]" FROM JSON_VS.SAMPLE',
+            'SELECT "tags[NOPE]" FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", 'Unsupported array selector "NOPE"'],
             "unsupported selector error",
         )
-
         assert_query_error(
             con,
-            'SELECT "tags[-1]" FROM JSON_VS.SAMPLE',
+            'SELECT "tags[-1]" FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", "Negative array indexes are not supported yet", "Use LAST"],
             "negative index error",
         )
-
         assert_query_error(
             con,
-            'SELECT "tags[*]" FROM JSON_VS.SAMPLE',
+            'SELECT "tags[*]" FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", "Wildcard selectors are not supported yet", "JOIN ... IN"],
             "wildcard selector error",
         )
-
         assert_query_error(
             con,
-            'SELECT "tags[1:3]" FROM JSON_VS.SAMPLE',
+            'SELECT "tags[1:3]" FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", "Array slices are not supported yet", "_index"],
             "array slice error",
         )
-
         assert_query_error(
             con,
-            'SELECT "items[0][1]" FROM JSON_VS.SAMPLE',
+            'SELECT "items[0][1]" FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", "Chained array indexing is not supported"],
             "nested array index error",
         )
-
         assert_query_error(
             con,
-            'SELECT "meta.items[SIZE].value" FROM JSON_VS.SAMPLE',
+            'SELECT "meta.items[SIZE].value" FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", "SIZE must be the last selector in a path"],
             "size non-terminal error",
         )
-
         assert_query_error(
             con,
-            'SELECT "meta..note" FROM JSON_VS.SAMPLE',
+            'SELECT "meta..note" FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", "Empty path segment is not allowed"],
             "empty path segment error",
         )
-
         assert_query_error(
             con,
-            'SELECT "meta." FROM JSON_VS.SAMPLE',
+            'SELECT "meta." FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", "Path cannot end with '.'"],
             "trailing dot path error",
         )
-
         assert_query_error(
             con,
-            'SELECT "tags[]" FROM JSON_VS.SAMPLE',
+            'SELECT "tags[]" FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", "Empty array selector is not allowed"],
             "empty array selector error",
         )
-
         assert_query_error(
             con,
-            'SELECT "[0]" FROM JSON_VS.SAMPLE',
+            'SELECT "[0]" FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", "array selector must follow a property name"],
             "selector without property error",
         )
-
         assert_query_error(
             con,
-            'SELECT "tags[" FROM JSON_VS.SAMPLE',
+            'SELECT "tags[" FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", "Missing closing ] in array selector"],
             "missing closing bracket error",
         )
-
         assert_query_error(
             con,
-            'SELECT "child.value" FROM (SELECT * FROM JSON_VS.SAMPLE) s',
-            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VS"],
+            'SELECT "child.value" FROM (SELECT * FROM JSON_VIEW.SAMPLE) s',
+            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VIEW"],
             "unsupported query shape error",
         )
-
         assert_query_error(
             con,
             'SELECT "child.value" FROM JVS_SRC.SAMPLE',
-            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VS"],
+            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VIEW"],
             "regular table path scope error",
         )
-
         assert_query_error(
             con,
             'SELECT "tags[0]" FROM JVS_SRC.SAMPLE',
-            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VS"],
+            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VIEW"],
             "regular table array scope error",
         )
-
         assert_query_error(
             con,
             '''
@@ -163,115 +149,115 @@ def main() -> None:
             FROM JVS_SRC.SAMPLE s
             JOIN item IN s."items"
             ''',
-            ["JVS-SCOPE-ERROR", "JSON array iteration syntax", "JSON_VS"],
+            ["JVS-SCOPE-ERROR", "JSON array iteration syntax", "JSON_VIEW"],
             "regular table iterator scope error",
         )
-
         assert_query_error(
             con,
             '''
             SELECT s."id"
-            FROM JSON_VS.SAMPLE s
+            FROM JSON_VIEW.SAMPLE s
             JOIN item IN s."items[0]"
             ''',
             ["JVS-ITER-ERROR", "Iterator paths must name an array property directly", "scalar bracket access"],
             "indexed iterator path error",
         )
-
         assert_query_error(
             con,
             '''
             SELECT s."id"
-            FROM JSON_VS.SAMPLE s
+            FROM JSON_VIEW.SAMPLE s
             JOIN VALUE tag IN s."tags"
             LEFT JOIN VALUE nested IN tag."extras"
             ''',
             ["JVS-ITER-ERROR", "Scalar VALUE iterators cannot be used as the root"],
             "value iterator root error",
         )
-
         assert_query_error(
             con,
             '''
             SELECT s."id"
-            FROM JSON_VS.SAMPLE s
+            FROM JSON_VIEW.SAMPLE s
             JOIN item IN s."meta.items[LAST]"
             ''',
             ["JVS-ITER-ERROR", "Iterator paths must name an array property directly"],
             "terminal indexed iterator path error",
         )
-
         assert_query_error(
             con,
-            "SELECT JSON_IS_EXPLICIT_NULL() FROM JSON_VS.SAMPLE",
+            "SELECT JSON_IS_EXPLICIT_NULL() FROM JSON_VIEW.SAMPLE",
             ["JVS-FUNCTION-ERROR", "JSON_IS_EXPLICIT_NULL", "Expected exactly one argument"],
             "zero-argument helper error",
         )
-
         assert_query_error(
             con,
-            'SELECT JSON_IS_EXPLICIT_NULL("note", "name") FROM JSON_VS.SAMPLE',
+            'SELECT JSON_IS_EXPLICIT_NULL("note", "name") FROM JSON_VIEW.SAMPLE',
             ["JVS-FUNCTION-ERROR", "JSON_IS_EXPLICIT_NULL", "Expected exactly one argument"],
             "multi-argument helper error",
         )
-
         assert_query_error(
             con,
-            'SELECT JSON_IS_EXPLICIT_NULL("note" FROM JSON_VS.SAMPLE',
+            'SELECT JSON_IS_EXPLICIT_NULL("note" FROM JSON_VIEW.SAMPLE',
             ["JVS-FUNCTION-ERROR", "JSON_IS_EXPLICIT_NULL", "Missing closing parenthesis"],
             "missing closing parenthesis helper error",
         )
-
+        assert_query_error(
+            con,
+            'SELECT JSON_TYPEOF() FROM JSON_VIEW.SAMPLE',
+            ["JVS-FUNCTION-ERROR", "JSON_TYPEOF", "Expected exactly one argument"],
+            "wrapper variant typeof zero-argument error",
+        )
+        assert_query_error(
+            con,
+            'SELECT JSON_AS_DECIMAL("value", "name") FROM JSON_VIEW.SAMPLE',
+            ["JVS-FUNCTION-ERROR", "JSON_AS_DECIMAL", "Expected exactly one argument"],
+            "wrapper variant decimal multi-argument error",
+        )
         assert_query_error(
             con,
             'SELECT JSON_IS_EXPLICIT_NULL("note") FROM JVS_SRC.SAMPLE',
-            ["JVS-SCOPE-ERROR", "JSON helper functions", "JSON_VS"],
+            ["JVS-SCOPE-ERROR", "JSON helper functions", "JSON_VIEW"],
             "regular table helper scope error",
         )
-
+        assert_query_error(
+            con,
+            'SELECT JSON_IS_EXPLICIT_NULL("note") FROM JSON_VIEW_INTERNAL.SAMPLE',
+            ["JVS-SCOPE-ERROR", "JSON helper functions", "JSON_VIEW"],
+            "helper schema helper scope error",
+        )
+        assert_query_error(
+            con,
+            'SELECT JSON_TYPEOF("value") FROM JVS_SRC.SAMPLE',
+            ["JVS-SCOPE-ERROR", "JSON helper functions", "JSON_VIEW"],
+            "regular table variant helper scope error",
+        )
         assert_query_error(
             con,
             '''
-            SELECT JSON_IS_EXPLICIT_NULL("note")
-            FROM JSON_VS.SAMPLE S
-            JOIN JVS_SRC.SAMPLE T ON S."id" = T."id"
+            SELECT s."id"
+            FROM JSON_VIEW.SAMPLE s
+            JOIN item IN s."items"
+            WHERE JSON_IS_EXPLICIT_NULL("note")
             ''',
-            ['identifier "note" is ambiguous'],
-            "unqualified multi-table helper ambiguity error",
+            ["JVS-FUNCTION-ERROR", "JSON_IS_EXPLICIT_NULL", "Unqualified helper arguments are not supported in joined queries"],
+            "wrapper unqualified helper in joined query error",
         )
-
-        invalid_output_path = Path(ROOT / "dist" / "should_not_exist.sql")
-        assert_subprocess_error(
-            [
-                "python3",
-                str(ROOT / "tools" / "generate_preprocessor_sql.py"),
-                "--function-name",
-                "bad-name",
-                "--output",
-                str(invalid_output_path),
-            ],
-            ["Function name must be an unquoted SQL identifier"],
-            "generator identifier validation",
-        )
-
-        install_wrapper_views(
+        assert_query_error(
             con,
-            source_schema="JVS_SRC",
-            wrapper_schema="JSON_VIEW",
-            helper_schema="JSON_VIEW_INTERNAL",
-            generate_preprocessor=True,
+            '''
+            SELECT s."id"
+            FROM JSON_VIEW.SAMPLE s
+            JOIN item IN s."items"
+            WHERE JSON_TYPEOF("value") = 'NUMBER'
+            ''',
+            ["JVS-FUNCTION-ERROR", "JSON_TYPEOF", "Unqualified helper arguments are not supported in joined queries"],
+            "wrapper variant helper in joined query error",
         )
-        install_wrapper_preprocessor(con, ["JSON_VIEW"], ["JSON_VIEW_INTERNAL"])
-
-        packaged_wrapper_sql = (ROOT / "dist" / "json_wrapper_preprocessor_packaged_test.sql").read_text()
-        assert_contains_all(
-            packaged_wrapper_sql,
-            [
-                "Configured function names: JSON_IS_EXPLICIT_NULL, JNULL, JSON_TYPEOF, JSON_AS_VARCHAR, JSON_AS_DECIMAL, JSON_AS_BOOLEAN",
-                "JSON syntax allowed only for configured JSON schemas: JSON_VIEW",
-                "Helper rewrite mode: wrapper semantic helpers",
-            ],
-            "packaged wrapper preprocessor output",
+        assert_query_error(
+            con,
+            'SELECT JSON_IS_EXPLICIT_NULL("child.value") FROM (SELECT * FROM JSON_VIEW.SAMPLE) s',
+            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VIEW"],
+            "wrapper derived-table helper scope error",
         )
 
         assert_query_rows(
@@ -285,7 +271,7 @@ def main() -> None:
             ORDER BY "id"
             """,
             [("1", "0", "0"), ("2", "1", "0"), ("3", "0", "1")],
-            "wrapper helper query",
+            "wrapper explicit-null helper query",
         )
 
         assert_query_rows(
@@ -300,73 +286,34 @@ def main() -> None:
             FROM JSON_VIEW.SAMPLE
             ORDER BY "id"
             """,
-            [
-                ("1", "NUMBER", "42", "42", "TRUE"),
-                ("2", "STRING", "43", "43", "FALSE"),
-                ("3", "NULL", "NULL", "NULL", "NULL"),
-            ],
+            [("1", "NUMBER", "42", "42", "TRUE"), ("2", "STRING", "43", "43", "FALSE"), ("3", "NULL", "NULL", "NULL", "NULL")],
             "wrapper variant helper query",
         )
 
-        assert_query_error(
-            con,
-            '''
-            SELECT s."id"
-            FROM JSON_VIEW.SAMPLE s
-            JOIN item IN s."items"
-            WHERE JSON_IS_EXPLICIT_NULL("note")
-            ''',
-            ["JVS-FUNCTION-ERROR", "JSON_IS_EXPLICIT_NULL", "Unqualified helper arguments are not supported in joined queries"],
-            "wrapper unqualified helper in joined query error",
+        packaged_wrapper_sql = (ROOT / "dist" / "json_wrapper_preprocessor_packaged_test.sql").read_text()
+        assert_contains_all(
+            packaged_wrapper_sql,
+            [
+                "Configured function names: JSON_IS_EXPLICIT_NULL, JNULL, JSON_TYPEOF, JSON_AS_VARCHAR, JSON_AS_DECIMAL, JSON_AS_BOOLEAN",
+                "JSON syntax allowed only for configured JSON schemas: JSON_VIEW",
+                "Helper rewrite mode: wrapper semantic helpers",
+            ],
+            "packaged wrapper preprocessor output",
         )
 
-        assert_query_error(
-            con,
-            'SELECT JSON_TYPEOF() FROM JSON_VIEW.SAMPLE',
-            ["JVS-FUNCTION-ERROR", "JSON_TYPEOF", "Expected exactly one argument"],
-            "wrapper variant typeof zero-argument error",
+        invalid_output_path = Path(ROOT / "dist" / "should_not_exist.sql")
+        assert_subprocess_error(
+            [
+                "python3",
+                str(ROOT / "tools" / "generate_preprocessor_sql.py"),
+                "--function-name",
+                "bad-name",
+                "--output",
+                str(invalid_output_path),
+            ],
+            ["Function name must be an unquoted SQL identifier"],
+            "shared generator identifier validation",
         )
-
-        assert_query_error(
-            con,
-            'SELECT JSON_AS_DECIMAL("value", "name") FROM JSON_VIEW.SAMPLE',
-            ["JVS-FUNCTION-ERROR", "JSON_AS_DECIMAL", "Expected exactly one argument"],
-            "wrapper variant decimal multi-argument error",
-        )
-
-        assert_query_error(
-            con,
-            '''
-            SELECT s."id"
-            FROM JSON_VIEW.SAMPLE s
-            JOIN item IN s."items"
-            WHERE JSON_TYPEOF("value") = 'NUMBER'
-            ''',
-            ["JVS-FUNCTION-ERROR", "JSON_TYPEOF", "Unqualified helper arguments are not supported in joined queries"],
-            "wrapper variant helper in joined query error",
-        )
-
-        assert_query_error(
-            con,
-            'SELECT JSON_IS_EXPLICIT_NULL("note") FROM JSON_VIEW_INTERNAL.SAMPLE',
-            ["JVS-SCOPE-ERROR", "JSON helper functions", "JSON_VIEW"],
-            "helper schema helper scope error",
-        )
-
-        assert_query_error(
-            con,
-            'SELECT JSON_TYPEOF("value") FROM JVS_SRC.SAMPLE',
-            ["JVS-SCOPE-ERROR", "JSON helper functions", "JSON_VIEW"],
-            "regular table variant helper scope error",
-        )
-
-        assert_query_error(
-            con,
-            'SELECT JSON_IS_EXPLICIT_NULL("child.value") FROM (SELECT * FROM JSON_VIEW.SAMPLE) s',
-            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VIEW"],
-            "wrapper derived-table helper scope error",
-        )
-
         assert_subprocess_error(
             [
                 "python3",
@@ -383,7 +330,6 @@ def main() -> None:
             ["must all be distinct", "source=JSON_VIEW", "wrapper=JSON_VIEW"],
             "wrapper generator distinct schema validation",
         )
-
         assert_subprocess_error(
             [
                 "python3",
@@ -399,8 +345,8 @@ def main() -> None:
             "wrapper preprocessor schema-pair validation",
         )
 
-        print("-- preprocessor error regression --")
-        print("validated virtual-schema and wrapper-schema helper errors, scope guards, explicit-null semantics, and generator validation")
+        print("-- wrapper error regression --")
+        print("validated wrapper helper errors, scope guards, semantic helpers, and generator validation")
     finally:
         try:
             con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")

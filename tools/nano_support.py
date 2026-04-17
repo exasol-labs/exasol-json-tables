@@ -11,41 +11,8 @@ import pyexasol
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def bundle_adapter() -> str:
-    subprocess.run(["python3", str(ROOT / "tools" / "bundle.py")], check=True)
-    return (ROOT / "dist" / "adapter.lua").read_text()
-
-
 def connect():
     return pyexasol.connect(dsn="127.0.0.1:8563", user="sys", password="exasol", schema="SYS")
-
-
-def install_preprocessor(
-    con,
-    function_names: list[str],
-    rewrite_path_identifiers: bool = False,
-    virtual_schemas: Optional[list[str]] = None,
-) -> None:
-    output_path = ROOT / "dist" / "json_null_preprocessor_test.sql"
-    cmd = ["python3", str(ROOT / "tools" / "generate_preprocessor_sql.py"), "--output", str(output_path)]
-    for function_name in function_names:
-        cmd.extend(["--function-name", function_name])
-    for virtual_schema in (virtual_schemas or ["JSON_VS"]):
-        cmd.extend(["--virtual-schema", virtual_schema])
-    if rewrite_path_identifiers:
-        cmd.append("--rewrite-path-identifiers")
-    subprocess.run(cmd, check=True)
-
-    content = output_path.read_text()
-    schema_name = "JVS_PP"
-    script_name = "JSON_NULL_PREPROCESSOR"
-    script_marker = f"CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema_name}.{script_name} AS\n"
-    script_body = content.split(script_marker, 1)[1].split("\n/\n", 1)[0]
-
-    con.execute(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE")
-    con.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
-    con.execute(f"CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema_name}.{script_name} AS\n" + script_body + "\n/")
-    con.execute(f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {schema_name}.{script_name}")
 
 
 def install_wrapper_views(
@@ -151,8 +118,6 @@ def install_wrapper_preprocessor(
 
 def _base_fixture_statements() -> list[str]:
     return [
-        "DROP FORCE VIRTUAL SCHEMA IF EXISTS JSON_VS CASCADE",
-        "DROP SCHEMA IF EXISTS JVS_VS CASCADE",
         "DROP SCHEMA IF EXISTS JVS_SRC CASCADE",
         "CREATE SCHEMA JVS_SRC",
         "OPEN SCHEMA JVS_SRC",
@@ -252,21 +217,10 @@ def _deep_fixture_statements() -> list[str]:
     ]
 
 
-def install_virtual_schema_fixture(con, adapter_code: str, include_deep_fixture: bool = False,
-                                   extra_adapter_properties: Optional[dict[str, str]] = None) -> None:
+def install_source_fixture(con, include_deep_fixture: bool = False) -> None:
     statements = _base_fixture_statements()
     if include_deep_fixture:
         statements.extend(_deep_fixture_statements())
-    property_clauses = ["SCHEMA_NAME='JVS_SRC'"]
-    for key, value in (extra_adapter_properties or {}).items():
-        escaped_value = value.replace("'", "''")
-        property_clauses.append(f"{key}='{escaped_value}'")
-    statements.extend([
-        "CREATE SCHEMA JVS_VS",
-        "OPEN SCHEMA JVS_VS",
-        "CREATE OR REPLACE LUA ADAPTER SCRIPT JSON_VS_ADAPTER AS\n" + adapter_code + "\n/",
-        'CREATE VIRTUAL SCHEMA JSON_VS USING "JVS_VS"."JSON_VS_ADAPTER" WITH ' + " ".join(property_clauses),
-    ])
     for stmt in statements:
         con.execute(stmt)
 

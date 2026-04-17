@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = ROOT / "examples" / "json_is_explicit_null_preprocessor.sql"
+DEFAULT_OUTPUT = ROOT / "dist" / "json_preprocessor.sql"
 IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
 
@@ -16,7 +16,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Generate an installable Exasol SQL preprocessor script that rewrites configured "
-            "JSON helper calls and navigation syntax for the JSON query surface."
+            "JSON helper calls and navigation syntax for the JSON query surface. This is the "
+            "shared low-level generator used by the wrapper package tooling."
         )
     )
     parser.add_argument("--schema", default="JVS_PP", help="Schema that will own the preprocessor script.")
@@ -51,13 +52,13 @@ def parse_args() -> argparse.Namespace:
         help='Rewrite quoted dotted identifiers like "child.value" and array access like "items[0].value".',
     )
     parser.add_argument(
-        "--virtual-schema",
-        dest="virtual_schemas",
+        "--allowed-schema",
+        dest="allowed_schemas",
         action="append",
         default=None,
         help=(
-            "Virtual schema name that is allowed to use the JSON helper/path syntax. "
-            "Repeat to allow multiple virtual schemas. Default: JSON_VS."
+            "Schema name that is allowed to use the JSON helper/path syntax. "
+            "Repeat to allow multiple schemas. Default: JSON_VIEW."
         ),
     )
     parser.add_argument(
@@ -416,7 +417,7 @@ COMMON_LUA = """
         return out
     end
 
-    local function table_reference_is_allowed_virtual_schema(table_reference)
+    local function table_reference_is_in_allowed_schema(table_reference)
         if table_reference == nil or table_reference.schema_name == nil then
             return false
         end
@@ -438,10 +439,10 @@ COMMON_LUA = """
         return helper_schema_name_for_schema_name(table_reference.schema_name)
     end
 
-    local function collect_allowed_virtual_table_references(table_references)
+    local function collect_allowed_table_references(table_references)
         local out = {}
         for _, table_reference in ipairs(table_references) do
-            if table_reference_is_allowed_virtual_schema(table_reference) then
+            if table_reference_is_in_allowed_schema(table_reference) then
                 out[#out + 1] = table_reference
             end
         end
@@ -858,7 +859,7 @@ JOIN_MODE_LUA = """
 
         local tokens = sqlparsing.tokenize(placeholder_sql)
         local table_references = collect_top_level_table_references(tokens)
-        local allowed_references = collect_allowed_virtual_table_references(table_references)
+        local allowed_references = collect_allowed_table_references(table_references)
         if #allowed_references == 0 then
             raise_scope_error(
                 "JSON path syntax",
@@ -868,7 +869,7 @@ JOIN_MODE_LUA = """
         local base_table = read_table_reference(tokens)
         if base_table == nil then
             error("JVS-PATH-ERROR: Path rewrite currently requires a query with a single base table in FROM.", 0)
-        elseif not table_reference_is_allowed_virtual_schema(base_table) then
+        elseif not table_reference_is_in_allowed_schema(base_table) then
             raise_scope_error(
                 "JSON path syntax",
                 'Path rewriting currently requires the base table in FROM to be one of the configured JSON schemas.'
@@ -1160,7 +1161,7 @@ ARRAY_ITERATION_LUA = """
             has_row_id = true,
             helper_schema_name = nil
         }
-        if table_reference_is_allowed_virtual_schema({
+        if table_reference_is_in_allowed_schema({
             schema_name = binding.schema_name
         }) then
             binding.kind = "json_source"
@@ -1702,7 +1703,7 @@ MARKER_HELPER_REWRITE_LUA = """
                 elseif not has_expression_argument(tokens, call.opening_paren, closing_paren) then
                     raise_function_error(call.last_identifier, "Expected exactly one argument.")
                 else
-                    local helper_allowed, helper_scope_message = helper_query_targets_allowed_virtual_schema(original_sqltext)
+                    local helper_allowed, helper_scope_message = helper_query_targets_allowed_schema(original_sqltext)
                     if not helper_allowed then
                         raise_scope_error("JSON helper functions", helper_scope_message)
                     end
@@ -2017,7 +2018,7 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
                 elseif not has_expression_argument(tokens, call.opening_paren, closing_paren) then
                     raise_function_error(call.last_identifier, "Expected exactly one argument.")
                 else
-                    local helper_allowed, helper_scope_message = helper_query_targets_allowed_virtual_schema(original_sqltext)
+                    local helper_allowed, helper_scope_message = helper_query_targets_allowed_schema(original_sqltext)
                     if not helper_allowed then
                         raise_scope_error("JSON helper functions", helper_scope_message)
                     end
@@ -2087,7 +2088,7 @@ def render_sql(
     function_names: list[str],
     blocked_function_names: list[str],
     blocked_function_message: str,
-    virtual_schemas: list[str],
+    allowed_schemas: list[str],
     helper_schema_map: dict[str, str],
     wrapper_group_config: dict[str, dict[str, dict[str, object]]] | None,
     rewrite_path_identifiers: bool,
@@ -2101,10 +2102,10 @@ def render_sql(
     blocked_function_rows = "\n".join(f"        {name} = true," for name in blocked_function_names)
     blocked_function_set_lua = "{\n" + blocked_function_rows + "\n    }"
     blocked_function_list_sql = ", ".join(blocked_function_names) if blocked_function_names else "(none)"
-    virtual_schema_rows = "\n".join(f"        {name} = true," for name in virtual_schemas)
-    virtual_schema_set_lua = "{\n" + virtual_schema_rows + "\n    }"
-    virtual_schema_list_sql = ", ".join(virtual_schemas)
-    example_allowed_schema = virtual_schemas[0] if virtual_schemas else "JSON_VS"
+    allowed_schema_rows = "\n".join(f"        {name} = true," for name in allowed_schemas)
+    allowed_schema_set_lua = "{\n" + allowed_schema_rows + "\n    }"
+    allowed_schema_list_sql = ", ".join(allowed_schemas)
+    example_allowed_schema = allowed_schemas[0] if allowed_schemas else "JSON_VIEW"
     helper_schema_rows = "\n".join(
         f"        {public_schema} = {helper_schema!r},"
         for public_schema, helper_schema in sorted(helper_schema_map.items())
@@ -2120,7 +2121,7 @@ def render_sql(
     if wrapper_group_config:
         helper_mode = "wrapper semantic helpers" if has_variant_helpers else "wrapper explicit-null joins"
     else:
-        helper_mode = "virtual-schema CASE marker"
+        helper_mode = "CASE-marker compatibility helpers"
     if not rewrite_path_identifiers:
         path_comment = "disabled"
         path_lua = DISABLED_MODE_LUA
@@ -2137,14 +2138,14 @@ def render_sql(
 -- SELECT
 --   CAST("id" AS VARCHAR(10)),
 --   CASE WHEN {configured_function_names[0]}("note") THEN '1' ELSE '0' END
--- FROM JSON_VS.SAMPLE
+-- FROM {example_allowed_schema}.SAMPLE
 -- ORDER BY "id";""" if configured_function_names else "-- Example helper functions: disabled in this build."
 
     return f"""-- Generated by tools/generate_preprocessor_sql.py
 -- Rewrites configured helper calls and JSON navigation syntax before SQL compilation.
 -- Configured function names: {function_list_sql}
 -- Blocked function names: {blocked_function_list_sql}
--- JSON syntax allowed only for configured JSON schemas: {virtual_schema_list_sql}
+-- JSON syntax allowed only for configured JSON schemas: {allowed_schema_list_sql}
 -- Helper schema mappings: {helper_schema_comment}
 -- Helper rewrite mode: {helper_mode}
 -- Path identifier rewrite: {path_comment}
@@ -2155,8 +2156,8 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
     local HELPER_KIND_BY_NAME = {helper_kind_map_lua}
     local BLOCKED_FUNCTIONS = {blocked_function_set_lua}
     local BLOCKED_FUNCTION_MESSAGE = {blocked_function_message!r}
-    local ALLOWED_JSON_SCHEMAS = {virtual_schema_set_lua}
-    local ALLOWED_JSON_SCHEMA_LIST = {virtual_schema_list_sql!r}
+    local ALLOWED_JSON_SCHEMAS = {allowed_schema_set_lua}
+    local ALLOWED_JSON_SCHEMA_LIST = {allowed_schema_list_sql!r}
     local EXAMPLE_ALLOWED_SCHEMA = {example_allowed_schema!r}
     local HELPER_SCHEMA_BY_ALLOWED_SCHEMA = {helper_schema_map_lua}
     local GROUP_CONFIG_BY_SCHEMA_AND_TABLE = {wrapper_group_config_lua}
@@ -2278,13 +2279,13 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
         return false
     end
 
-    local function helper_query_targets_allowed_virtual_schema(sqltext)
+    local function helper_query_targets_allowed_schema(sqltext)
         local path_tokens = tokenize_path_sql(sqltext)
         local base_table = read_base_table_reference_from_path_tokens(path_tokens)
         if base_table == nil then
             return false, json_schema_scope_example()
         end
-        if not table_reference_is_allowed_virtual_schema(base_table) then
+        if not table_reference_is_in_allowed_schema(base_table) then
             return false, json_schema_scope_example()
         end
         return true, nil
@@ -2343,13 +2344,13 @@ def main() -> None:
     overlapping_functions = sorted(set(function_names) & set(blocked_function_names))
     if overlapping_functions:
         raise SystemExit("Function names cannot be both rewritten and blocked: " + ", ".join(overlapping_functions))
-    raw_virtual_schemas = args.virtual_schemas or ["JSON_VS"]
-    virtual_schemas = [validate_identifier("Virtual schema name", value) for value in raw_virtual_schemas]
+    raw_allowed_schemas = args.allowed_schemas or ["JSON_VIEW"]
+    allowed_schemas = [validate_identifier("Allowed schema name", value) for value in raw_allowed_schemas]
     helper_schema_map = dict(validate_helper_schema_map(value) for value in (args.helper_schema_maps or []))
-    unknown_helper_mappings = sorted(set(helper_schema_map) - set(virtual_schemas))
+    unknown_helper_mappings = sorted(set(helper_schema_map) - set(allowed_schemas))
     if unknown_helper_mappings:
         raise SystemExit(
-            "Helper schema mappings may only target configured virtual/public schemas: "
+            "Helper schema mappings may only target configured allowed schemas: "
             + ", ".join(unknown_helper_mappings)
         )
     sql = render_sql(
@@ -2358,7 +2359,7 @@ def main() -> None:
         function_names,
         blocked_function_names,
         args.blocked_function_message or "This helper is not available in this build.",
-        virtual_schemas,
+        allowed_schemas,
         helper_schema_map,
         None,
         args.rewrite_path_identifiers,

@@ -47,12 +47,15 @@ Upstream examples worth checking first:
 If you are working in this repository, also inspect:
 
 - `tools/generate_preprocessor_sql.py`
-- `examples/json_is_explicit_null_preprocessor.sql`
-- `examples/json_path_preprocessor.sql`
-- `tools/test_nano_preprocessor.py`
-- `tools/test_nano_preprocessor_join_paths.py`
-- `tools/test_nano_e2e.py`
-- `submission/udf-pushdown-stripping-mre/README.md`
+- `tools/generate_wrapper_preprocessor_sql.py`
+- `tools/generate_wrapper_views_sql.py`
+- `tools/wrapper_package_tool.py`
+- `examples/json_wrapper_preprocessor.sql`
+- `examples/json_wrapper_views.sql`
+- `examples/json_wrapper_package.json`
+- `tests/test_wrapper_surface.py`
+- `tests/test_wrapper_errors.py`
+- `tests/test_wrapper_evaluation.py`
 
 ## Mental Model
 
@@ -419,12 +422,11 @@ Validate it against a live Exasol instance because the most important boundaries
 
 If you are working in this repository, the main live checks are:
 
-- `python3 tools/test_nano_preprocessor.py`
-- `python3 tools/test_nano_preprocessor_join_paths.py`
-- `python3 tools/test_nano_e2e.py`
-- `python3 tools/test_nano_udf_pushdown_mre.py`
-- `python3 tools/study_preprocessor_only_feasibility.py`
-- `python3 tools/study_preprocessor_only_performance.py`
+- `python3 tests/test_wrapper_surface.py`
+- `python3 tests/test_wrapper_errors.py`
+- `python3 tests/test_wrapper_evaluation.py`
+- `python3 tests/test_wrapper_package_tool.py`
+- `python3 tests/study_wrapper_performance.py`
 
 ## Repo-Specific Guidance For This Repository
 
@@ -433,10 +435,7 @@ If the task is in this repository, reuse the existing generator unless the task 
 - `tools/generate_preprocessor_sql.py` already produces installable Lua preprocessors
 - it supports configurable helper names
 - it uses join-based path rewrites for dotted paths and bracket access
-- this repo now also documents a wrapper-view + preprocessor alternative in:
-  - `preprocessor-only-feasibility-study.md`
-  - `dist/preprocessor_only_feasibility_results.json`
-  - `dist/preprocessor_only_performance_results.json`
+- this repository is organized around the wrapper-view + preprocessor package architecture
 
 If you change the generated Lua:
 

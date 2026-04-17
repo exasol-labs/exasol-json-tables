@@ -2,15 +2,9 @@
 
 import subprocess
 
-from nano_support import (
-    ROOT,
-    bundle_adapter,
-    install_preprocessor,
-    connect,
-    install_virtual_schema_fixture,
-    install_wrapper_preprocessor,
-    install_wrapper_views,
-)
+import _bootstrap  # noqa: F401
+
+from nano_support import ROOT, connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
 
 
 PUBLIC_WRAPPER_SCHEMA = "JSON_VIEW"
@@ -26,18 +20,10 @@ def assert_equal(actual, expected, label: str) -> None:
         raise AssertionError(f"{label} mismatch.\nExpected: {expected}\nActual:   {actual}")
 
 
-def fetch_all(sql: str, *, wrapper: bool) -> list[tuple]:
+def fetch_all(sql: str) -> list[tuple]:
     con = connect()
     try:
-        if wrapper:
-            install_wrapper_preprocessor(con, [PUBLIC_WRAPPER_SCHEMA], [HELPER_WRAPPER_SCHEMA])
-        else:
-            install_preprocessor(
-                con,
-                function_names=["JSON_IS_EXPLICIT_NULL"],
-                rewrite_path_identifiers=True,
-                virtual_schemas=["JSON_VS"],
-            )
+        install_wrapper_preprocessor(con, [PUBLIC_WRAPPER_SCHEMA], [HELPER_WRAPPER_SCHEMA])
         return con.execute(sql).fetchall()
     finally:
         con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")
@@ -47,7 +33,7 @@ def fetch_all(sql: str, *, wrapper: bool) -> list[tuple]:
 def main() -> None:
     con = connect()
     try:
-        install_virtual_schema_fixture(con, bundle_adapter(), include_deep_fixture=True)
+        install_source_fixture(con, include_deep_fixture=True)
         manifest = install_wrapper_views(
             con,
             source_schema="JVS_SRC",
@@ -57,10 +43,8 @@ def main() -> None:
         )
         install_wrapper_preprocessor(con, [PUBLIC_WRAPPER_SCHEMA], [HELPER_WRAPPER_SCHEMA])
 
-        if manifest["publicSchema"] != PUBLIC_WRAPPER_SCHEMA:
-            raise AssertionError(f"unexpected public schema in manifest: {manifest['publicSchema']}")
-        if manifest["helperSchema"] != HELPER_WRAPPER_SCHEMA:
-            raise AssertionError(f"unexpected helper schema in manifest: {manifest['helperSchema']}")
+        assert_equal(manifest["publicSchema"], PUBLIC_WRAPPER_SCHEMA, "manifest public schema")
+        assert_equal(manifest["helperSchema"], HELPER_WRAPPER_SCHEMA, "manifest helper schema")
         manifest_roots = sorted(root["tableName"] for root in manifest["roots"])
         assert_equal(manifest_roots, ["DEEPDOC", "SAMPLE"], "manifest root tables")
 
@@ -98,13 +82,11 @@ def main() -> None:
             WHERE COLUMN_SCHEMA = 'JSON_VIEW' AND COLUMN_TABLE = 'SAMPLE'
             ORDER BY COLUMN_ORDINAL_POSITION
         """).fetchall()
-        virtual_columns = con.execute("""
-            SELECT COLUMN_NAME
-            FROM SYS.EXA_ALL_COLUMNS
-            WHERE COLUMN_SCHEMA = 'JSON_VS' AND COLUMN_TABLE = 'SAMPLE'
-            ORDER BY COLUMN_ORDINAL_POSITION
-        """).fetchall()
-        assert_equal(wrapper_columns, virtual_columns, "wrapper vs virtual column names")
+        assert_equal(
+            wrapper_columns,
+            [("_id",), ("id",), ("name",), ("note",), ("child|object",), ("meta|object",), ("value",), ("shape",), ("tags|array",), ("items|array",)],
+            "wrapper SAMPLE column names",
+        )
 
         deep_wrapper_columns = con.execute("""
             SELECT COLUMN_NAME
@@ -112,13 +94,11 @@ def main() -> None:
             WHERE COLUMN_SCHEMA = 'JSON_VIEW' AND COLUMN_TABLE = 'DEEPDOC'
             ORDER BY COLUMN_ORDINAL_POSITION
         """).fetchall()
-        deep_virtual_columns = con.execute("""
-            SELECT COLUMN_NAME
-            FROM SYS.EXA_ALL_COLUMNS
-            WHERE COLUMN_SCHEMA = 'JSON_VS' AND COLUMN_TABLE = 'DEEPDOC'
-            ORDER BY COLUMN_ORDINAL_POSITION
-        """).fetchall()
-        assert_equal(deep_wrapper_columns, deep_virtual_columns, "deep wrapper vs virtual column names")
+        assert_equal(
+            deep_wrapper_columns,
+            [("_id",), ("doc_id",), ("title",), ("profile|object",), ("chain|object",), ("tags|array",), ("metrics|array",)],
+            "wrapper DEEPDOC column names",
+        )
 
         helper_relationships = con.execute(f"""
             SELECT ROOT_TABLE, PARENT_TABLE, CHILD_TABLE, SEGMENT_NAME, RELATION_KIND
@@ -142,11 +122,11 @@ def main() -> None:
 
     packaged_sql = (ROOT / "dist" / "json_wrapper_preprocessor_packaged_test.sql").read_text()
     if "Configured function names: JSON_IS_EXPLICIT_NULL, JNULL, JSON_TYPEOF, JSON_AS_VARCHAR, JSON_AS_DECIMAL, JSON_AS_BOOLEAN" not in packaged_sql:
-        raise AssertionError("packaged wrapper preprocessor should enable Phase 4 helper aliases")
+        raise AssertionError("packaged wrapper preprocessor should enable the standard wrapper helper aliases")
     if "JSON syntax allowed only for configured JSON schemas: JSON_VIEW" not in packaged_sql:
         raise AssertionError("packaged wrapper preprocessor should be scoped to the public wrapper schema")
     if "Helper rewrite mode: wrapper semantic helpers" not in packaged_sql:
-        raise AssertionError("packaged wrapper preprocessor should use wrapper semantic helper rewrite mode in Phase 4")
+        raise AssertionError("packaged wrapper preprocessor should use wrapper semantic helper rewrite mode")
     if "\nALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = " in packaged_sql:
         raise AssertionError("packaged wrapper preprocessor should not auto-activate by default")
 
@@ -181,22 +161,7 @@ def main() -> None:
     if "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSOR;" not in activated_sql:
         raise AssertionError("expected activated wrapper package output to include explicit activation SQL")
 
-    normalized_virtual_rows = fetch_all("""
-        SELECT
-          CAST("_id" AS VARCHAR(20)) AS root_id,
-          CAST("id" AS VARCHAR(20)) AS doc_id,
-          COALESCE("name", 'NULL') AS name_value,
-          COALESCE("note", 'NULL') AS note_value,
-          COALESCE(CAST("child|object" AS VARCHAR(20)), 'NULL') AS child_ref,
-          COALESCE(CAST("meta|object" AS VARCHAR(20)), 'NULL') AS meta_ref,
-          COALESCE(CAST("value" AS VARCHAR(100)), 'NULL') AS value_text,
-          COALESCE(CAST("shape" AS VARCHAR(100)), 'NULL') AS shape_text,
-          COALESCE(CAST("tags|array" AS VARCHAR(20)), 'NULL') AS tags_size,
-          COALESCE(CAST("items|array" AS VARCHAR(20)), 'NULL') AS items_size
-        FROM JSON_VS.SAMPLE
-        ORDER BY "id"
-    """, wrapper=False)
-    normalized_wrapper_rows = fetch_all("""
+    normalized_rows = fetch_all("""
         SELECT
           CAST("_id" AS VARCHAR(20)) AS root_id,
           CAST("id" AS VARCHAR(20)) AS doc_id,
@@ -210,47 +175,25 @@ def main() -> None:
           COALESCE(CAST("items|array" AS VARCHAR(20)), 'NULL') AS items_size
         FROM JSON_VIEW.SAMPLE
         ORDER BY "id"
-    """, wrapper=True)
-    assert_equal(normalized_wrapper_rows, normalized_virtual_rows, "normalized select star parity")
+    """)
+    assert_equal(
+        normalized_rows,
+        [("1", "1", "alpha", "x", "1", "10", "42", "10", "2", "2"), ("2", "2", "beta", "NULL", "NULL", "20", "43", "3", "1", "1"), ("3", "3", "gamma", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL")],
+        "normalized wrapper rows",
+    )
 
-    path_virtual = fetch_all("""
+    path_rows = fetch_all("""
         SELECT
           CAST("id" AS VARCHAR(10)) AS doc_id,
           COALESCE("child.value", 'NULL') AS child_value,
-          CASE
-            WHEN "meta.info.note" IS NULL THEN 'NULL'
-            ELSE "meta.info.note"
-          END AS deep_note,
-          COALESCE("tags[LAST]", 'NULL') AS last_tag
-        FROM JSON_VS.SAMPLE
-        ORDER BY "id"
-    """, wrapper=False)
-    path_wrapper = fetch_all("""
-        SELECT
-          CAST("id" AS VARCHAR(10)) AS doc_id,
-          COALESCE("child.value", 'NULL') AS child_value,
-          CASE
-            WHEN "meta.info.note" IS NULL THEN 'NULL'
-            ELSE "meta.info.note"
-          END AS deep_note,
+          CASE WHEN "meta.info.note" IS NULL THEN 'NULL' ELSE "meta.info.note" END AS deep_note,
           COALESCE("tags[LAST]", 'NULL') AS last_tag
         FROM JSON_VIEW.SAMPLE
         ORDER BY "id"
-    """, wrapper=True)
-    assert_equal(path_wrapper, path_virtual, "path syntax parity")
+    """)
+    assert_equal(path_rows, [("1", "child-1", "deep", "blue"), ("2", "NULL", "NULL", "green"), ("3", "NULL", "NULL", "NULL")], "path syntax")
 
-    array_virtual = fetch_all("""
-        SELECT
-          CAST("id" AS VARCHAR(10)) AS doc_id,
-          COALESCE("tags[FIRST]", 'NULL') AS first_tag,
-          COALESCE("tags[LAST]", 'NULL') AS last_tag,
-          COALESCE(CAST("tags[SIZE]" AS VARCHAR(20)), 'NULL') AS tag_count,
-          COALESCE("items[LAST].value", 'NULL') AS last_item_value,
-          COALESCE("meta.items[LAST].value", 'NULL') AS last_meta_item_value
-        FROM JSON_VS.SAMPLE
-        ORDER BY "id"
-    """, wrapper=False)
-    array_wrapper = fetch_all("""
+    array_rows = fetch_all("""
         SELECT
           CAST("id" AS VARCHAR(10)) AS doc_id,
           COALESCE("tags[FIRST]", 'NULL') AS first_tag,
@@ -260,20 +203,10 @@ def main() -> None:
           COALESCE("meta.items[LAST].value", 'NULL') AS last_meta_item_value
         FROM JSON_VIEW.SAMPLE
         ORDER BY "id"
-    """, wrapper=True)
-    assert_equal(array_wrapper, array_virtual, "array syntax parity")
+    """)
+    assert_equal(array_rows, [("1", "red", "blue", "2", "second", "m2"), ("2", "green", "green", "1", "only", "m3"), ("3", "NULL", "NULL", "NULL", "NULL", "NULL")], "array syntax")
 
-    rowset_virtual = fetch_all("""
-        SELECT
-          CAST(s."id" AS VARCHAR(10)),
-          CAST(item._index AS VARCHAR(10)),
-          item.value,
-          item.label
-        FROM JSON_VS.SAMPLE s
-        JOIN item IN s."items"
-        ORDER BY s."id", item._index
-    """, wrapper=False)
-    rowset_wrapper = fetch_all("""
+    rowset_rows = fetch_all("""
         SELECT
           CAST(s."id" AS VARCHAR(10)),
           CAST(item._index AS VARCHAR(10)),
@@ -282,20 +215,10 @@ def main() -> None:
         FROM JSON_VIEW.SAMPLE s
         JOIN item IN s."items"
         ORDER BY s."id", item._index
-    """, wrapper=True)
-    assert_equal(rowset_wrapper, rowset_virtual, "rowset syntax parity")
+    """)
+    assert_equal(rowset_rows, [("1", "0", "first", "A"), ("1", "1", "second", "B"), ("2", "0", "only", "C")], "rowset syntax")
 
-    deep_path_virtual = fetch_all(f"""
-        SELECT
-          CAST("doc_id" AS VARCHAR(10)) AS doc_id,
-          COALESCE("profile.prefs.theme", 'NULL') AS theme_value,
-          COALESCE({DEEP_LEAF_PATH}, 'NULL') AS deep_leaf_value,
-          COALESCE({DEEP_ENTRY_LAST_VALUE_PATH}, 'NULL') AS deep_last_entry,
-          COALESCE(CAST({DEEP_ENTRY_SIZE_PATH} AS VARCHAR(20)), 'NULL') AS deep_entry_size
-        FROM JSON_VS.DEEPDOC
-        ORDER BY "doc_id"
-    """, wrapper=False)
-    deep_path_wrapper = fetch_all(f"""
+    deep_path_rows = fetch_all(f"""
         SELECT
           CAST("doc_id" AS VARCHAR(10)) AS doc_id,
           COALESCE("profile.prefs.theme", 'NULL') AS theme_value,
@@ -304,23 +227,10 @@ def main() -> None:
           COALESCE(CAST({DEEP_ENTRY_SIZE_PATH} AS VARCHAR(20)), 'NULL') AS deep_entry_size
         FROM JSON_VIEW.DEEPDOC
         ORDER BY "doc_id"
-    """, wrapper=True)
-    assert_equal(deep_path_wrapper, deep_path_virtual, "deep path parity")
+    """)
+    assert_equal(deep_path_rows, [("101", "dark", "bottom", "e2", "3"), ("102", "NULL", "NULL", "other", "1"), ("103", "NULL", "NULL", "NULL", "NULL")], "deep path syntax")
 
-    deep_rowset_virtual = fetch_all(f"""
-        SELECT
-          CAST(d."doc_id" AS VARCHAR(10)) AS doc_id,
-          CAST(entry._index AS VARCHAR(10)) AS entry_index,
-          entry.value,
-          entry.kind,
-          COALESCE(CAST(extra._index AS VARCHAR(10)), 'NULL') AS extra_index,
-          COALESCE(extra, 'NULL') AS extra_value
-        FROM JSON_VS.DEEPDOC d
-        JOIN entry IN {DEEP_ENTRY_ARRAY_PATH}
-        LEFT JOIN VALUE extra IN entry."extras"
-        ORDER BY d."doc_id", entry._index, extra._index
-    """, wrapper=False)
-    deep_rowset_wrapper = fetch_all(f"""
+    deep_rowset_rows = fetch_all(f"""
         SELECT
           CAST(d."doc_id" AS VARCHAR(10)) AS doc_id,
           CAST(entry._index AS VARCHAR(10)) AS entry_index,
@@ -332,19 +242,14 @@ def main() -> None:
         JOIN entry IN {DEEP_ENTRY_ARRAY_PATH}
         LEFT JOIN VALUE extra IN entry."extras"
         ORDER BY d."doc_id", entry._index, extra._index
-    """, wrapper=True)
-    assert_equal(deep_rowset_wrapper, deep_rowset_virtual, "deep rowset parity")
+    """)
+    assert_equal(
+        deep_rowset_rows,
+        [("101", "0", "e0", "root", "0", "x0"), ("101", "0", "e0", "root", "1", "x1"), ("101", "1", "e1", "mid", "NULL", "NULL"), ("101", "2", "e2", "tail", "0", "tail-extra"), ("102", "0", "other", "solo", "0", "solo-extra")],
+        "deep rowset syntax",
+    )
 
-    explicit_null_virtual = fetch_all("""
-        SELECT
-          CAST("id" AS VARCHAR(10)) AS doc_id,
-          CASE WHEN JSON_IS_EXPLICIT_NULL("note") THEN '1' ELSE '0' END AS note_explicit_null,
-          CASE WHEN "note" IS NULL AND NOT JSON_IS_EXPLICIT_NULL("note") THEN '1' ELSE '0' END AS note_missing,
-          CASE WHEN JSON_IS_EXPLICIT_NULL("value") THEN '1' ELSE '0' END AS value_explicit_null
-        FROM JSON_VS.SAMPLE
-        ORDER BY "id"
-    """, wrapper=False)
-    explicit_null_wrapper = fetch_all("""
+    explicit_null_rows = fetch_all("""
         SELECT
           CAST("id" AS VARCHAR(10)) AS doc_id,
           CASE WHEN JSON_IS_EXPLICIT_NULL("note") THEN '1' ELSE '0' END AS note_explicit_null,
@@ -352,20 +257,10 @@ def main() -> None:
           CASE WHEN JSON_IS_EXPLICIT_NULL("value") THEN '1' ELSE '0' END AS value_explicit_null
         FROM JSON_VIEW.SAMPLE
         ORDER BY "id"
-    """, wrapper=True)
-    assert_equal(explicit_null_wrapper, explicit_null_virtual, "root explicit-null parity")
+    """)
+    assert_equal(explicit_null_rows, [("1", "0", "0", "0"), ("2", "1", "0", "0"), ("3", "0", "1", "1")], "root explicit-null semantics")
 
-    deep_explicit_null_virtual = fetch_all(f"""
-        SELECT
-          CAST("doc_id" AS VARCHAR(10)) AS doc_id,
-          CASE WHEN JSON_IS_EXPLICIT_NULL("profile.nickname") THEN '1' ELSE '0' END AS profile_explicit_null,
-          CASE WHEN "profile.nickname" IS NULL AND NOT JSON_IS_EXPLICIT_NULL("profile.nickname") THEN '1' ELSE '0' END AS profile_missing,
-          CASE WHEN JSON_IS_EXPLICIT_NULL({DEEP_LEAF_PATH}) THEN '1' ELSE '0' END AS deep_explicit_null,
-          CASE WHEN {DEEP_LEAF_PATH} IS NULL AND NOT JSON_IS_EXPLICIT_NULL({DEEP_LEAF_PATH}) THEN '1' ELSE '0' END AS deep_missing
-        FROM JSON_VS.DEEPDOC
-        ORDER BY "doc_id"
-    """, wrapper=False)
-    deep_explicit_null_wrapper = fetch_all(f"""
+    deep_explicit_null_rows = fetch_all(f"""
         SELECT
           CAST("doc_id" AS VARCHAR(10)) AS doc_id,
           CASE WHEN JSON_IS_EXPLICIT_NULL("profile.nickname") THEN '1' ELSE '0' END AS profile_explicit_null,
@@ -374,21 +269,10 @@ def main() -> None:
           CASE WHEN {DEEP_LEAF_PATH} IS NULL AND NOT JSON_IS_EXPLICIT_NULL({DEEP_LEAF_PATH}) THEN '1' ELSE '0' END AS deep_missing
         FROM JSON_VIEW.DEEPDOC
         ORDER BY "doc_id"
-    """, wrapper=True)
-    assert_equal(deep_explicit_null_wrapper, deep_explicit_null_virtual, "deep explicit-null parity")
+    """)
+    assert_equal(deep_explicit_null_rows, [("101", "1", "0", "0", "0"), ("102", "0", "1", "1", "0"), ("103", "0", "1", "0", "1")], "deep explicit-null semantics")
 
-    root_variant_virtual = fetch_all("""
-        SELECT
-          CAST("id" AS VARCHAR(10)) AS doc_id,
-          COALESCE(TYPEOF("value"), 'MISSING') AS value_type,
-          COALESCE(CAST("value" AS VARCHAR(100)), 'NULL') AS value_text,
-          COALESCE(CAST(CAST("value" AS DECIMAL(36,18)) AS VARCHAR(60)), 'NULL') AS value_decimal,
-          COALESCE(TYPEOF("shape"), 'MISSING') AS shape_type,
-          COALESCE(CAST("meta.flag" AS VARCHAR(10)), 'NULL') AS meta_flag
-        FROM JSON_VS.SAMPLE
-        ORDER BY "id"
-    """, wrapper=False)
-    root_variant_wrapper = fetch_all("""
+    root_variant_rows = fetch_all("""
         SELECT
           CAST("id" AS VARCHAR(10)) AS doc_id,
           COALESCE(JSON_TYPEOF("value"), 'MISSING') AS value_type,
@@ -398,21 +282,10 @@ def main() -> None:
           COALESCE(CAST(JSON_AS_BOOLEAN("meta.flag") AS VARCHAR(10)), 'NULL') AS meta_flag
         FROM JSON_VIEW.SAMPLE
         ORDER BY "id"
-    """, wrapper=True)
-    assert_equal(root_variant_wrapper, root_variant_virtual, "root variant parity")
+    """)
+    assert_equal(root_variant_rows, [("1", "NUMBER", "42", "42", "OBJECT", "TRUE"), ("2", "STRING", "43", "43", "ARRAY", "FALSE"), ("3", "NULL", "NULL", "NULL", "MISSING", "NULL")], "root variant semantics")
 
-    deep_variant_virtual = fetch_all(f"""
-        SELECT
-          CAST("doc_id" AS VARCHAR(10)) AS doc_id,
-          COALESCE(CAST("profile.nickname" AS VARCHAR(100)), 'NULL') AS profile_nickname_value,
-          COALESCE(CAST({DEEP_LEAF_PATH} AS VARCHAR(100)), 'NULL') AS deep_leaf_value,
-          COALESCE(TYPEOF("chain.next.next.next.next.next.next.next.reading"), 'MISSING') AS reading_type,
-          COALESCE(CAST("chain.next.next.next.next.next.next.next.reading" AS VARCHAR(100)), 'NULL') AS reading_text,
-          COALESCE(CAST(CAST("chain.next.next.next.next.next.next.next.reading" AS DECIMAL(36,18)) AS VARCHAR(60)), 'NULL') AS reading_decimal
-        FROM JSON_VS.DEEPDOC
-        ORDER BY "doc_id"
-    """, wrapper=False)
-    deep_variant_wrapper = fetch_all(f"""
+    deep_variant_rows = fetch_all(f"""
         SELECT
           CAST("doc_id" AS VARCHAR(10)) AS doc_id,
           COALESCE(JSON_AS_VARCHAR("profile.nickname"), 'NULL') AS profile_nickname_value,
@@ -422,26 +295,18 @@ def main() -> None:
           COALESCE(CAST(JSON_AS_DECIMAL("chain.next.next.next.next.next.next.next.reading") AS VARCHAR(60)), 'NULL') AS reading_decimal
         FROM JSON_VIEW.DEEPDOC
         ORDER BY "doc_id"
-    """, wrapper=True)
-    assert_equal(deep_variant_wrapper, deep_variant_virtual, "deep variant parity")
+    """)
+    assert_equal(deep_variant_rows, [("101", "NULL", "bottom", "NUMBER", "100", "100"), ("102", "NULL", "NULL", "STRING", "101", "101"), ("103", "NULL", "NULL", "MISSING", "NULL", "NULL")], "deep variant semantics")
 
-    deep_filter_virtual = fetch_all(f"""
-        SELECT CAST("doc_id" AS VARCHAR(10)) AS doc_id
-        FROM JSON_VS.DEEPDOC
-        WHERE "tags[LAST]" = 'gamma'
-           OR {DEEP_ENTRY_LAST_VALUE_PATH} = 'other'
-           OR "metrics[SIZE]" = 1
-        ORDER BY "doc_id"
-    """, wrapper=False)
-    deep_filter_wrapper = fetch_all(f"""
+    deep_filter_rows = fetch_all(f"""
         SELECT CAST("doc_id" AS VARCHAR(10)) AS doc_id
         FROM JSON_VIEW.DEEPDOC
         WHERE "tags[LAST]" = 'gamma'
            OR {DEEP_ENTRY_LAST_VALUE_PATH} = 'other'
            OR "metrics[SIZE]" = 1
         ORDER BY "doc_id"
-    """, wrapper=True)
-    assert_equal(deep_filter_wrapper, deep_filter_virtual, "deep filter parity")
+    """)
+    assert_equal(deep_filter_rows, [("101",), ("102",)], "deep filter semantics")
 
     udf_wrapper = fetch_all("""
         SELECT
@@ -450,23 +315,23 @@ def main() -> None:
         FROM JSON_VIEW.SAMPLE
         WHERE COALESCE("child.value", 'NULL') <> 'NULL'
         ORDER BY "id"
-    """, wrapper=True)
+    """)
     assert_equal(udf_wrapper, [("1", "child-1")], "wrapper path query should behave like ordinary SQL surface")
 
-    print("-- wrapper phase 4 parity --")
+    print("-- wrapper surface regression --")
     print("manifest roots:", manifest_roots)
     print("public tables:", public_tables)
     print("columns:", wrapper_columns)
-    print("normalized rows:", normalized_wrapper_rows)
-    print("path parity:", path_wrapper)
-    print("array parity:", array_wrapper)
-    print("rowset parity:", rowset_wrapper)
-    print("deep path parity:", deep_path_wrapper)
-    print("deep rowset parity:", deep_rowset_wrapper)
-    print("root explicit-null parity:", explicit_null_wrapper)
-    print("deep explicit-null parity:", deep_explicit_null_wrapper)
-    print("root variant parity:", root_variant_wrapper)
-    print("deep variant parity:", deep_variant_wrapper)
+    print("normalized rows:", normalized_rows)
+    print("path rows:", path_rows)
+    print("array rows:", array_rows)
+    print("rowset rows:", rowset_rows)
+    print("deep path rows:", deep_path_rows)
+    print("deep rowset rows:", deep_rowset_rows)
+    print("root explicit-null rows:", explicit_null_rows)
+    print("deep explicit-null rows:", deep_explicit_null_rows)
+    print("root variant rows:", root_variant_rows)
+    print("deep variant rows:", deep_variant_rows)
 
 
 if __name__ == "__main__":
