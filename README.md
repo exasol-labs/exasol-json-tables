@@ -277,6 +277,54 @@ JOIN item IN s."items"
 ORDER BY s."id", item._index;
 ```
 
+### Modeling-Friendly SQL
+
+The same surface is intended to work in the shapes people actually use for silver/gold models:
+
+```sql
+WITH item_features AS (
+  SELECT
+    CAST(s."id" AS VARCHAR(10)) AS doc_id,
+    CAST(item._index AS VARCHAR(10)) AS item_index,
+    COALESCE(JSON_TYPEOF(item."value"), 'MISSING') AS item_value_type,
+    COALESCE(JSON_AS_VARCHAR(item."nested.items[LAST].value"), 'NULL') AS nested_last_value,
+    CASE WHEN JSON_IS_EXPLICIT_NULL(s."note") THEN '1' ELSE '0' END AS root_note_explicit_null
+  FROM JSON_VIEW.SAMPLE s
+  JOIN item IN s."items"
+)
+SELECT *
+FROM item_features
+ORDER BY doc_id, item_index;
+```
+
+In joined queries, qualify root-document helper arguments with the root alias:
+
+```sql
+JSON_IS_EXPLICIT_NULL(s."note")
+JSON_TYPEOF(s."value")
+```
+
+Persisted modeling flows are supported too:
+
+```sql
+CREATE OR REPLACE VIEW JVS_ANALYTICS.ITEM_MODEL AS
+SELECT
+  CAST(s."id" AS VARCHAR(10)) AS doc_id,
+  CAST(item._index AS VARCHAR(10)) AS item_index,
+  JSON_TYPEOF(item."value") AS item_value_type,
+  item."nested.items[LAST].value" AS nested_last_value
+FROM JSON_VIEW.SAMPLE s
+JOIN item IN s."items";
+```
+
+## Known Boundaries
+
+- The preprocessor is session-local. Run `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = ...` in the SQL session where you want wrapper syntax.
+- In joined queries, qualify root-document helper arguments with the root alias, for example `JSON_IS_EXPLICIT_NULL(s."note")`.
+- `VALUE` iterators support plain SQL on the scalar value, but JSON helper/path syntax is intentionally not supported on them.
+- Path/helper syntax does not start from derived-table roots. Move the JSON expression into the inner `SELECT` or query the wrapper view directly.
+- Use `JSON_TYPEOF(...)` and `JSON_AS_*` for JSON-aware variant semantics. Built-in `TYPEOF(...)` and plain `CAST(...)` reflect the wrapper view’s SQL types, not the original per-row JSON type contract.
+
 ## Testing
 
 Install Python test dependencies first:
@@ -382,4 +430,3 @@ Main implementation files:
 - shared preprocessor engine: [tools/generate_preprocessor_sql.py](tools/generate_preprocessor_sql.py)
 - Nano fixture helpers: [tools/nano_support.py](tools/nano_support.py)
 - executable regression and benchmark entrypoints: [tests](tests)
-- JSON query-surface proposal: [json-query-expressiveness-proposal.md](json-query-expressiveness-proposal.md)
