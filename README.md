@@ -134,6 +134,21 @@ python3 tools/wrapper_package_tool.py install \
   --package-config ./dist/json_wrapper_package.json
 ```
 
+The install command now prints an immediate next-step snippet:
+
+- `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = ...`
+- a copy/paste smoke-test query against one of the generated root views
+
+For local/dev verification, you can also ask the installer to activate the preprocessor in its own session and run that smoke test immediately:
+
+```bash
+python3 tools/wrapper_package_tool.py install \
+  --package-config ./dist/json_wrapper_package.json \
+  --activate-session
+```
+
+That convenience activation is session-local to the installer process. For normal interactive work, run the printed `ALTER SESSION ...` in your own SQL session.
+
 Validate the package:
 
 ```bash
@@ -154,6 +169,14 @@ Enable the preprocessor for the current session:
 ```sql
 ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSOR;
 ```
+
+Recommended operator flow:
+
+1. `generate`
+2. `install`
+3. copy/paste the printed activation + smoke-test snippet into your SQL session
+4. `validate --check-installed`
+5. after source-schema changes, regenerate and reinstall the package
 
 ## Generated Artifacts
 

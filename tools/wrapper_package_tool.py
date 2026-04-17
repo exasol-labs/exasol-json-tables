@@ -91,6 +91,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not install the wrapper preprocessor SQL.",
     )
+    install_parser.add_argument(
+        "--activate-session",
+        action="store_true",
+        help=(
+            "After installation, activate the wrapper preprocessor in the installer session and run a smoke-test query. "
+            "This is useful for local/dev verification only; the activation ends when the command exits."
+        ),
+    )
 
     validate_parser = subparsers.add_parser(
         "validate",
@@ -420,6 +428,98 @@ def execute_generated_preprocessor_sql(con, sql_text: str) -> None:
         execute_plain_sql_file(con, suffix_sql)
 
 
+def encode_quoted_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def build_activation_sql(config: dict[str, Any], *, include_semicolon: bool = True) -> str:
+    sql = (
+        "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = "
+        f'{encode_quoted_identifier(config["preprocessor"]["schema"])}.{encode_quoted_identifier(config["preprocessor"]["script"])}'
+    )
+    if include_semicolon:
+        return sql + ";"
+    return sql
+
+
+def iter_scalar_group_names(table: dict[str, Any]) -> list[str]:
+    scalar_names: list[str] = []
+    for group in table.get("groups", []):
+        visible_name = group["visibleName"]
+        if visible_name == "_id":
+            continue
+        if visible_name.endswith("|object") or visible_name.endswith("|array"):
+            continue
+        scalar_names.append(visible_name)
+    return scalar_names
+
+
+def build_smoke_test_query(config: dict[str, Any], manifest: dict[str, Any]) -> str:
+    table_lookup = {table["tableName"]: table for table in manifest["tables"]}
+    wrapper_schema = config["wrapperSchema"]
+
+    for root in sorted(manifest["roots"], key=lambda root: root["publicView"]):
+        relationship_lookup: dict[str, list[dict[str, Any]]] = {}
+        for relationship in root.get("relationships", []):
+            relationship_lookup.setdefault(relationship["parentTable"], []).append(relationship)
+
+        def find_object_scalar_path(table_name: str, prefix: list[str]) -> list[str] | None:
+            object_relationships = [
+                relationship for relationship in relationship_lookup.get(table_name, [])
+                if relationship["relationKind"] == "object"
+            ]
+            for relationship in object_relationships:
+                segment = relationship["segmentName"]
+                child_table = table_lookup.get(relationship["childTable"])
+                if child_table is None:
+                    continue
+                scalar_names = iter_scalar_group_names(child_table)
+                if scalar_names:
+                    return prefix + [segment, scalar_names[0]]
+            for relationship in object_relationships:
+                segment = relationship["segmentName"]
+                child_table = table_lookup.get(relationship["childTable"])
+                if child_table is None:
+                    continue
+                nested_path = find_object_scalar_path(relationship["childTable"], prefix + [segment])
+                if nested_path is not None:
+                    return nested_path
+            return None
+
+        object_path = find_object_scalar_path(root["tableName"], [])
+        if object_path is not None:
+            return (
+                f'SELECT "{ ".".join(object_path) }" '
+                f'FROM {encode_quoted_identifier(wrapper_schema)}.{encode_quoted_identifier(root["publicView"])} '
+                "LIMIT 5;"
+            )
+
+        root_array_relationships = [
+            relationship for relationship in root.get("relationships", [])
+            if relationship["parentTable"] == root["tableName"] and relationship["relationKind"] == "array"
+        ]
+        if root_array_relationships:
+            segment = root_array_relationships[0]["segmentName"]
+            return (
+                f'SELECT "{segment}[SIZE]" '
+                f'FROM {encode_quoted_identifier(wrapper_schema)}.{encode_quoted_identifier(root["publicView"])} '
+                "LIMIT 5;"
+            )
+
+        return (
+            f"SELECT * FROM {encode_quoted_identifier(wrapper_schema)}."
+            f'{encode_quoted_identifier(root["publicView"])} LIMIT 5;'
+        )
+
+    raise SystemExit("Manifest does not contain any root views for the wrapper package.")
+
+
+def print_install_next_steps(config: dict[str, Any], smoke_test_sql: str) -> None:
+    print("Next steps:")
+    print(build_activation_sql(config, include_semicolon=True))
+    print(smoke_test_sql)
+
+
 def validate_package_files(config_path: Path, config: dict[str, Any], manifest_path: Path, views_sql_path: Path, preprocessor_sql_path: Path) -> None:
     if not views_sql_path.exists():
         raise SystemExit(f"Wrapper views SQL file does not exist: {views_sql_path}")
@@ -538,6 +638,9 @@ def command_install(args: argparse.Namespace) -> None:
     ).resolve()
     manifest_path = resolve_configured_path(config_path, config["generatedFiles"]["manifest"]).resolve()
     validate_package_files(config_path, config, manifest_path, views_sql_path, preprocessor_sql_path)
+    manifest = load_manifest_and_validate(config, manifest_path)
+    smoke_test_sql = build_smoke_test_query(config, manifest)
+    smoke_test_rows = None
 
     con = connect_for_generation(args.dsn, args.user, args.password)
     try:
@@ -545,6 +648,9 @@ def command_install(args: argparse.Namespace) -> None:
             execute_plain_sql_file(con, views_sql_path.read_text())
         if not args.skip_preprocessor:
             execute_generated_preprocessor_sql(con, preprocessor_sql_path.read_text())
+        if args.activate_session:
+            con.execute(build_activation_sql(config, include_semicolon=False))
+            smoke_test_rows = con.execute(smoke_test_sql).fetchall()
     finally:
         con.close()
 
@@ -552,6 +658,12 @@ def command_install(args: argparse.Namespace) -> None:
         print(f"Installed {views_sql_path}")
     if not args.skip_preprocessor:
         print(f"Installed {preprocessor_sql_path}")
+    print_install_next_steps(config, smoke_test_sql)
+    if args.activate_session:
+        print("Activated preprocessor in the installer session and ran the smoke test.")
+        print("Activation note: this activation is session-local and ends when the install command exits.")
+        print("Smoke test rows:")
+        print(smoke_test_rows)
 
 
 def command_validate(args: argparse.Namespace) -> None:

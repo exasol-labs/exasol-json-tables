@@ -96,7 +96,7 @@ def main() -> None:
         "targeted preprocessor regeneration",
     )
 
-    subprocess.run(
+    install_result = subprocess.run(
         [
             "python3",
             str(ROOT / "tools" / "wrapper_package_tool.py"),
@@ -105,7 +105,37 @@ def main() -> None:
             str(PACKAGE_CONFIG_PATH),
         ],
         check=True,
+        capture_output=True,
+        text=True,
     )
+    install_stdout = install_result.stdout
+    if "Next steps:" not in install_stdout:
+        raise AssertionError("install output should include a next-step heading")
+    if f'ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = "{PREPROCESSOR_SCHEMA}"."{PREPROCESSOR_SCRIPT}";' not in install_stdout:
+        raise AssertionError("install output should include an activation snippet")
+    if f'FROM "{WRAPPER_SCHEMA}"."DEEPDOC" LIMIT 5;' not in install_stdout:
+        raise AssertionError("install output should include a smoke-test query against the wrapper schema")
+
+    activate_result = subprocess.run(
+        [
+            "python3",
+            str(ROOT / "tools" / "wrapper_package_tool.py"),
+            "install",
+            "--package-config",
+            str(PACKAGE_CONFIG_PATH),
+            "--activate-session",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    activate_stdout = activate_result.stdout
+    if "Activated preprocessor in the installer session and ran the smoke test." not in activate_stdout:
+        raise AssertionError("install --activate-session should confirm activation and smoke test execution")
+    if "Activation note: this activation is session-local" not in activate_stdout:
+        raise AssertionError("install --activate-session should explain the session-local activation scope")
+    if "Smoke test rows:" not in activate_stdout:
+        raise AssertionError("install --activate-session should print smoke test rows")
 
     subprocess.run(
         [
