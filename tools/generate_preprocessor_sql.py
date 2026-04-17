@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Generate an installable Exasol SQL preprocessor script that rewrites configured "
-            "function calls to an explicit-null marker expression for the JSON virtual schema adapter."
+            "JSON helper calls and navigation syntax for the JSON query surface."
         )
     )
     parser.add_argument("--schema", default="JVS_PP", help="Schema that will own the preprocessor script.")
@@ -27,6 +27,23 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=None,
         help="Function name to rewrite. Repeat to install aliases. Default: JSON_IS_EXPLICIT_NULL.",
+    )
+    parser.add_argument(
+        "--disable-function-helpers",
+        action="store_true",
+        help="Do not install JSON helper function rewrites; generate only path / array syntax support.",
+    )
+    parser.add_argument(
+        "--blocked-function-name",
+        dest="blocked_function_names",
+        action="append",
+        default=None,
+        help="Function name that should fail fast with a clear preprocessor error instead of reaching SQL resolution.",
+    )
+    parser.add_argument(
+        "--blocked-function-message",
+        default=None,
+        help="Custom error message for blocked helper names. Default: This helper is not available in this build.",
     )
     parser.add_argument(
         "--rewrite-path-identifiers",
@@ -44,6 +61,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--helper-schema-map",
+        dest="helper_schema_maps",
+        action="append",
+        default=None,
+        help=(
+            "Map an allowed public schema to an internal helper schema using PUBLIC=HELPER. "
+            "Path and iterator rewrites will target the helper schema while queries still start from the public one."
+        ),
+    )
+    parser.add_argument(
         "--activate-session",
         action="store_true",
         help="Append an ALTER SESSION statement that activates the generated preprocessor for the current session.",
@@ -56,6 +83,42 @@ def validate_identifier(kind: str, value: str) -> str:
     if not IDENTIFIER_RE.match(value):
         raise SystemExit(f"{kind} must be an unquoted SQL identifier made of letters, digits, and underscores: {value}")
     return value.upper()
+
+
+def validate_helper_schema_map(value: str) -> tuple[str, str]:
+    if "=" not in value:
+        raise SystemExit(f"Helper schema mapping must be PUBLIC=HELPER: {value}")
+    public_schema, helper_schema = value.split("=", 1)
+    return (
+        validate_identifier("Helper mapping public schema", public_schema),
+        validate_identifier("Helper mapping helper schema", helper_schema),
+    )
+
+
+def lua_quote_string(value: str) -> str:
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def render_lua_string_table(mapping: dict[str, object], indent: int = 0) -> str:
+    indentation = " " * indent
+    child_indentation = " " * (indent + 4)
+    if not mapping:
+        return "{}"
+    lines = ["{"]
+    for key in sorted(mapping):
+        value = mapping[key]
+        rendered_key = f"[{lua_quote_string(key)}]"
+        if isinstance(value, dict):
+            rendered_value = render_lua_string_table(value, indent + 4)
+        elif value is True:
+            rendered_value = "true"
+        elif value is False or value is None:
+            rendered_value = "false"
+        else:
+            rendered_value = lua_quote_string(str(value))
+        lines.append(f"{child_indentation}{rendered_key} = {rendered_value},")
+    lines.append(f"{indentation}}}")
+    return "\n".join(lines)
 
 
 COMMON_LUA = """
@@ -357,7 +420,22 @@ COMMON_LUA = """
         if table_reference == nil or table_reference.schema_name == nil then
             return false
         end
-        return ALLOWED_VIRTUAL_SCHEMAS[normalize_identifier_value(table_reference.schema_name)] == true
+        return ALLOWED_JSON_SCHEMAS[normalize_identifier_value(table_reference.schema_name)] == true
+    end
+
+    local function helper_schema_name_for_schema_name(schema_name)
+        if schema_name == nil then
+            return nil
+        end
+        local normalized = normalize_identifier_value(schema_name)
+        return HELPER_SCHEMA_BY_ALLOWED_SCHEMA[normalized] or normalized
+    end
+
+    local function helper_schema_name_for_table_reference(table_reference)
+        if table_reference == nil or table_reference.schema_name == nil then
+            return nil
+        end
+        return helper_schema_name_for_schema_name(table_reference.schema_name)
     end
 
     local function collect_allowed_virtual_table_references(table_references)
@@ -601,8 +679,9 @@ JOIN_MODE_LUA = """
         if base_table.catalog_name ~= nil then
             out[#out + 1] = encode_quoted_identifier(base_table.catalog_name)
         end
-        if base_table.schema_name ~= nil then
-            out[#out + 1] = encode_quoted_identifier(base_table.schema_name)
+        local schema_name = helper_schema_name_for_table_reference(base_table) or base_table.schema_name
+        if schema_name ~= nil then
+            out[#out + 1] = encode_quoted_identifier(schema_name)
         end
         out[#out + 1] = encode_quoted_identifier(child_table_name)
         return table.concat(out, ".")
@@ -783,7 +862,7 @@ JOIN_MODE_LUA = """
         if #allowed_references == 0 then
             raise_scope_error(
                 "JSON path syntax",
-                'Qualify the JSON virtual-schema table in FROM/JOIN, for example FROM "JSON_VS"."SAMPLE".'
+                json_schema_scope_example()
             )
         end
         local base_table = read_table_reference(tokens)
@@ -792,7 +871,7 @@ JOIN_MODE_LUA = """
         elseif not table_reference_is_allowed_virtual_schema(base_table) then
             raise_scope_error(
                 "JSON path syntax",
-                'Path rewriting currently requires the base table in FROM to be one of the configured JSON virtual schemas.'
+                'Path rewriting currently requires the base table in FROM to be one of the configured JSON schemas.'
             )
         end
 
@@ -1078,12 +1157,14 @@ ARRAY_ITERATION_LUA = """
             table_name = parts[#parts],
             schema_name = (#parts >= 2) and parts[#parts - 1] or nil,
             catalog_name = (#parts >= 3) and parts[#parts - 2] or nil,
-            has_row_id = true
+            has_row_id = true,
+            helper_schema_name = nil
         }
         if table_reference_is_allowed_virtual_schema({
             schema_name = binding.schema_name
         }) then
             binding.kind = "json_source"
+            binding.helper_schema_name = helper_schema_name_for_schema_name(binding.schema_name)
         end
         return binding, alias_end_index
     end
@@ -1166,8 +1247,9 @@ ARRAY_ITERATION_LUA = """
         if binding.catalog_name ~= nil then
             out[#out + 1] = encode_quoted_identifier(binding.catalog_name)
         end
-        if binding.schema_name ~= nil then
-            out[#out + 1] = encode_quoted_identifier(binding.schema_name)
+        local schema_name = binding.helper_schema_name or binding.schema_name
+        if schema_name ~= nil then
+            out[#out + 1] = encode_quoted_identifier(schema_name)
         end
         out[#out + 1] = encode_quoted_identifier(table_name)
         return table.concat(out, ".")
@@ -1262,7 +1344,8 @@ ARRAY_ITERATION_LUA = """
             table_name = array_child_table_name,
             schema_name = root_binding.schema_name,
             catalog_name = root_binding.catalog_name,
-            has_row_id = not iterator_source.is_value
+            has_row_id = not iterator_source.is_value,
+            helper_schema_name = root_binding.helper_schema_name
         }
     end
 
@@ -1270,7 +1353,7 @@ ARRAY_ITERATION_LUA = """
         if root_binding == nil then
             raise_scope_error(
                 "JSON array iteration syntax",
-                'Qualify the JSON virtual-schema table in FROM/JOIN, for example FROM "JSON_VS"."SAMPLE" s.'
+                json_schema_scope_example()
             )
         end
         if root_binding.kind ~= "json_source" and root_binding.kind ~= "iterator_row" then
@@ -1279,7 +1362,7 @@ ARRAY_ITERATION_LUA = """
             end
             raise_scope_error(
                 "JSON array iteration syntax",
-                'Iterator roots must come from a configured JSON virtual schema or from an object-array iterator.'
+                'Iterator roots must come from a configured JSON schema or from an object-array iterator.'
             )
         end
         if root_binding.has_row_id ~= true then
@@ -1326,7 +1409,7 @@ ARRAY_ITERATION_LUA = """
         if root_binding == nil then
             raise_scope_error(
                 "JSON array iteration syntax",
-                'Qualify the JSON virtual-schema table in FROM/JOIN, for example FROM "JSON_VS"."SAMPLE" s.'
+                json_schema_scope_example()
             )
         end
         if root_binding.kind ~= "json_source" and root_binding.kind ~= "iterator_row" then
@@ -1335,7 +1418,7 @@ ARRAY_ITERATION_LUA = """
             end
             raise_scope_error(
                 "JSON array iteration syntax",
-                'Iterator roots must come from a configured JSON virtual schema or from an object-array iterator.'
+                'Iterator roots must come from a configured JSON schema or from an object-array iterator.'
             )
         end
         if root_binding.has_row_id ~= true then
@@ -1603,6 +1686,394 @@ ARRAY_ITERATION_LUA = """
 """
 
 
+MARKER_HELPER_REWRITE_LUA = """
+    local function collect_helper_call_replacements(original_sqltext, tokens)
+        local replacements = {}
+        local index = 1
+        while index <= #tokens do
+            local call = read_call(tokens, index)
+            local helper_kind = call and HELPER_KIND_BY_NAME[call.last_identifier] or nil
+            if call and helper_kind == "explicit_null" then
+                local closing_paren, top_level_commas = find_matching_paren(tokens, call.opening_paren)
+                if closing_paren == nil then
+                    raise_function_error(call.last_identifier, "Missing closing parenthesis.")
+                elseif top_level_commas ~= 0 then
+                    raise_function_error(call.last_identifier, "Expected exactly one argument.")
+                elseif not has_expression_argument(tokens, call.opening_paren, closing_paren) then
+                    raise_function_error(call.last_identifier, "Expected exactly one argument.")
+                else
+                    local helper_allowed, helper_scope_message = helper_query_targets_allowed_virtual_schema(original_sqltext)
+                    if not helper_allowed then
+                        raise_scope_error("JSON helper functions", helper_scope_message)
+                    end
+                    local out = {"(CASE WHEN "}
+                    for argument_index = call.opening_paren + 1, closing_paren - 1 do
+                        out[#out + 1] = tokens[argument_index]
+                    end
+                    out[#out + 1] = " IS NULL THEN TRUE ELSE FALSE END)"
+                    replacements[index] = {
+                        closing_paren = closing_paren,
+                        replacement_sql = table.concat(out)
+                    }
+                    index = closing_paren + 1
+                end
+            else
+                index = index + 1
+            end
+        end
+        return replacements, {}
+    end
+"""
+
+
+WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
+    local VARIANT_LABEL_ORDER = {"NUMBER", "STRING", "BOOLEAN", "OBJECT", "ARRAY"}
+
+    local function lookup_json_table_config(schema_name, table_name)
+        if schema_name == nil or table_name == nil then
+            return nil
+        end
+        local schema_tables = GROUP_CONFIG_BY_SCHEMA_AND_TABLE[normalize_identifier_value(schema_name)]
+        if schema_tables == nil then
+            return nil
+        end
+        return schema_tables[normalize_identifier_value(table_name)]
+    end
+
+    local function lookup_group_config(schema_name, table_name, visible_name)
+        local table_config = lookup_json_table_config(schema_name, table_name)
+        if table_config == nil or visible_name == nil then
+            return nil
+        end
+        return table_config[normalize_identifier_value(visible_name)]
+    end
+
+    local function read_simple_identifier_argument(tokens, opening_paren, closing_paren)
+        local argument_token = nil
+        for index = opening_paren + 1, closing_paren - 1 do
+            if not is_ignored(tokens[index]) then
+                if argument_token ~= nil then
+                    return nil
+                end
+                argument_token = tokens[index]
+            end
+        end
+        if argument_token == nil then
+            return nil
+        end
+        local parts = parse_identifier_token(argument_token)
+        if parts == nil or #parts == 0 then
+            return nil
+        end
+        local normalized_parts = {}
+        for index, part in ipairs(parts) do
+            normalized_parts[index] = normalize_identifier_value(part)
+        end
+        return normalized_parts
+    end
+
+    local function collect_helper_table_reference_lookup(tokens)
+        local lookup = {}
+        for _, table_reference in ipairs(collect_top_level_table_references(tokens)) do
+            local alias_key = normalize_identifier_value(table_reference.alias_name or table_reference.table_name)
+            if alias_key ~= nil then
+                lookup[alias_key] = table_reference
+            end
+            local table_key = normalize_identifier_value(table_reference.table_name)
+            if table_key ~= nil and lookup[table_key] == nil then
+                lookup[table_key] = table_reference
+            end
+        end
+        return lookup
+    end
+
+    local function table_reference_sql(table_reference)
+        if table_reference.alias_name ~= nil and string.sub(table_reference.alias_name, 1, 6) == "__jvs_" then
+            return encode_quoted_identifier(table_reference.alias_name)
+        end
+        return render_bound_identifier(table_reference.alias_name or table_reference.table_name)
+    end
+
+    local function build_boolean_from_mask(reference_sql, null_mask_name)
+        if null_mask_name == nil then
+            return "FALSE"
+        end
+        return "(CASE WHEN " .. reference_sql .. "." .. encode_quoted_identifier(null_mask_name)
+                .. " = TRUE THEN TRUE ELSE FALSE END)"
+    end
+
+    local function add_projection_column(column_names, seen_columns, column_name)
+        if column_name == nil then
+            return
+        end
+        local key = normalize_identifier_value(column_name)
+        if key == nil or seen_columns[key] then
+            return
+        end
+        seen_columns[key] = true
+        column_names[#column_names + 1] = column_name
+    end
+
+    local function collect_group_projection_columns(group_config, include_variant_columns, include_null_mask, scalar_only)
+        local column_names = {}
+        local seen_columns = {}
+        local variant_columns = group_config and group_config.variantColumns or nil
+        if include_variant_columns and variant_columns ~= nil then
+            for _, label in ipairs(VARIANT_LABEL_ORDER) do
+                if not scalar_only or label == "NUMBER" or label == "STRING" or label == "BOOLEAN" then
+                    add_projection_column(column_names, seen_columns, variant_columns[label])
+                end
+            end
+        end
+        if include_null_mask then
+            add_projection_column(column_names, seen_columns, group_config and group_config.nullMaskName or nil)
+        end
+        return column_names
+    end
+
+    local function render_column_reference(reference_sql, column_name)
+        return reference_sql .. "." .. encode_quoted_identifier(column_name)
+    end
+
+    local function build_helper_root_projection_join(table_reference, column_names, join_state)
+        if column_names == nil or #column_names == 0 then
+            return table_reference_sql(table_reference)
+        end
+
+        local key_parts = {normalize_identifier_value(table_reference.alias_name or table_reference.table_name)}
+        for _, column_name in ipairs(column_names) do
+            key_parts[#key_parts + 1] = normalize_identifier_value(column_name)
+        end
+        local join_key = table.concat(key_parts, "|")
+        local existing = join_state.alias_by_key[join_key]
+        if existing ~= nil then
+            return existing
+        end
+
+        local alias_name = "__jvs_null_" .. tostring(join_state.next_alias_id)
+        join_state.next_alias_id = join_state.next_alias_id + 1
+        local alias_ref = encode_quoted_identifier(alias_name)
+        join_state.alias_by_key[join_key] = alias_ref
+
+        local helper_table_sql = {}
+        if table_reference.catalog_name ~= nil then
+            helper_table_sql[#helper_table_sql + 1] = encode_quoted_identifier(table_reference.catalog_name)
+        end
+        helper_table_sql[#helper_table_sql + 1] = encode_quoted_identifier(
+            helper_schema_name_for_table_reference(table_reference) or table_reference.schema_name
+        )
+        helper_table_sql[#helper_table_sql + 1] = encode_quoted_identifier(table_reference.table_name)
+
+        local projected_columns = {encode_quoted_identifier("_id")}
+        for _, column_name in ipairs(column_names) do
+            projected_columns[#projected_columns + 1] = encode_quoted_identifier(column_name)
+        end
+
+        join_state.join_sql_parts[#join_state.join_sql_parts + 1] =
+                " LEFT OUTER JOIN (SELECT "
+                .. table.concat(projected_columns, ", ")
+                .. " FROM " .. table.concat(helper_table_sql, ".") .. ") "
+                .. alias_ref
+                .. " ON (" .. table_reference_sql(table_reference) .. "." .. encode_quoted_identifier("_id")
+                .. " = " .. alias_ref .. "." .. encode_quoted_identifier("_id") .. ")"
+        return alias_ref
+    end
+
+    local function resolve_wrapper_helper_argument(
+            function_name,
+            original_sqltext,
+            tokens,
+            opening_paren,
+            closing_paren,
+            base_table,
+            table_reference_lookup,
+            join_state
+    )
+        local identifier_parts = read_simple_identifier_argument(tokens, opening_paren, closing_paren)
+        if identifier_parts == nil then
+            raise_function_error(
+                function_name,
+                'Expected a JSON property reference such as "note", root_alias."note", or "path.to.note".'
+            )
+        end
+
+        local visible_name = identifier_parts[#identifier_parts]
+        local table_reference = nil
+        if #identifier_parts == 1 then
+            local original_path_tokens = tokenize_path_sql(original_sqltext)
+            if path_tokens_have_top_level_join(original_path_tokens) then
+                raise_function_error(
+                    function_name,
+                    'Unqualified helper arguments are not supported in joined queries. Qualify the JSON property reference, for example JSON_IS_EXPLICIT_NULL(root_alias."note").'
+                )
+            end
+            table_reference = base_table
+            if table_reference == nil then
+                raise_function_error(
+                    function_name,
+                    "JSON helper functions currently require a query with a single base JSON table in FROM."
+                )
+            end
+        else
+            local qualifier_name = identifier_parts[#identifier_parts - 1]
+            table_reference = table_reference_lookup[qualifier_name]
+            if table_reference == nil then
+                raise_function_error(
+                    function_name,
+                    "Could not resolve helper argument to a JSON property reference in the current query block."
+                )
+            end
+        end
+
+        local group_config = lookup_group_config(table_reference.schema_name, table_reference.table_name, visible_name)
+        if group_config == nil then
+            raise_function_error(
+                function_name,
+                "Helper arguments must resolve to a JSON property on the wrapper surface."
+            )
+        end
+
+        return table_reference, group_config, visible_name
+    end
+
+    local function helper_reference_sql(table_reference, group_config, join_state, include_variant_columns, include_null_mask, scalar_only)
+        local table_schema_name = normalize_identifier_value(table_reference.schema_name)
+        local helper_schema_name = normalize_identifier_value(helper_schema_name_for_table_reference(table_reference))
+        if table_schema_name ~= helper_schema_name then
+            return build_helper_root_projection_join(
+                table_reference,
+                collect_group_projection_columns(group_config, include_variant_columns, include_null_mask, scalar_only),
+                join_state
+            )
+        end
+        return table_reference_sql(table_reference)
+    end
+
+    local function build_wrapper_explicit_null_replacement(table_reference, group_config, join_state)
+        local null_mask_name = group_config.nullMaskName
+        if null_mask_name == nil then
+            return "FALSE"
+        end
+
+        local reference_sql = helper_reference_sql(table_reference, group_config, join_state, false, true, false)
+        return build_boolean_from_mask(reference_sql, null_mask_name)
+    end
+
+    local function build_wrapper_variant_typeof_replacement(table_reference, group_config, join_state)
+        local variant_columns = group_config.variantColumns or {}
+        local reference_sql = helper_reference_sql(table_reference, group_config, join_state, true, true, false)
+        local out = {"(CASE"}
+        for _, label in ipairs(VARIANT_LABEL_ORDER) do
+            local column_name = variant_columns[label]
+            if column_name ~= nil then
+                out[#out + 1] = " WHEN " .. render_column_reference(reference_sql, column_name)
+                        .. " IS NOT NULL THEN " .. encode_string_literal(label)
+            end
+        end
+        if group_config.nullMaskName ~= nil then
+            out[#out + 1] = " WHEN " .. build_boolean_from_mask(reference_sql, group_config.nullMaskName)
+                    .. " THEN " .. encode_string_literal("NULL")
+        end
+        out[#out + 1] = " ELSE NULL END)"
+        return table.concat(out)
+    end
+
+    local function build_wrapper_variant_cast_replacement(table_reference, group_config, join_state, cast_target_sql)
+        local variant_columns = group_config.variantColumns or {}
+        local reference_sql = helper_reference_sql(table_reference, group_config, join_state, true, false, true)
+        local out = {"(CASE"}
+        for _, label in ipairs(VARIANT_LABEL_ORDER) do
+            if label == "NUMBER" or label == "STRING" or label == "BOOLEAN" then
+                local column_name = variant_columns[label]
+                if column_name ~= nil then
+                    local column_ref = render_column_reference(reference_sql, column_name)
+                    out[#out + 1] = " WHEN " .. column_ref
+                            .. " IS NOT NULL THEN CAST(" .. column_ref .. " AS " .. cast_target_sql .. ")"
+                end
+            end
+        end
+        out[#out + 1] = " ELSE NULL END)"
+        return table.concat(out)
+    end
+
+    local function collect_helper_call_replacements(original_sqltext, tokens, base_table)
+        local replacements = {}
+        local table_reference_lookup = collect_helper_table_reference_lookup(tokens)
+        local join_state = {
+            next_alias_id = 1,
+            alias_by_key = {},
+            join_sql_parts = {}
+        }
+        local index = 1
+        while index <= #tokens do
+            local call = read_call(tokens, index)
+            local helper_kind = call and HELPER_KIND_BY_NAME[call.last_identifier] or nil
+            if call and helper_kind ~= nil then
+                local closing_paren, top_level_commas = find_matching_paren(tokens, call.opening_paren)
+                if closing_paren == nil then
+                    raise_function_error(call.last_identifier, "Missing closing parenthesis.")
+                elseif top_level_commas ~= 0 then
+                    raise_function_error(call.last_identifier, "Expected exactly one argument.")
+                elseif not has_expression_argument(tokens, call.opening_paren, closing_paren) then
+                    raise_function_error(call.last_identifier, "Expected exactly one argument.")
+                else
+                    local helper_allowed, helper_scope_message = helper_query_targets_allowed_virtual_schema(original_sqltext)
+                    if not helper_allowed then
+                        raise_scope_error("JSON helper functions", helper_scope_message)
+                    end
+                    local table_reference, group_config = resolve_wrapper_helper_argument(
+                        call.last_identifier,
+                        original_sqltext,
+                        tokens,
+                        call.opening_paren,
+                        closing_paren,
+                        base_table,
+                        table_reference_lookup
+                    )
+                    local replacement_sql = nil
+                    if helper_kind == "explicit_null" then
+                        replacement_sql = build_wrapper_explicit_null_replacement(table_reference, group_config, join_state)
+                    elseif helper_kind == "variant_typeof" then
+                        replacement_sql = build_wrapper_variant_typeof_replacement(table_reference, group_config, join_state)
+                    elseif helper_kind == "variant_as_varchar" then
+                        replacement_sql = build_wrapper_variant_cast_replacement(
+                            table_reference,
+                            group_config,
+                            join_state,
+                            "VARCHAR(2000000)"
+                        )
+                    elseif helper_kind == "variant_as_decimal" then
+                        replacement_sql = build_wrapper_variant_cast_replacement(
+                            table_reference,
+                            group_config,
+                            join_state,
+                            "DECIMAL(36,18)"
+                        )
+                    elseif helper_kind == "variant_as_boolean" then
+                        replacement_sql = build_wrapper_variant_cast_replacement(
+                            table_reference,
+                            group_config,
+                            join_state,
+                            "BOOLEAN"
+                        )
+                    else
+                        raise_function_error(call.last_identifier, "Unsupported helper rewrite kind: " .. tostring(helper_kind))
+                    end
+                    replacements[index] = {
+                        closing_paren = closing_paren,
+                        replacement_sql = replacement_sql
+                    }
+                    index = closing_paren + 1
+                end
+            else
+                index = index + 1
+            end
+        end
+        return replacements, join_state.join_sql_parts
+    end
+"""
+
+
 DISABLED_MODE_LUA = """
     local function rewrite_path_identifiers_in_sql(sqltext)
         return sqltext
@@ -1614,39 +2085,81 @@ def render_sql(
     schema: str,
     script: str,
     function_names: list[str],
+    blocked_function_names: list[str],
+    blocked_function_message: str,
     virtual_schemas: list[str],
+    helper_schema_map: dict[str, str],
+    wrapper_group_config: dict[str, dict[str, dict[str, object]]] | None,
     rewrite_path_identifiers: bool,
     activate_session: bool,
+    helper_function_kinds: dict[str, str] | None = None,
 ) -> str:
-    function_rows = "\n".join(f"        {name} = true," for name in function_names)
-    function_set_lua = "{\n" + function_rows + "\n    }"
-    function_list_sql = ", ".join(function_names)
+    helper_function_kinds = helper_function_kinds or {name: "explicit_null" for name in function_names}
+    configured_function_names = list(helper_function_kinds.keys())
+    helper_kind_map_lua = render_lua_string_table(helper_function_kinds, 4)
+    function_list_sql = ", ".join(configured_function_names) if configured_function_names else "(disabled)"
+    blocked_function_rows = "\n".join(f"        {name} = true," for name in blocked_function_names)
+    blocked_function_set_lua = "{\n" + blocked_function_rows + "\n    }"
+    blocked_function_list_sql = ", ".join(blocked_function_names) if blocked_function_names else "(none)"
     virtual_schema_rows = "\n".join(f"        {name} = true," for name in virtual_schemas)
     virtual_schema_set_lua = "{\n" + virtual_schema_rows + "\n    }"
     virtual_schema_list_sql = ", ".join(virtual_schemas)
+    example_allowed_schema = virtual_schemas[0] if virtual_schemas else "JSON_VS"
+    helper_schema_rows = "\n".join(
+        f"        {public_schema} = {helper_schema!r},"
+        for public_schema, helper_schema in sorted(helper_schema_map.items())
+    )
+    helper_schema_map_lua = "{\n" + helper_schema_rows + "\n    }" if helper_schema_rows else "{}"
+    helper_schema_comment = (
+        ", ".join(f"{public_schema}->{helper_schema}" for public_schema, helper_schema in sorted(helper_schema_map.items()))
+        if helper_schema_map
+        else "(none)"
+    )
+    wrapper_group_config_lua = render_lua_string_table(wrapper_group_config or {}, 4)
+    has_variant_helpers = any(kind != "explicit_null" for kind in helper_function_kinds.values())
+    if wrapper_group_config:
+        helper_mode = "wrapper semantic helpers" if has_variant_helpers else "wrapper explicit-null joins"
+    else:
+        helper_mode = "virtual-schema CASE marker"
     if not rewrite_path_identifiers:
         path_comment = "disabled"
         path_lua = DISABLED_MODE_LUA
     else:
         path_comment = "enabled (joins)"
         path_lua = JOIN_MODE_LUA
+    helper_rewrite_lua = WRAPPER_EXPLICIT_NULL_HELPER_LUA if wrapper_group_config else MARKER_HELPER_REWRITE_LUA
 
     activation_sql = ""
     if activate_session:
         activation_sql = f"\nALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {schema}.{script};"
 
+    example_sql = f"""-- Example:
+-- SELECT
+--   CAST("id" AS VARCHAR(10)),
+--   CASE WHEN {configured_function_names[0]}("note") THEN '1' ELSE '0' END
+-- FROM JSON_VS.SAMPLE
+-- ORDER BY "id";""" if configured_function_names else "-- Example helper functions: disabled in this build."
+
     return f"""-- Generated by tools/generate_preprocessor_sql.py
--- Rewrites configured function calls to a CASE marker before virtual-schema optimization.
+-- Rewrites configured helper calls and JSON navigation syntax before SQL compilation.
 -- Configured function names: {function_list_sql}
--- JSON syntax allowed only for virtual schemas: {virtual_schema_list_sql}
+-- Blocked function names: {blocked_function_list_sql}
+-- JSON syntax allowed only for configured JSON schemas: {virtual_schema_list_sql}
+-- Helper schema mappings: {helper_schema_comment}
+-- Helper rewrite mode: {helper_mode}
 -- Path identifier rewrite: {path_comment}
 
 CREATE SCHEMA IF NOT EXISTS {schema};
 
 CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
-    local TARGET_FUNCTIONS = {function_set_lua}
-    local ALLOWED_VIRTUAL_SCHEMAS = {virtual_schema_set_lua}
-    local ALLOWED_VIRTUAL_SCHEMA_LIST = {virtual_schema_list_sql!r}
+    local HELPER_KIND_BY_NAME = {helper_kind_map_lua}
+    local BLOCKED_FUNCTIONS = {blocked_function_set_lua}
+    local BLOCKED_FUNCTION_MESSAGE = {blocked_function_message!r}
+    local ALLOWED_JSON_SCHEMAS = {virtual_schema_set_lua}
+    local ALLOWED_JSON_SCHEMA_LIST = {virtual_schema_list_sql!r}
+    local EXAMPLE_ALLOWED_SCHEMA = {example_allowed_schema!r}
+    local HELPER_SCHEMA_BY_ALLOWED_SCHEMA = {helper_schema_map_lua}
+    local GROUP_CONFIG_BY_SCHEMA_AND_TABLE = {wrapper_group_config_lua}
 
     local function raise_function_error(function_name, message)
         error("JVS-FUNCTION-ERROR: " .. function_name .. ": " .. message, 0)
@@ -1655,11 +2168,16 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
     local function raise_scope_error(feature_name, message)
         error(
             "JVS-SCOPE-ERROR: " .. feature_name
-                .. " is only available for configured JSON virtual schemas ("
-                .. ALLOWED_VIRTUAL_SCHEMA_LIST .. "). "
+                .. " is only available for configured JSON schemas ("
+                .. ALLOWED_JSON_SCHEMA_LIST .. "). "
                 .. message,
             0
         )
+    end
+
+    local function json_schema_scope_example()
+        return 'Qualify the JSON table in FROM/JOIN using one of the configured JSON schemas, '
+                .. 'for example FROM "' .. EXAMPLE_ALLOWED_SCHEMA .. '"."<ROOT_TABLE>".'
     end
 
     local function normalize(token)
@@ -1764,44 +2282,38 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
         local path_tokens = tokenize_path_sql(sqltext)
         local base_table = read_base_table_reference_from_path_tokens(path_tokens)
         if base_table == nil then
-            return false, 'Qualify the JSON virtual-schema table in FROM/JOIN, for example FROM "JSON_VS"."SAMPLE".'
+            return false, json_schema_scope_example()
         end
         if not table_reference_is_allowed_virtual_schema(base_table) then
-            return false, 'Qualify the JSON virtual-schema table in FROM/JOIN, for example FROM "JSON_VS"."SAMPLE".'
+            return false, json_schema_scope_example()
         end
         return true, nil
     end
+{helper_rewrite_lua}
 
     local function rewrite(sqltext)
         local rewritten_sql = rewrite_array_iteration_in_sql(sqltext)
         rewritten_sql = rewrite_path_identifiers_in_sql(rewritten_sql)
         local tokens = sqlparsing.tokenize(rewritten_sql)
+        local base_table = read_base_table_reference(tokens)
+        local helper_call_replacements, helper_join_sql_parts = collect_helper_call_replacements(sqltext, tokens, base_table)
         local out = {{}}
         local index = 1
         while index <= #tokens do
             local call = read_call(tokens, index)
-            if call and TARGET_FUNCTIONS[call.last_identifier] then
-                local closing_paren, top_level_commas = find_matching_paren(tokens, call.opening_paren)
-                if closing_paren == nil then
-                    raise_function_error(call.last_identifier, "Missing closing parenthesis.")
-                elseif top_level_commas ~= 0 then
-                    raise_function_error(call.last_identifier, "Expected exactly one argument.")
-                elseif not has_expression_argument(tokens, call.opening_paren, closing_paren) then
-                    raise_function_error(call.last_identifier, "Expected exactly one argument.")
-                else
-                    local helper_allowed, helper_scope_message = helper_query_targets_allowed_virtual_schema(sqltext)
-                    if not helper_allowed then
-                        raise_scope_error("JSON helper functions", helper_scope_message)
-                    end
-                    out[#out + 1] = "(CASE WHEN "
-                    for argument_index = call.opening_paren + 1, closing_paren - 1 do
-                        out[#out + 1] = tokens[argument_index]
-                    end
-                    out[#out + 1] = " IS NULL THEN TRUE ELSE FALSE END)"
-                    index = closing_paren + 1
-                end
+            if call and BLOCKED_FUNCTIONS[call.last_identifier] then
+                raise_function_error(call.last_identifier, BLOCKED_FUNCTION_MESSAGE)
+            end
+
+            local replacement = helper_call_replacements[index]
+            if replacement ~= nil then
+                out[#out + 1] = replacement.replacement_sql
+                index = replacement.closing_paren + 1
             else
                 out[#out + 1] = tokens[index]
+                if base_table ~= nil and index == base_table.insert_after_index and #helper_join_sql_parts > 0 then
+                    out[#out + 1] = table.concat(helper_join_sql_parts)
+                end
                 index = index + 1
             end
         end
@@ -1815,12 +2327,7 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
 -- Enable explicitly with:
 -- ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {schema}.{script};
 
--- Example:
--- SELECT
---   CAST("id" AS VARCHAR(10)),
---   CASE WHEN {function_names[0]}("note") THEN '1' ELSE '0' END
--- FROM JSON_VS.SAMPLE
--- ORDER BY "id";
+{example_sql}
 """
 
 
@@ -1828,15 +2335,32 @@ def main() -> None:
     args = parse_args()
     schema = validate_identifier("Schema", args.schema)
     script = validate_identifier("Script name", args.script)
-    raw_function_names = args.function_names or ["JSON_IS_EXPLICIT_NULL"]
+    raw_function_names = [] if args.disable_function_helpers else (args.function_names or ["JSON_IS_EXPLICIT_NULL"])
     function_names = [validate_identifier("Function name", value) for value in raw_function_names]
+    blocked_function_names = [
+        validate_identifier("Blocked function name", value) for value in (args.blocked_function_names or [])
+    ]
+    overlapping_functions = sorted(set(function_names) & set(blocked_function_names))
+    if overlapping_functions:
+        raise SystemExit("Function names cannot be both rewritten and blocked: " + ", ".join(overlapping_functions))
     raw_virtual_schemas = args.virtual_schemas or ["JSON_VS"]
     virtual_schemas = [validate_identifier("Virtual schema name", value) for value in raw_virtual_schemas]
+    helper_schema_map = dict(validate_helper_schema_map(value) for value in (args.helper_schema_maps or []))
+    unknown_helper_mappings = sorted(set(helper_schema_map) - set(virtual_schemas))
+    if unknown_helper_mappings:
+        raise SystemExit(
+            "Helper schema mappings may only target configured virtual/public schemas: "
+            + ", ".join(unknown_helper_mappings)
+        )
     sql = render_sql(
         schema,
         script,
         function_names,
+        blocked_function_names,
+        args.blocked_function_message or "This helper is not available in this build.",
         virtual_schemas,
+        helper_schema_map,
+        None,
         args.rewrite_path_identifiers,
         args.activate_session,
     )

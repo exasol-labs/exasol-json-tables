@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 from pathlib import Path
 import subprocess
 from typing import Optional
@@ -38,6 +39,107 @@ def install_preprocessor(
     content = output_path.read_text()
     schema_name = "JVS_PP"
     script_name = "JSON_NULL_PREPROCESSOR"
+    script_marker = f"CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema_name}.{script_name} AS\n"
+    script_body = content.split(script_marker, 1)[1].split("\n/\n", 1)[0]
+
+    con.execute(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE")
+    con.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
+    con.execute(f"CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema_name}.{script_name} AS\n" + script_body + "\n/")
+    con.execute(f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {schema_name}.{script_name}")
+
+
+def install_wrapper_views(
+    con,
+    source_schema: str = "JVS_SRC",
+    wrapper_schema: str = "JSON_VIEW",
+    helper_schema: Optional[str] = None,
+    generate_preprocessor: bool = False,
+    preprocessor_schema: str = "JVS_WRAP_PP",
+    preprocessor_script: str = "JSON_WRAPPER_PREPROCESSOR",
+    activate_preprocessor_session: bool = False,
+):
+    output_path = ROOT / "dist" / "json_wrapper_views_test.sql"
+    manifest_path = ROOT / "dist" / "json_wrapper_manifest_test.json"
+    preprocessor_output_path = ROOT / "dist" / "json_wrapper_preprocessor_packaged_test.sql"
+    helper_schema = helper_schema or f"{wrapper_schema}_INTERNAL"
+    cmd = [
+        "python3",
+        str(ROOT / "tools" / "generate_wrapper_views_sql.py"),
+        "--dsn",
+        "127.0.0.1:8563",
+        "--user",
+        "sys",
+        "--password",
+        "exasol",
+        "--source-schema",
+        source_schema,
+        "--wrapper-schema",
+        wrapper_schema,
+        "--helper-schema",
+        helper_schema,
+        "--output",
+        str(output_path),
+        "--manifest-output",
+        str(manifest_path),
+    ]
+    if generate_preprocessor:
+        cmd.extend(
+            [
+                "--preprocessor-output",
+                str(preprocessor_output_path),
+                "--preprocessor-schema",
+                preprocessor_schema,
+                "--preprocessor-script",
+                preprocessor_script,
+            ]
+        )
+        if activate_preprocessor_session:
+            cmd.append("--activate-preprocessor-session")
+    subprocess.run(cmd, check=True)
+    content = output_path.read_text()
+    statements = [statement.strip() for statement in content.split(";\n") if statement.strip()]
+    for statement in statements:
+        con.execute(statement)
+    return json.loads(manifest_path.read_text())
+
+
+def install_wrapper_preprocessor(
+    con,
+    wrapper_schemas: list[str],
+    helper_schemas: Optional[list[str]] = None,
+    manifest_paths: Optional[list[Path]] = None,
+    schema_name: str = "JVS_WRAP_PP",
+    script_name: str = "JSON_WRAPPER_PREPROCESSOR",
+) -> None:
+    output_path = ROOT / "dist" / "json_wrapper_preprocessor_test.sql"
+    helper_schemas = helper_schemas or [f"{wrapper_schema}_INTERNAL" for wrapper_schema in wrapper_schemas]
+    manifest_paths = manifest_paths or [ROOT / "dist" / "json_wrapper_manifest_test.json" for _ in wrapper_schemas]
+    if len(helper_schemas) != len(wrapper_schemas):
+        raise ValueError("wrapper_schemas and helper_schemas must have the same length")
+    if len(manifest_paths) != len(wrapper_schemas):
+        raise ValueError("wrapper_schemas and manifest_paths must have the same length")
+    for wrapper_schema, helper_schema in zip(wrapper_schemas, helper_schemas):
+        if wrapper_schema.upper() == helper_schema.upper():
+            raise ValueError("wrapper_schemas and helper_schemas must differ for every schema pair")
+    cmd = [
+        "python3",
+        str(ROOT / "tools" / "generate_wrapper_preprocessor_sql.py"),
+        "--schema",
+        schema_name,
+        "--script",
+        script_name,
+        "--output",
+        str(output_path),
+    ]
+    for wrapper_schema in wrapper_schemas:
+        cmd.extend(["--wrapper-schema", wrapper_schema])
+    for helper_schema in helper_schemas:
+        cmd.extend(["--helper-schema", helper_schema])
+    for manifest_path in manifest_paths:
+        cmd.extend(["--manifest", str(manifest_path)])
+    subprocess.run(cmd, check=True)
+
+    content = output_path.read_text()
     script_marker = f"CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema_name}.{script_name} AS\n"
     script_body = content.split(script_marker, 1)[1].split("\n/\n", 1)[0]
 

@@ -3,7 +3,15 @@
 from pathlib import Path
 import subprocess
 
-from nano_support import ROOT, bundle_adapter, connect, install_preprocessor, install_virtual_schema_fixture
+from nano_support import (
+    ROOT,
+    bundle_adapter,
+    connect,
+    install_preprocessor,
+    install_virtual_schema_fixture,
+    install_wrapper_preprocessor,
+    install_wrapper_views,
+)
 
 
 def assert_contains_all(text: str, fragments: list[str], label: str) -> None:
@@ -246,8 +254,153 @@ def main() -> None:
             "generator identifier validation",
         )
 
+        install_wrapper_views(
+            con,
+            source_schema="JVS_SRC",
+            wrapper_schema="JSON_VIEW",
+            helper_schema="JSON_VIEW_INTERNAL",
+            generate_preprocessor=True,
+        )
+        install_wrapper_preprocessor(con, ["JSON_VIEW"], ["JSON_VIEW_INTERNAL"])
+
+        packaged_wrapper_sql = (ROOT / "dist" / "json_wrapper_preprocessor_packaged_test.sql").read_text()
+        assert_contains_all(
+            packaged_wrapper_sql,
+            [
+                "Configured function names: JSON_IS_EXPLICIT_NULL, JNULL, JSON_TYPEOF, JSON_AS_VARCHAR, JSON_AS_DECIMAL, JSON_AS_BOOLEAN",
+                "JSON syntax allowed only for configured JSON schemas: JSON_VIEW",
+                "Helper rewrite mode: wrapper semantic helpers",
+            ],
+            "packaged wrapper preprocessor output",
+        )
+
+        assert_query_rows(
+            con,
+            """
+            SELECT
+              CAST("id" AS VARCHAR(10)),
+              CASE WHEN JSON_IS_EXPLICIT_NULL("note") THEN '1' ELSE '0' END,
+              CASE WHEN "note" IS NULL AND NOT JSON_IS_EXPLICIT_NULL("note") THEN '1' ELSE '0' END
+            FROM JSON_VIEW.SAMPLE
+            ORDER BY "id"
+            """,
+            [("1", "0", "0"), ("2", "1", "0"), ("3", "0", "1")],
+            "wrapper helper query",
+        )
+
+        assert_query_rows(
+            con,
+            """
+            SELECT
+              CAST("id" AS VARCHAR(10)),
+              COALESCE(JSON_TYPEOF("value"), 'MISSING'),
+              COALESCE(JSON_AS_VARCHAR("value"), 'NULL'),
+              COALESCE(CAST(JSON_AS_DECIMAL("value") AS VARCHAR(60)), 'NULL'),
+              COALESCE(CAST(JSON_AS_BOOLEAN("meta.flag") AS VARCHAR(10)), 'NULL')
+            FROM JSON_VIEW.SAMPLE
+            ORDER BY "id"
+            """,
+            [
+                ("1", "NUMBER", "42", "42", "TRUE"),
+                ("2", "STRING", "43", "43", "FALSE"),
+                ("3", "NULL", "NULL", "NULL", "NULL"),
+            ],
+            "wrapper variant helper query",
+        )
+
+        assert_query_error(
+            con,
+            '''
+            SELECT s."id"
+            FROM JSON_VIEW.SAMPLE s
+            JOIN item IN s."items"
+            WHERE JSON_IS_EXPLICIT_NULL("note")
+            ''',
+            ["JVS-FUNCTION-ERROR", "JSON_IS_EXPLICIT_NULL", "Unqualified helper arguments are not supported in joined queries"],
+            "wrapper unqualified helper in joined query error",
+        )
+
+        assert_query_error(
+            con,
+            'SELECT JSON_TYPEOF() FROM JSON_VIEW.SAMPLE',
+            ["JVS-FUNCTION-ERROR", "JSON_TYPEOF", "Expected exactly one argument"],
+            "wrapper variant typeof zero-argument error",
+        )
+
+        assert_query_error(
+            con,
+            'SELECT JSON_AS_DECIMAL("value", "name") FROM JSON_VIEW.SAMPLE',
+            ["JVS-FUNCTION-ERROR", "JSON_AS_DECIMAL", "Expected exactly one argument"],
+            "wrapper variant decimal multi-argument error",
+        )
+
+        assert_query_error(
+            con,
+            '''
+            SELECT s."id"
+            FROM JSON_VIEW.SAMPLE s
+            JOIN item IN s."items"
+            WHERE JSON_TYPEOF("value") = 'NUMBER'
+            ''',
+            ["JVS-FUNCTION-ERROR", "JSON_TYPEOF", "Unqualified helper arguments are not supported in joined queries"],
+            "wrapper variant helper in joined query error",
+        )
+
+        assert_query_error(
+            con,
+            'SELECT JSON_IS_EXPLICIT_NULL("note") FROM JSON_VIEW_INTERNAL.SAMPLE',
+            ["JVS-SCOPE-ERROR", "JSON helper functions", "JSON_VIEW"],
+            "helper schema helper scope error",
+        )
+
+        assert_query_error(
+            con,
+            'SELECT JSON_TYPEOF("value") FROM JVS_SRC.SAMPLE',
+            ["JVS-SCOPE-ERROR", "JSON helper functions", "JSON_VIEW"],
+            "regular table variant helper scope error",
+        )
+
+        assert_query_error(
+            con,
+            'SELECT JSON_IS_EXPLICIT_NULL("child.value") FROM (SELECT * FROM JSON_VIEW.SAMPLE) s',
+            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VIEW"],
+            "wrapper derived-table helper scope error",
+        )
+
+        assert_subprocess_error(
+            [
+                "python3",
+                str(ROOT / "tools" / "generate_wrapper_views_sql.py"),
+                "--source-schema",
+                "JSON_VIEW",
+                "--wrapper-schema",
+                "JSON_VIEW",
+                "--output",
+                str(ROOT / "dist" / "should_not_write_wrapper_views.sql"),
+                "--manifest-output",
+                str(ROOT / "dist" / "should_not_write_wrapper_manifest.json"),
+            ],
+            ["must all be distinct", "source=JSON_VIEW", "wrapper=JSON_VIEW"],
+            "wrapper generator distinct schema validation",
+        )
+
+        assert_subprocess_error(
+            [
+                "python3",
+                str(ROOT / "tools" / "generate_wrapper_preprocessor_sql.py"),
+                "--wrapper-schema",
+                "JSON_VIEW",
+                "--helper-schema",
+                "JSON_VIEW",
+                "--output",
+                str(ROOT / "dist" / "should_not_write_wrapper_preprocessor.sql"),
+            ],
+            ["must differ from its helper schema"],
+            "wrapper preprocessor schema-pair validation",
+        )
+
         print("-- preprocessor error regression --")
-        print("validated unsupported selectors, malformed paths, unsupported query shapes, and helper arity errors")
+        print("validated virtual-schema and wrapper-schema helper errors, scope guards, explicit-null semantics, and generator validation")
     finally:
         try:
             con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")

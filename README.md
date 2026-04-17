@@ -168,6 +168,128 @@ Recommended usage pattern:
 - if you install multiple JSON virtual schemas, repeat `--virtual-schema` for each one when generating the preprocessor
 - in mixed-table joins, qualify JSON helper arguments such as `JSON_IS_EXPLICIT_NULL("SAMPLE"."note")` so ordinary SQL name resolution stays unambiguous
 
+## Phase 4 Wrapper Semantic Helper Package
+
+This repo now also includes the next migration steps toward a simpler architecture based on:
+
+- generated public root views over the raw `json-to-parquet` tables
+- a generated internal helper schema for descendant structure and hidden semantics
+- a manifest-driven wrapper preprocessor scoped to the wrapper schema pair
+
+Phase 1 established the public root-view plus helper-schema split. Phase 2 made that split usable for navigation. Phase 3 added explicit-null semantics. Phase 4 adds helper-based variant semantics on top of the same packaged wrapper/runtime contract.
+
+What this wrapper package gives you today:
+
+- one public view per root JSON table
+- no user-visible child/object/array tables in the public wrapper schema
+- an internal helper schema that mirrors the full table family for preprocessor/runtime use
+- a machine-readable manifest describing root families and column groups
+- a clean public wrapper schema that hides `<name>|n` mask columns
+- folded visible columns for variant families, so users query one column name instead of sibling storage columns
+- the same dotted-path syntax, bracket access, and array rowset syntax on top of the public root views
+- `JSON_IS_EXPLICIT_NULL(...)` on the wrapper surface, including deep paths
+- `JSON_TYPEOF(...)`, `JSON_AS_VARCHAR(...)`, `JSON_AS_DECIMAL(...)`, and `JSON_AS_BOOLEAN(...)` on the wrapper surface, including deep paths
+- ordinary Exasol execution semantics on that surface, including normal UDF usage
+
+What the wrapper package intentionally does not try to preserve yet:
+
+- built-in `TYPEOF(...)` / `CAST(...)` compatibility rewriting on the wrapper surface
+- full one-for-one emulation of every virtual-schema semantic rewrite outside the explicit helper surface
+
+The recommended Phase 5 workflow is the package tool. It generates a complete package config plus the wrapper SQL artifacts in one step:
+
+```bash
+python3 tools/wrapper_package_tool.py generate \
+  --source-schema JVS_SRC \
+  --wrapper-schema JSON_VIEW \
+  --helper-schema JSON_VIEW_INTERNAL \
+  --output-dir ./dist \
+  --package-name json_wrapper
+```
+
+That writes:
+
+- `json_wrapper_views.sql`
+- `json_wrapper_manifest.json`
+- `json_wrapper_preprocessor.sql`
+- `json_wrapper_package.json`
+
+Install the generated package:
+
+```bash
+python3 tools/wrapper_package_tool.py install \
+  --package-config ./dist/json_wrapper_package.json
+```
+
+Regenerate only the preprocessor after helper-profile changes:
+
+```bash
+python3 tools/wrapper_package_tool.py regenerate-preprocessor \
+  --package-config ./dist/json_wrapper_package.json
+```
+
+Validate the package files, or validate the installed package too:
+
+```bash
+python3 tools/wrapper_package_tool.py validate \
+  --package-config ./dist/json_wrapper_package.json
+
+python3 tools/wrapper_package_tool.py validate \
+  --package-config ./dist/json_wrapper_package.json \
+  --check-installed
+```
+
+The lower-level generators are still available if you want to work with the artifacts directly.
+
+Generate the wrapper SQL, manifest, and companion preprocessor in one pass:
+
+```bash
+python3 tools/generate_wrapper_views_sql.py \
+  --source-schema JVS_SRC \
+  --wrapper-schema JSON_VIEW \
+  --helper-schema JSON_VIEW_INTERNAL \
+  --output ./dist/json_wrapper_views.sql \
+  --manifest-output ./dist/json_wrapper_manifest.json \
+  --preprocessor-output ./dist/json_wrapper_preprocessor.sql
+```
+
+Install the generated public views + helper schema, then install and enable the preprocessor:
+
+```sql
+-- paste dist/json_wrapper_views.sql here
+-- paste dist/json_wrapper_preprocessor.sql here
+
+ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSOR;
+```
+
+If you only need to regenerate the preprocessor for an existing wrapper/helper schema pair, you can still use:
+
+```bash
+python3 tools/generate_wrapper_preprocessor_sql.py \
+  --wrapper-schema JSON_VIEW \
+  --helper-schema JSON_VIEW_INTERNAL \
+  --manifest ./dist/json_wrapper_manifest.json \
+  --output ./dist/json_wrapper_preprocessor.sql
+```
+
+The wrapper preprocessor is scope-gated to the configured public wrapper schemas. Path, bracket, and rowset rewrites target the generated internal helper schema, so users still query only the root/document views. `JSON_IS_EXPLICIT_NULL(...)` is now recovered through hidden projected joins against the helper contract, while malformed or unsupported helper uses still fail with clear wrapper-specific `JVS-FUNCTION-ERROR` messages. Because Exasol only allows one active preprocessor per session, compare the wrapper surface and the virtual-schema surface in separate sessions.
+
+Variant semantics on the wrapper surface are helper-first in Phase 4:
+
+```sql
+SELECT
+  CAST("id" AS VARCHAR(10)) AS doc_id,
+  COALESCE(JSON_TYPEOF("value"), 'MISSING') AS value_type,
+  COALESCE(JSON_AS_VARCHAR("value"), 'NULL') AS value_text,
+  COALESCE(CAST(JSON_AS_DECIMAL("value") AS VARCHAR(60)), 'NULL') AS value_number,
+  COALESCE(JSON_TYPEOF("shape"), 'MISSING') AS shape_type,
+  COALESCE(CAST(JSON_AS_BOOLEAN("meta.flag") AS VARCHAR(10)), 'NULL') AS flag_value
+FROM JSON_VIEW.SAMPLE
+ORDER BY "id";
+```
+
+The Nano parity suite for this prototype is [tools/test_nano_wrapper_phase0.py](tools/test_nano_wrapper_phase0.py). It compares the public wrapper surface against the current virtual schema for visible metadata, root-table queries, deep path traversal, bracket access, nested rowset iteration, explicit-null semantics, and helper-based variant semantics, while also checking that descendant/helper artifacts moved out of the public schema.
+
 ## Mental Model
 
 Think of the virtual schema as giving you a JSON-shaped query surface over relational storage:
@@ -532,10 +654,78 @@ This verifies:
 - coexistence with array indexing and explicit-null helpers
 - `EXPLAIN VIRTUAL` output without synthetic path-column references or array scalar subqueries
 
+Wrapper-view Phase 4 parity test:
+
+```bash
+python3 tools/test_nano_wrapper_phase0.py
+```
+
+This verifies:
+
+- generated public root-view metadata matches the current virtual schema for the tested root tables
+- the public wrapper schema exposes only the root/document views
+- the internal helper schema contains the descendant structure and generated metadata tables
+- root-table path, bracket, and rowset queries behave the same on `JSON_VIEW` as on `JSON_VS`
+- deep recursive path and nested rowset traversal also match on the wrapper surface
+- packaged wrapper generation emits the companion preprocessor and optional activation SQL
+- root and deep-path explicit-null semantics now match the virtual schema
+- root and deep-path helper-based variant semantics now match the virtual schema behavior for the covered cases
+- malformed or unsupported wrapper-helper uses still fail clearly
+- the wrapper-view surface remains an ordinary SQL surface for UDF-friendly queries
+
+Wrapper package tool regression test:
+
+```bash
+python3 tools/test_nano_wrapper_package_tool.py
+```
+
+This verifies:
+
+- full package generation into a deterministic output directory
+- targeted preprocessor regeneration from package config + manifest
+- installation of the generated wrapper package
+- installed-package validation against Nano
+- end-to-end wrapper queries through the installed preprocessor
+
+Phase 6 retirement evaluation:
+
+```bash
+python3 tools/test_nano_phase6_evaluation.py
+```
+
+This verifies:
+
+- installed wrapper-package parity for explicit-null and helper-based variant semantics
+- UDF interoperability on the wrapper surface
+- the remaining built-in `TYPEOF(...)` compatibility gap versus the virtual schema
+- additive source-DDL refresh through package regeneration, install, and validation
+
+Performance study:
+
+```bash
+python3 tools/study_preprocessor_only_performance.py
+```
+
+This benchmarks the final wrapper package against the virtual schema on Nano for:
+
+- path traversal
+- rowset iteration
+- explicit-null helper queries
+- helper-based variant type and extraction queries
+- warm steady-state and isolated cold-start behavior
+
 ## Related Files
 
 - Adapter entrypoint: [src/entry.lua](src/entry.lua)
 - Adapter bundle tool: [tools/bundle.py](tools/bundle.py)
 - Preprocessor generator: [tools/generate_preprocessor_sql.py](tools/generate_preprocessor_sql.py)
+- Wrapper-view generator: [tools/generate_wrapper_views_sql.py](tools/generate_wrapper_views_sql.py)
+- Wrapper preprocessor generator: [tools/generate_wrapper_preprocessor_sql.py](tools/generate_wrapper_preprocessor_sql.py)
+- Wrapper package tool: [tools/wrapper_package_tool.py](tools/wrapper_package_tool.py)
+- Wrapper manifest helper: [tools/wrapper_schema_support.py](tools/wrapper_schema_support.py)
 - Example preprocessor: [examples/json_path_preprocessor.sql](examples/json_path_preprocessor.sql)
+- Example wrapper SQL: [examples/json_wrapper_views.sql](examples/json_wrapper_views.sql)
+- Example wrapper manifest: [examples/json_wrapper_manifest.json](examples/json_wrapper_manifest.json)
+- Example wrapper preprocessor: [examples/json_wrapper_preprocessor.sql](examples/json_wrapper_preprocessor.sql)
+- Wrapper Phase 4 parity test: [tools/test_nano_wrapper_phase0.py](tools/test_nano_wrapper_phase0.py)
 - UDF pushdown MRE write-up: [examples/udf_pushdown_stripping_mre.md](examples/udf_pushdown_stripping_mre.md)
