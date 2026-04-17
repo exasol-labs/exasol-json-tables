@@ -1,6 +1,6 @@
 ---
 name: exasol-sql-preprocessor
-description: Use when implementing, debugging, or extending Exasol SQL preprocessors to customize SQL syntax, add compatibility layers, enforce query governance, or bridge user-facing SQL into other Exasol extension points such as virtual schemas. Covers official Exasol preprocessor APIs, upstream GitHub examples, Lua-first implementation patterns, and live-validation workflow.
+description: Use when implementing, debugging, or extending Exasol SQL preprocessors to customize SQL syntax, add compatibility layers, enforce query governance, build wrapper-view plus preprocessor architectures, or bridge user-facing SQL into other Exasol extension points such as virtual schemas. Covers official Exasol preprocessor APIs, upstream GitHub examples, Lua-first implementation patterns, architecture tradeoffs, and live-validation workflow.
 ---
 
 # Exasol SQL Preprocessor
@@ -76,6 +76,52 @@ Typical good use cases from the official docs and Exasol GitHub examples:
 - adding syntax sugar or macros
 - governance checks against specific metadata tables or commands
 - helper syntax that must survive into a virtual schema or another downstream layer
+
+## Architecture Choice Before Coding
+
+Decide which layer should own the problem before writing the rewrite.
+
+### What the preprocessor can and cannot do
+
+The preprocessor rewrites SQL text before compilation. It does **not** change the underlying
+database object or its catalog metadata.
+
+Practical consequence:
+
+- a preprocessor can make `SELECT ...` feel nicer
+- it cannot make raw helper columns disappear from `SYS.EXA_ALL_COLUMNS`
+- it cannot make a raw table surface look clean to generic tooling by itself
+
+If the user needs metadata hiding, choose an object layer as well:
+
+- wrapper views
+- virtual schemas
+
+### Fast decision rule
+
+Use **raw tables + preprocessor** only when:
+
+- the raw table surface is already acceptable
+- the task is mostly syntax sugar or governance
+
+Use **wrapper views + preprocessor** when:
+
+- the data already lives in Exasol
+- helper columns must be hidden from metadata and `SELECT *`
+- ordinary UDF usage on the wrapped data should keep working
+- the main job is semantic sugar over local Exasol tables
+
+Use **virtual schema + preprocessor** when:
+
+- the source is external, or should behave like an external federated source
+- the adapter must own metadata folding or pushdown semantics
+- helper syntax must bridge into adapter rewrite logic
+
+Important lesson from this repository:
+
+- raw tables + preprocessor was **not** enough to hide JSON helper columns
+- wrapper views + preprocessor **was** enough to hide them and keep UDFs working
+- virtual schemas remained useful for semantic folding such as variant-column behavior
 
 ## Execution And Security Facts
 
@@ -188,6 +234,23 @@ The knowledge-base governance example blocks queries to selected metadata tables
 
 That pattern is valid, but it should stay narrow. Governance preprocessors are easy to overbuild.
 
+### Prefer object shaping over heavy hot-path metadata reads
+
+If the problem is really:
+
+- hiding columns
+- renaming a user-facing surface
+- exposing a curated table contract
+
+prefer:
+
+- views
+- virtual schemas
+
+over repeatedly calling `query()` inside preprocessing to rediscover metadata on every statement.
+
+The preprocessor can query metadata, but that should be a narrow exception, not the architecture.
+
 ## Lua Tokenization Facts You Must Internalize
 
 If you use Lua preprocessing, `sqlparsing` behavior matters more than intuition.
@@ -260,6 +323,22 @@ Example:
 
 Use this pattern when the preprocessor is not the final semantic engine, but the bridge to one.
 
+### 5. Wrapper-view plus preprocessor as a full local extension architecture
+
+This repository adds another advanced pattern that is worth using elsewhere:
+
+- generate ordinary views that hide physical helper columns
+- scope the preprocessor to those views
+- rewrite helper, path, and array syntax into ordinary Exasol SQL over the view layer
+
+This pattern is especially strong when:
+
+- the source data is already in Exasol
+- users want normal table/view behavior and UDF compatibility
+- a virtual schema would add complexity without real federation value
+
+Be explicit that this is **views + preprocessor**, not literally preprocessor-only.
+
 ## Validation Workflow
 
 ### Baseline
@@ -281,6 +360,43 @@ Use the tools Exasol gives you:
 
 Do not settle for “the query returned something plausible”.
 
+### Profile cold and warm runs separately
+
+When performance matters, do not measure only one run.
+
+Use this workflow:
+
+1. `ALTER SESSION SET QUERY_CACHE='OFF'`
+2. `ALTER SESSION SET PROFILE='ON'`
+3. run the query
+4. `ALTER SESSION SET PROFILE='OFF'`
+5. `FLUSH STATISTICS`
+6. inspect `EXA_USER_PROFILE_LAST_DAY`
+7. `COMMIT` so automatically created join indexes persist
+8. run the same query again as the warm case
+
+Why this matters:
+
+- Exasol creates join indexes automatically
+- first execution can pay a significant `INDEX CREATE` cost
+- subsequent executions can be much cheaper
+
+This repository’s Nano benchmarks showed:
+
+- wrapper views were effectively free in steady state for path and rowset queries
+- hidden self-joins used for semantic recovery were the main cold-start risk
+- virtual-schema paths had a small recurring `PUSHDOWN` overhead even when the eventual SQL shape was similar
+
+### Preprocessor performance heuristics
+
+Treat these as defaults until measurement proves otherwise:
+
+- token-only rewrites are usually cheap
+- wrapper views are often inlined well by the optimizer
+- helper rewrites that add new joins can be expensive on the first run
+- self-joins back to the same root table are the highest-risk pattern
+- `query()` / `pquery()` in the hot path are usually a bad trade unless governance requires them
+
 ### Test cases that matter
 
 At minimum, cover:
@@ -292,6 +408,7 @@ At minimum, cover:
 - malformed input
 - repeated occurrences of the construct
 - interactions with `CREATE SCRIPT` and deployment
+- interactions with `EXPLAIN` if you expect users to debug through explained statements
 - permission behavior if the preprocessor is used for governance
 
 ### Prefer live Exasol over local reasoning
@@ -306,6 +423,8 @@ If you are working in this repository, the main live checks are:
 - `python3 tools/test_nano_preprocessor_join_paths.py`
 - `python3 tools/test_nano_e2e.py`
 - `python3 tools/test_nano_udf_pushdown_mre.py`
+- `python3 tools/study_preprocessor_only_feasibility.py`
+- `python3 tools/study_preprocessor_only_performance.py`
 
 ## Repo-Specific Guidance For This Repository
 
@@ -314,6 +433,10 @@ If the task is in this repository, reuse the existing generator unless the task 
 - `tools/generate_preprocessor_sql.py` already produces installable Lua preprocessors
 - it supports configurable helper names
 - it uses join-based path rewrites for dotted paths and bracket access
+- this repo now also documents a wrapper-view + preprocessor alternative in:
+  - `preprocessor-only-feasibility-study.md`
+  - `dist/preprocessor_only_feasibility_results.json`
+  - `dist/preprocessor_only_performance_results.json`
 
 If you change the generated Lua:
 
@@ -324,6 +447,7 @@ If you change the generated Lua:
 ## Known Pitfalls
 
 - Forgetting that `CREATE SCRIPT` statements are themselves preprocessed
+- Forgetting that `EXPLAIN ...` statements are also preprocessed and may need their own supported shape
 - Assuming dotted identifiers tokenize as separate `.` tokens
 - Using raw regex where token-aware matching is needed
 - Overloading common SQL semantics for domain-specific meaning
@@ -331,6 +455,8 @@ If you change the generated Lua:
 - Forgetting to grant `EXECUTE` after deployment
 - Relying on secrecy even though users with `EXECUTE` can read the script
 - Building governance logic that depends on heavy metadata queries in the hot path
+- Trying to use preprocessing alone to solve a metadata-shaping problem that really needs views or a virtual schema
+- Assuming extra semantic joins are free without checking cold-vs-warm profile data
 - Claiming a rewrite works system-wide when it has only been tested on a narrow statement shape
 
 ## Expected Output

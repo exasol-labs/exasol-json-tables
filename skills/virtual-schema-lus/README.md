@@ -12,6 +12,7 @@ Exasol Virtual Schema adapters in Lua.
 
 - canonical Lua virtual-schema structure
 - required VSCL framework usage
+- architecture choice between virtual schemas and wrapper-view plus preprocessor designs
 - capability and property contracts
 - metadata and pushdown rewrite patterns
 - low-latency design rules
@@ -19,6 +20,7 @@ Exasol Virtual Schema adapters in Lua.
 - packaging and runtime caveats discovered from live Exasol validation
 - companion `SQL_PREPROCESSOR_SCRIPT` patterns
 - `EXPLAIN VIRTUAL` validation workflow
+- cold-vs-warm performance profiling guidance for rewrite-heavy semantic wrappers
 
 ## Intended Audience
 

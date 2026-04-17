@@ -56,6 +56,36 @@ Lua Virtual Schemas are ideal for *control-plane logic*, not for environments re
 
 ---
 
+### 1.3 Do not default to Virtual Schemas when views plus a preprocessor are enough
+
+The agent MUST treat a Lua Virtual Schema as one architecture choice, not the default answer to
+every semantic-wrapper problem.
+
+For data that already lives inside Exasol, compare these three options explicitly:
+
+- raw tables + preprocessor
+- wrapper views + preprocessor
+- virtual schema
+
+Decision rule:
+
+- raw tables + preprocessor is usually **not** enough when helper columns must disappear from
+  metadata and `SELECT *`
+- wrapper views + preprocessor is often the simplest answer when the source is local Exasol data
+  and users want normal table/view behavior plus ordinary UDF support
+- virtual schemas are justified when the adapter itself must own metadata folding, pushdown-aware
+  semantic injection, or external/federated behavior
+
+Important lesson from this repository:
+
+- wrapper views plus a preprocessor could replace a large part of the JSON interface
+- the current virtual schema remained most compelling where metadata folding and hidden-column
+  semantics had to be preserved through pushdown
+- virtual schemas also keep the known UDF-stripping boundary, so user-defined function syntax over
+  wrapped values is a real architecture input, not a minor detail
+
+---
+
 ## 2. Hard Constraints (Non-Negotiable)
 
 ### 2.1 Execution environment constraints
@@ -403,6 +433,33 @@ Do not assume that:
 Use `EXPLAIN VIRTUAL` and targeted probe queries to inspect the actual SQL / AST shape before
 finalizing rewrite logic.
 
+### 11.6 Understand the cost model you are creating
+
+The agent MUST reason about the execution cost of the rewritten SQL, not only its correctness.
+
+Measured lesson from this repository:
+
+- for local Exasol tables, the expensive part of path and rowset queries was usually the
+  underlying join pattern and automatic index creation, not the wrapper view layer itself
+- the virtual-schema path added a small recurring `PUSHDOWN` cost on Nano
+- the most expensive wrapper-view pattern was hidden semantic recovery that required an extra
+  self-join back to the root table
+
+Practical rule:
+
+- if the semantic wrapper can be expressed as the same joins a user would have written manually,
+  the virtual schema is unlikely to save execution cost
+- if the virtual schema can avoid an extra hidden self-join or repeated semantic lookup, that is a
+  real performance argument in its favor
+
+For performance-sensitive work, the agent SHOULD compare:
+
+- cold run
+- warm run after `COMMIT`
+- profile rows in `EXA_USER_PROFILE_LAST_DAY`
+
+Do not rely on a single timing number.
+
 ---
 
 ## 12. adapterNotes (OPTIONAL, ADVANCED)
@@ -502,6 +559,18 @@ For rewrite-heavy adapters, the agent SHOULD also add live integration checks fo
 - `SELECT *` correctness when columns are hidden or synthesized
 - `EXPLAIN VIRTUAL` output for the critical rewrite paths
 - any companion preprocessor behavior that changes user-facing SQL
+- cold-vs-warm profile comparisons when the design adds joins or hidden semantic lookups
+
+Recommended performance workflow when comparing designs:
+
+1. `ALTER SESSION SET QUERY_CACHE='OFF'`
+2. `ALTER SESSION SET PROFILE='ON'`
+3. run the query
+4. `ALTER SESSION SET PROFILE='OFF'`
+5. `FLUSH STATISTICS`
+6. inspect `EXA_USER_PROFILE_LAST_DAY`
+7. `COMMIT` to persist automatically created join indexes
+8. rerun as the warm case
 
 ---
 
@@ -515,6 +584,8 @@ The agent MUST NOT:
 - skip validation
 - hardcode credentials
 - hide TLS limitations
+- choose a virtual schema for local Exasol tables by reflex when wrapper views plus a preprocessor
+  would be simpler and more UDF-friendly
 
 ---
 
@@ -529,10 +600,17 @@ The agent SHOULD internally reason as follows:
    - Connector → IMPORT-based pushdown
    - Semantic layer → SELECT rewrite
 
-3. Can this capability be rewritten correctly?
+3. Does the source already live in Exasol and mainly need a cleaner local semantic surface?
+   - If yes → compare wrapper views + preprocessor against a virtual schema before committing
+
+4. Is ordinary UDF syntax on the wrapped data an important requirement?
+   - If yes → remember the known virtual-schema UDF-stripping boundary and strongly consider
+     wrapper views + preprocessor
+
+5. Can this capability be rewritten correctly?
    - If unsure → do not advertise
 
-4. Does metadata change frequently?
+6. Does metadata change frequently?
    - If yes → avoid caching
    - If no → consider adapterNotes
 
@@ -659,6 +737,12 @@ These define the *contract* your adapter must satisfy.
 
 - EXPLAIN VIRTUAL (inspect pushdown SQL)  
   https://docs.exasol.com/db/latest/sql/explain_virtual.htm
+
+- Profiling (inspect execution cost, cold/warm behavior, and `INDEX CREATE`)  
+  https://docs.exasol.com/db/latest/database_concepts/profiling.htm
+
+- Indexes (understand automatic join-index creation and persistence after `COMMIT`)  
+  https://docs.exasol.com/db/latest/performance/indexes.htm
 
 - Lua UDF scripts (Lua execution environment and entrypoint contract)  
   https://docs.exasol.com/db/latest/database_concepts/udf_scripts/lua.htm
