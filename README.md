@@ -329,6 +329,21 @@ This verifies:
 - helper arity and scope errors
 - generator validation errors
 
+Modeling and BI regression:
+
+```bash
+python3 tests/test_wrapper_modeling.py
+```
+
+This verifies:
+
+- nested CTE stacks with mixed helper, rowset, and deep-path logic
+- stacked derived tables over projected wrapper expressions
+- `UNION ALL` across multiple wrapper roots with branch-local helper semantics
+- `GROUP BY` / `ORDER BY` over projected wrapper expressions
+- persisted `CREATE VIEW ... AS SELECT` and `CREATE TABLE ... AS SELECT` flows
+- UDF usage on iterator-local helper expressions
+
 Final wrapper-package evaluation:
 
 ```bash

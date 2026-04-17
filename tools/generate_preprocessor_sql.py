@@ -1896,6 +1896,65 @@ ARRAY_ITERATION_LUA = """
         local nested_tokens = tokenize_path_sql(nested_sql)
         local first_token = next_significant_path_token(nested_tokens, 1)
         if first_token ~= nil and path_token_is_query_start(first_token) then
+            local function top_level_set_operator_end(operator_index)
+                local operator_token = nested_tokens[operator_index]
+                local normalized = normalize_path_token(operator_token)
+                if normalized == "UNION" or normalized == "EXCEPT" or normalized == "MINUS" then
+                    local next_token, next_index = next_significant_path_token(nested_tokens, operator_index + 1)
+                    if next_token ~= nil then
+                        local next_normalized = normalize_path_token(next_token)
+                        if next_normalized == "ALL" or next_normalized == "DISTINCT" then
+                            return next_index
+                        end
+                    end
+                end
+                return operator_index
+            end
+
+            local function rewrite_top_level_set_query()
+                local depth = 0
+                local branch_start = 1
+                local found_set_operator = false
+                local rewritten_parts = {}
+                local token_index = 1
+                while token_index <= #nested_tokens do
+                    local token = nested_tokens[token_index]
+                    if token.type == "punct" and token.text == "(" then
+                        depth = depth + 1
+                    elseif token.type == "punct" and token.text == ")" then
+                        depth = depth - 1
+                    elseif depth == 0 then
+                        local normalized = normalize_path_token(token)
+                        if normalized == "UNION" or normalized == "EXCEPT" or normalized == "MINUS" then
+                            found_set_operator = true
+                            rewritten_parts[#rewritten_parts + 1] = query_block_rewriter(
+                                    slice_path_tokens_text(nested_tokens, branch_start, token_index - 1)
+                            )
+                            local operator_end = top_level_set_operator_end(token_index)
+                            rewritten_parts[#rewritten_parts + 1] = slice_path_tokens_text(
+                                    nested_tokens,
+                                    token_index,
+                                    operator_end
+                            )
+                            branch_start = operator_end + 1
+                            token_index = operator_end
+                        end
+                    end
+                    token_index = token_index + 1
+                end
+                if not found_set_operator then
+                    return nil
+                end
+                rewritten_parts[#rewritten_parts + 1] = query_block_rewriter(
+                        slice_path_tokens_text(nested_tokens, branch_start, #nested_tokens)
+                )
+                return table.concat(rewritten_parts)
+            end
+
+            local rewritten_set_query = rewrite_top_level_set_query()
+            if rewritten_set_query ~= nil then
+                return rewritten_set_query
+            end
             return query_block_rewriter(nested_sql)
         end
         return nested_sql
