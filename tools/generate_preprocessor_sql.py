@@ -651,8 +651,6 @@ COMMON_LUA = """
 
 
 JOIN_MODE_LUA = """
-    local PATH_PLACEHOLDER_PREFIX = "__JVS_PATH_REF_"
-
     local function raise_path_error(path, message)
         error('JVS-PATH-ERROR: "' .. path .. '": ' .. message, 0)
     end
@@ -669,10 +667,6 @@ JOIN_MODE_LUA = """
             end
         end
         return table.concat(out)
-    end
-
-    local function read_table_reference(tokens)
-        return read_base_table_reference(tokens)
     end
 
     local function qualify_table_name(base_table, child_table_name)
@@ -823,60 +817,94 @@ JOIN_MODE_LUA = """
         return step.name
     end
 
+    local function read_base_table_reference_for_path_tokens(tokens)
+        local depth = 0
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if token.type == "punct" and token.text == "(" then
+                depth = depth + 1
+            elseif token.type == "punct" and token.text == ")" then
+                depth = depth - 1
+            elseif depth == 0 and normalize_path_token(token) == "FROM" then
+                local binding, alias_end_index = read_standard_source_binding(tokens, index + 1)
+                if binding == nil then
+                    return nil
+                end
+                binding.insert_after_index = alias_end_index
+                return binding
+            end
+            index = index + 1
+        end
+        return nil
+    end
+
     local function collect_path_references(tokens)
-        local out = {}
         local path_references = {}
         local index = 1
         while index <= #tokens do
             local identifier = read_path_identifier(tokens, index)
             if identifier == nil then
-                out[#out + 1] = tokens[index].text
                 index = index + 1
             else
-                local placeholder_name = PATH_PLACEHOLDER_PREFIX .. tostring(#path_references + 1) .. "__"
-                local placeholder = encode_quoted_identifier(placeholder_name)
                 path_references[#path_references + 1] = {
-                    placeholder = placeholder,
+                    token_index = index,
                     path = identifier
                 }
-                out[#out + 1] = placeholder
                 index = index + 1
             end
         end
-        return table.concat(out), path_references
+        return path_references
     end
 
-    local function rewrite_path_identifiers_in_sql(sqltext)
+    local function raise_on_qualified_path_references(tokens)
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if token.type == "word" or token.type == "quoted_identifier" then
+                local dot_token, dot_index = next_significant_path_token(tokens, index + 1)
+                local member_token = nil
+                if dot_token ~= nil and dot_token.type == "punct" and dot_token.text == "." then
+                    member_token = next_significant_path_token(tokens, dot_index + 1)
+                end
+                if member_token ~= nil and member_token.type == "quoted_identifier"
+                        and (string.find(member_token.identifier, "[", 1, true) ~= nil
+                                or string.find(member_token.identifier, ".", 1, true) ~= nil) then
+                    raise_path_error(
+                        member_token.identifier,
+                        'Qualified path and bracket syntax is not supported yet. '
+                                .. 'Use an unqualified root JSON path, nested JOIN ... IN alias."path", '
+                                .. 'or plain columns from the iterator aliases.'
+                    )
+                end
+            end
+            index = index + 1
+        end
+    end
+
+    local function rewrite_path_query_block_sql(sqltext)
         local original_tokens = tokenize_path_sql(sqltext)
         if not is_path_query_statement(original_tokens) then
             return sqltext
         end
 
-        local placeholder_sql, path_references = collect_path_references(original_tokens)
+        raise_on_qualified_path_references(original_tokens)
+        local path_references = collect_path_references(original_tokens)
         if #path_references == 0 then
-            return placeholder_sql
+            return sqltext
         end
 
-        local tokens = sqlparsing.tokenize(placeholder_sql)
-        local table_references = collect_top_level_table_references(tokens)
-        local allowed_references = collect_allowed_table_references(table_references)
-        if #allowed_references == 0 then
-            raise_scope_error(
-                "JSON path syntax",
-                json_schema_scope_example()
-            )
-        end
-        local base_table = read_table_reference(tokens)
+        local base_table = read_base_table_reference_for_path_tokens(original_tokens)
         if base_table == nil then
             error("JVS-PATH-ERROR: Path rewrite currently requires a query with a single base table in FROM.", 0)
-        elseif not table_reference_is_in_allowed_schema(base_table) then
+        elseif base_table.kind ~= "json_source" then
             raise_scope_error(
                 "JSON path syntax",
                 'Path rewriting currently requires the base table in FROM to be one of the configured JSON schemas.'
             )
         end
 
-        local root_ref = render_bound_identifier(base_table.alias_name or base_table.table_name)
+        local root_ref = base_table.reference_sql or render_bound_identifier(base_table.alias_name or base_table.table_name)
         local join_aliases = {}
         local join_sql_parts = {}
         local replacements = {}
@@ -963,17 +991,21 @@ JOIN_MODE_LUA = """
             if replacement == nil then
                 raise_path_error(reference.path, "Unable to rewrite the path expression.")
             end
-            replacements[reference.placeholder] = replacement
+            replacements[reference.token_index] = replacement
         end
 
         local out = {}
-        for index, token in ipairs(tokens) do
-            out[#out + 1] = replacements[token] or token
+        for index, token in ipairs(original_tokens) do
+            out[#out + 1] = replacements[index] or token.text
             if index == base_table.insert_after_index and #join_sql_parts > 0 then
                 out[#out + 1] = table.concat(join_sql_parts)
             end
         end
         return table.concat(out)
+    end
+
+    local function rewrite_path_identifiers_in_sql(sqltext)
+        return rewrite_sql_with_query_blocks(sqltext, rewrite_path_query_block_sql)
     end
 """
 
@@ -1514,6 +1546,58 @@ ARRAY_ITERATION_LUA = """
         return nil
     end
 
+    local function rewrite_sql_with_query_blocks(sqltext, query_block_rewriter)
+        local tokens = tokenize_path_sql(sqltext)
+        local out = {}
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if token.type == "punct" and token.text == "(" then
+                local closing_index = find_matching_path_paren(tokens, index)
+                local first_inside, first_inside_index = next_significant_path_token(tokens, index + 1)
+                if closing_index ~= nil and first_inside_index ~= nil and path_token_is_query_start(first_inside) then
+                    out[#out + 1] = "("
+                    out[#out + 1] = rewrite_sql_with_query_blocks(
+                            slice_path_tokens_text(tokens, index + 1, closing_index - 1),
+                            query_block_rewriter
+                    )
+                    out[#out + 1] = ")"
+                    index = closing_index + 1
+                else
+                    out[#out + 1] = token.text
+                    index = index + 1
+                end
+            elseif normalize_path_token(token) == "AS" then
+                local next_token, next_index = next_significant_path_token(tokens, index + 1)
+                if next_token ~= nil and path_token_is_query_start(next_token) then
+                    out[#out + 1] = token.text
+                    if next_index > index + 1 then
+                        out[#out + 1] = slice_path_tokens_text(tokens, index + 1, next_index - 1)
+                    end
+                    out[#out + 1] = rewrite_sql_with_query_blocks(
+                            slice_path_tokens_text(tokens, next_index, #tokens),
+                            query_block_rewriter
+                    )
+                    return table.concat(out)
+                else
+                    out[#out + 1] = token.text
+                    index = index + 1
+                end
+            else
+                out[#out + 1] = token.text
+                index = index + 1
+            end
+        end
+
+        local nested_sql = table.concat(out)
+        local nested_tokens = tokenize_path_sql(nested_sql)
+        local first_token = next_significant_path_token(nested_tokens, 1)
+        if first_token ~= nil and path_token_is_query_start(first_token) then
+            return query_block_rewriter(nested_sql)
+        end
+        return nested_sql
+    end
+
     local function render_pending_where(pending_filters)
         return table.concat(pending_filters, " AND ")
     end
@@ -1601,6 +1685,40 @@ ARRAY_ITERATION_LUA = """
                 out[#out + 1] = token.text
                 index = index + 1
             elseif depth == 0 then
+                if token.type == "word" or token.type == "quoted_identifier" then
+                    local identifier_name = token.type == "quoted_identifier" and token.identifier or token.text
+                    local binding = lookup_scope(scope, identifier_name)
+                    local dot_token, dot_index = next_significant_path_token(tokens, index + 1)
+                    local member_token, member_index = nil, nil
+                    if binding ~= nil and dot_token ~= nil then
+                        member_token, member_index = next_significant_path_token(tokens, dot_index + 1)
+                    end
+                    local member_name = nil
+                    if member_token ~= nil and member_token.type == "quoted_identifier" then
+                        member_name = member_token.identifier
+                    elseif member_token ~= nil and member_token.type == "word" then
+                        member_name = member_token.text
+                    end
+                    if binding ~= nil and (binding.kind == "iterator_row" or binding.kind == "iterator_value")
+                            and dot_token ~= nil and dot_token.type == "punct" and dot_token.text == "."
+                            and member_token ~= nil and member_token.type == "quoted_identifier"
+                            and (string.find(member_name, "[", 1, true) ~= nil
+                                    or string.find(member_name, ".", 1, true) ~= nil) then
+                        raise_path_error(
+                            member_name,
+                            'Path and bracket syntax on iterator aliases is not supported yet. '
+                                    .. 'Use direct iterator columns, nested JOIN ... IN alias."path", or root-level JSON paths.'
+                        )
+                    elseif binding ~= nil and (binding.kind == "iterator_row" or binding.kind == "iterator_value")
+                            and dot_token ~= nil and dot_token.type == "punct" and dot_token.text == "."
+                            and normalize_identifier_value(member_name) == "_INDEX" then
+                        out[#out + 1] = token.text
+                        out[#out + 1] = "."
+                        out[#out + 1] = encode_quoted_identifier("_index")
+                        index = member_index + 1
+                        goto continue
+                    end
+                end
                 local prefix = read_join_prefix_at(tokens, index)
                 if prefix ~= nil then
                     local source_token, source_start_index = next_significant_path_token(tokens, prefix.end_index + 1)
@@ -1654,6 +1772,16 @@ ARRAY_ITERATION_LUA = """
                 end
                 if binding ~= nil and (binding.kind == "iterator_row" or binding.kind == "iterator_value")
                         and dot_token ~= nil and dot_token.type == "punct" and dot_token.text == "."
+                        and member_token ~= nil and member_token.type == "quoted_identifier"
+                        and (string.find(member_name, "[", 1, true) ~= nil
+                                or string.find(member_name, ".", 1, true) ~= nil) then
+                    raise_path_error(
+                        member_name,
+                        'Path and bracket syntax on iterator aliases is not supported yet. '
+                                .. 'Use direct iterator columns, nested JOIN ... IN alias."path", or root-level JSON paths.'
+                    )
+                elseif binding ~= nil and (binding.kind == "iterator_row" or binding.kind == "iterator_value")
+                        and dot_token ~= nil and dot_token.type == "punct" and dot_token.text == "."
                         and normalize_identifier_value(member_name) == "_INDEX" then
                     out[#out + 1] = token.text
                     out[#out + 1] = "."
@@ -1676,13 +1804,17 @@ ARRAY_ITERATION_LUA = """
         return rewrite_iterator_index_references_in_sql(table.concat(out), scope)
     end
 
-    local function rewrite_array_iteration_in_sql(sqltext)
+    local function rewrite_array_iteration_query_sql(sqltext)
         local tokens = tokenize_path_sql(sqltext)
         local first_token = next_significant_path_token(tokens, 1)
         if first_token == nil or not path_token_is_query_start(first_token) then
             return sqltext
         end
         return rewrite_query_block_tokens(tokens, {})
+    end
+
+    local function rewrite_array_iteration_in_sql(sqltext)
+        return rewrite_sql_with_query_blocks(sqltext, rewrite_array_iteration_query_sql)
     end
 """
 
@@ -1786,6 +1918,34 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
             end
         end
         return lookup
+    end
+
+    local function query_has_top_level_user_join(sqltext)
+        local tokens = tokenize_path_sql(sqltext)
+        local depth = 0
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if token.type == "punct" and token.text == "(" then
+                depth = depth + 1
+            elseif token.type == "punct" and token.text == ")" then
+                depth = depth - 1
+            elseif depth == 0 then
+                local prefix = read_join_prefix_at(tokens, index)
+                if prefix ~= nil and prefix.kind ~= "from" then
+                    local binding, _ = read_standard_source_binding(tokens, prefix.end_index + 1)
+                    if binding == nil then
+                        return true
+                    end
+                    local alias_name = normalize_identifier_value(binding.alias_name or "")
+                    if string.sub(alias_name, 1, 6) ~= "__JVS_" then
+                        return true
+                    end
+                end
+            end
+            index = index + 1
+        end
+        return false
     end
 
     local function table_reference_sql(table_reference)
@@ -1901,8 +2061,7 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
         local visible_name = identifier_parts[#identifier_parts]
         local table_reference = nil
         if #identifier_parts == 1 then
-            local original_path_tokens = tokenize_path_sql(original_sqltext)
-            if path_tokens_have_top_level_join(original_path_tokens) then
+            if query_has_top_level_user_join(original_sqltext) then
                 raise_function_error(
                     function_name,
                     'Unqualified helper arguments are not supported in joined queries. Qualify the JSON property reference, for example JSON_IS_EXPLICIT_NULL(root_alias."note").'
@@ -2071,6 +2230,38 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
             end
         end
         return replacements, join_state.join_sql_parts
+    end
+
+    local function rewrite_helper_query_block_sql(sqltext)
+        local tokens = sqlparsing.tokenize(sqltext)
+        local base_table = read_base_table_reference(tokens)
+        local helper_call_replacements, helper_join_sql_parts =
+                collect_helper_call_replacements(sqltext, tokens, base_table)
+        local out = {}
+        local index = 1
+        while index <= #tokens do
+            local call = read_call(tokens, index)
+            if call and BLOCKED_FUNCTIONS[call.last_identifier] then
+                raise_function_error(call.last_identifier, BLOCKED_FUNCTION_MESSAGE)
+            end
+
+            local replacement = helper_call_replacements[index]
+            if replacement ~= nil then
+                out[#out + 1] = replacement.replacement_sql
+                index = replacement.closing_paren + 1
+            else
+                out[#out + 1] = tokens[index]
+                if base_table ~= nil and index == base_table.insert_after_index and #helper_join_sql_parts > 0 then
+                    out[#out + 1] = table.concat(helper_join_sql_parts)
+                end
+                index = index + 1
+            end
+        end
+        return table.concat(out)
+    end
+
+    local function rewrite_helper_calls_in_sql(sqltext)
+        return rewrite_sql_with_query_blocks(sqltext, rewrite_helper_query_block_sql)
     end
 """
 
@@ -2295,30 +2486,8 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
     local function rewrite(sqltext)
         local rewritten_sql = rewrite_array_iteration_in_sql(sqltext)
         rewritten_sql = rewrite_path_identifiers_in_sql(rewritten_sql)
-        local tokens = sqlparsing.tokenize(rewritten_sql)
-        local base_table = read_base_table_reference(tokens)
-        local helper_call_replacements, helper_join_sql_parts = collect_helper_call_replacements(sqltext, tokens, base_table)
-        local out = {{}}
-        local index = 1
-        while index <= #tokens do
-            local call = read_call(tokens, index)
-            if call and BLOCKED_FUNCTIONS[call.last_identifier] then
-                raise_function_error(call.last_identifier, BLOCKED_FUNCTION_MESSAGE)
-            end
-
-            local replacement = helper_call_replacements[index]
-            if replacement ~= nil then
-                out[#out + 1] = replacement.replacement_sql
-                index = replacement.closing_paren + 1
-            else
-                out[#out + 1] = tokens[index]
-                if base_table ~= nil and index == base_table.insert_after_index and #helper_join_sql_parts > 0 then
-                    out[#out + 1] = table.concat(helper_join_sql_parts)
-                end
-                index = index + 1
-            end
-        end
-        return table.concat(out)
+        rewritten_sql = rewrite_helper_calls_in_sql(rewritten_sql)
+        return rewritten_sql
     end
 
     sqlparsing.setsqltext(rewrite(sqlparsing.getsqltext()))

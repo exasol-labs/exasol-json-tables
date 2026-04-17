@@ -308,6 +308,122 @@ def main() -> None:
     """)
     assert_equal(deep_filter_rows, [("101",), ("102",)], "deep filter semantics")
 
+    cte_path_rows = fetch_all("""
+        WITH base AS (
+          SELECT
+            CAST("id" AS VARCHAR(10)) AS doc_id,
+            COALESCE("child.value", 'NULL') AS child_value
+          FROM JSON_VIEW.SAMPLE
+        )
+        SELECT doc_id, child_value
+        FROM base
+        ORDER BY doc_id
+    """)
+    assert_equal(cte_path_rows, [("1", "child-1"), ("2", "NULL"), ("3", "NULL")], "cte path syntax")
+
+    cte_helper_rows = fetch_all("""
+        WITH base AS (
+          SELECT
+            CAST("id" AS VARCHAR(10)) AS doc_id,
+            COALESCE(JSON_TYPEOF("value"), 'MISSING') AS value_type
+          FROM JSON_VIEW.SAMPLE
+        )
+        SELECT doc_id, value_type
+        FROM base
+        ORDER BY doc_id
+    """)
+    assert_equal(cte_helper_rows, [("1", "NUMBER"), ("2", "STRING"), ("3", "NULL")], "cte helper syntax")
+
+    derived_table_rows = fetch_all("""
+        SELECT *
+        FROM (
+          SELECT
+            CAST("id" AS VARCHAR(10)) AS doc_id,
+            COALESCE("child.value", 'NULL') AS child_value
+          FROM JSON_VIEW.SAMPLE
+        ) t
+        ORDER BY doc_id
+    """)
+    assert_equal(derived_table_rows, [("1", "child-1"), ("2", "NULL"), ("3", "NULL")], "derived-table path syntax")
+
+    alias_rows = fetch_all("""
+        SELECT
+          COALESCE("child.value", 'NULL') AS "child.value",
+          COALESCE("tags[LAST]", 'NULL') AS "tags[LAST]"
+        FROM JSON_VIEW.SAMPLE
+        ORDER BY "id"
+    """)
+    assert_equal(alias_rows, [("child-1", "blue"), ("NULL", "green"), ("NULL", "NULL")], "path-like output aliases")
+
+    ddl_con = connect()
+    try:
+        ddl_con.execute("DROP SCHEMA IF EXISTS JVS_ANALYTICS CASCADE")
+        ddl_con.execute("CREATE SCHEMA JVS_ANALYTICS")
+        install_wrapper_preprocessor(ddl_con, [PUBLIC_WRAPPER_SCHEMA], [HELPER_WRAPPER_SCHEMA])
+        ddl_con.execute("""
+            CREATE OR REPLACE VIEW JVS_ANALYTICS.SAMPLE_PATHS AS
+            SELECT
+              CAST("id" AS VARCHAR(10)) AS doc_id,
+              COALESCE("child.value", 'NULL') AS child_value,
+              COALESCE(JSON_TYPEOF("value"), 'MISSING') AS value_type
+            FROM JSON_VIEW.SAMPLE
+        """)
+        ddl_con.execute("""
+            CREATE OR REPLACE TABLE JVS_ANALYTICS.SAMPLE_NOTES AS
+            SELECT
+              CAST("id" AS VARCHAR(10)) AS doc_id,
+              COALESCE("meta.info.note", 'NULL') AS deep_note
+            FROM JSON_VIEW.SAMPLE
+        """)
+        ddl_con.execute("""
+            CREATE OR REPLACE VIEW JVS_ANALYTICS.SAMPLE_ITEMS AS
+            SELECT
+              CAST(s."id" AS VARCHAR(10)) AS doc_id,
+              CAST(item."_index" AS VARCHAR(10)) AS item_index,
+              item.value,
+              item.label
+            FROM JSON_VIEW.SAMPLE s
+            JOIN item IN s."items"
+        """)
+        ddl_con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")
+        ddl_path_rows = ddl_con.execute("""
+            SELECT doc_id, child_value, value_type
+            FROM JVS_ANALYTICS.SAMPLE_PATHS
+            ORDER BY doc_id
+        """).fetchall()
+        ddl_note_rows = ddl_con.execute("""
+            SELECT doc_id, deep_note
+            FROM JVS_ANALYTICS.SAMPLE_NOTES
+            ORDER BY doc_id
+        """).fetchall()
+        ddl_rowset_rows = ddl_con.execute("""
+            SELECT doc_id, item_index, "value", "label"
+            FROM JVS_ANALYTICS.SAMPLE_ITEMS
+            ORDER BY doc_id, item_index
+        """).fetchall()
+    finally:
+        try:
+            ddl_con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")
+        except Exception:
+            pass
+        ddl_con.close()
+
+    assert_equal(
+        ddl_path_rows,
+        [("1", "child-1", "NUMBER"), ("2", "NULL", "STRING"), ("3", "NULL", "NULL")],
+        "create view path/helper syntax",
+    )
+    assert_equal(
+        ddl_note_rows,
+        [("1", "deep"), ("2", "NULL"), ("3", "NULL")],
+        "create table path syntax",
+    )
+    assert_equal(
+        ddl_rowset_rows,
+        [("1", "0", "first", "A"), ("1", "1", "second", "B"), ("2", "0", "only", "C")],
+        "create view rowset syntax",
+    )
+
     udf_wrapper = fetch_all("""
         SELECT
           CAST("id" AS VARCHAR(10)),
@@ -332,6 +448,12 @@ def main() -> None:
     print("deep explicit-null rows:", deep_explicit_null_rows)
     print("root variant rows:", root_variant_rows)
     print("deep variant rows:", deep_variant_rows)
+    print("cte path rows:", cte_path_rows)
+    print("cte helper rows:", cte_helper_rows)
+    print("alias rows:", alias_rows)
+    print("ddl path rows:", ddl_path_rows)
+    print("ddl note rows:", ddl_note_rows)
+    print("ddl rowset rows:", ddl_rowset_rows)
 
 
 if __name__ == "__main__":

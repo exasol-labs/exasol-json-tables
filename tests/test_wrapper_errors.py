@@ -185,6 +185,19 @@ def main() -> None:
         )
         assert_query_error(
             con,
+            '''
+            SELECT
+              d."doc_id",
+              entry._index,
+              entry."extras[LAST]"
+            FROM JSON_VIEW.DEEPDOC d
+            JOIN entry IN d."chain.next.next.next.next.next.next.next.entries"
+            ''',
+            ["JVS-PATH-ERROR", "extras[LAST]", "iterator aliases"],
+            "iterator alias bracket path error",
+        )
+        assert_query_error(
+            con,
             "SELECT JSON_IS_EXPLICIT_NULL() FROM JSON_VIEW.SAMPLE",
             ["JVS-FUNCTION-ERROR", "JSON_IS_EXPLICIT_NULL", "Expected exactly one argument"],
             "zero-argument helper error",
