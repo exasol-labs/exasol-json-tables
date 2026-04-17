@@ -952,6 +952,12 @@ JOIN_MODE_LUA = """
                     reference.path,
                     'Could not resolve the qualified path root "' .. reference.root_name .. '" in the current query block.'
                 )
+            elseif binding.kind == "derived_source" then
+                raise_path_error(
+                    reference.path,
+                    'Path syntax does not resolve through derived-table aliases yet. '
+                            .. 'Move the JSON path into the inner SELECT or query the wrapper view directly.'
+                )
             elseif binding.kind == "iterator_value" then
                 raise_path_error(
                     reference.path,
@@ -1087,9 +1093,23 @@ JOIN_MODE_LUA = """
 
         local base_table = nil
         if #path_references > 0 then
+            local base_binding = read_base_source_binding_from_path_tokens(original_tokens)
             base_table = read_base_table_reference_for_path_tokens(original_tokens)
             if base_table == nil then
+                if base_binding ~= nil and base_binding.kind == "derived_source" then
+                    raise_scope_error(
+                        "JSON path syntax",
+                        'JSON path syntax does not resolve through derived tables yet. '
+                                .. 'Move the JSON path into the inner SELECT or query the wrapper view directly.'
+                    )
+                end
                 error("JVS-PATH-ERROR: Path rewrite currently requires a query with a single base table in FROM.", 0)
+            elseif base_table.kind == "derived_source" then
+                raise_scope_error(
+                    "JSON path syntax",
+                    'JSON path syntax does not resolve through derived tables yet. '
+                            .. 'Move the JSON path into the inner SELECT or query the wrapper view directly.'
+                )
             elseif base_table.kind ~= "json_source" then
                 raise_scope_error(
                     "JSON path syntax",
@@ -1465,6 +1485,24 @@ ARRAY_ITERATION_LUA = """
             binding.helper_schema_name = helper_schema_name_for_schema_name(binding.schema_name)
         end
         return binding, alias_end_index
+    end
+
+    local function read_base_source_binding_from_path_tokens(tokens)
+        local depth = 0
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if token.type == "punct" and token.text == "(" then
+                depth = depth + 1
+            elseif token.type == "punct" and token.text == ")" then
+                depth = depth - 1
+            elseif depth == 0 and normalize_path_token(token) == "FROM" then
+                local binding, _ = read_standard_source_binding(tokens, index + 1)
+                return binding
+            end
+            index = index + 1
+        end
+        return nil
     end
 
     local function read_iterator_path_source(tokens, source_start_index)
@@ -2395,6 +2433,13 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
                     "Could not resolve helper argument to a JSON property reference in the current query block."
                 )
             end
+            if table_reference.kind == "derived_source" then
+                raise_function_error(
+                    function_name,
+                    'JSON helper functions do not resolve through derived-table aliases yet. '
+                            .. 'Move the helper call into the inner SELECT or query the wrapper view directly.'
+                )
+            end
             if table_reference.kind == "iterator_value" then
                 raise_function_error(
                     function_name,
@@ -2791,11 +2836,16 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
 
     local function helper_query_targets_allowed_schema(sqltext)
         local path_tokens = tokenize_path_sql(sqltext)
-        local base_table = read_base_table_reference_from_path_tokens(path_tokens)
-        if base_table == nil then
+        local base_binding = read_base_source_binding_from_path_tokens(path_tokens)
+        if base_binding == nil then
             return false, json_schema_scope_example()
         end
-        if not table_reference_is_in_allowed_schema(base_table) then
+        if base_binding.kind == "derived_source" then
+            return false,
+                    'JSON helper functions do not resolve through derived tables yet. '
+                    .. 'Move the helper call into the inner SELECT or query the wrapper view directly.'
+        end
+        if base_binding.kind ~= "json_source" or not table_reference_is_in_allowed_schema(base_binding) then
             return false, json_schema_scope_example()
         end
         return true, nil

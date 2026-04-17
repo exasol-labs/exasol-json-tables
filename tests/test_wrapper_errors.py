@@ -127,8 +127,14 @@ def main() -> None:
         assert_query_error(
             con,
             'SELECT "child.value" FROM (SELECT * FROM JSON_VIEW.SAMPLE) s',
-            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VIEW"],
+            ["JVS-SCOPE-ERROR", "JSON path syntax", "derived tables"],
             "unsupported query shape error",
+        )
+        assert_query_error(
+            con,
+            'SELECT s."child.value" FROM (SELECT * FROM JSON_VIEW.SAMPLE) s',
+            ["JVS-PATH-ERROR", "child.value", "derived-table aliases"],
+            "qualified derived-table path error",
         )
         assert_query_error(
             con,
@@ -277,8 +283,14 @@ def main() -> None:
         assert_query_error(
             con,
             'SELECT JSON_IS_EXPLICIT_NULL("child.value") FROM (SELECT * FROM JSON_VIEW.SAMPLE) s',
-            ["JVS-SCOPE-ERROR", "JSON path syntax", "JSON_VIEW"],
+            ["JVS-SCOPE-ERROR", "JSON path syntax", "derived tables"],
             "wrapper derived-table helper scope error",
+        )
+        assert_query_error(
+            con,
+            'SELECT JSON_TYPEOF(s."value") FROM (SELECT * FROM JSON_VIEW.SAMPLE) s',
+            ["JVS-SCOPE-ERROR", "JSON helper functions", "derived tables"],
+            "qualified derived-table helper scope error",
         )
 
         assert_query_rows(

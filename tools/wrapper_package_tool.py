@@ -520,6 +520,12 @@ def print_install_next_steps(config: dict[str, Any], smoke_test_sql: str) -> Non
     print(smoke_test_sql)
 
 
+def print_activation_reminder(config: dict[str, Any], smoke_test_sql: str) -> None:
+    print("Activation reminder:")
+    print(build_activation_sql(config, include_semicolon=True))
+    print(smoke_test_sql)
+
+
 def validate_package_files(config_path: Path, config: dict[str, Any], manifest_path: Path, views_sql_path: Path, preprocessor_sql_path: Path) -> None:
     if not views_sql_path.exists():
         raise SystemExit(f"Wrapper views SQL file does not exist: {views_sql_path}")
@@ -690,6 +696,7 @@ def command_validate(args: argparse.Namespace) -> None:
             "Validated installed package for "
             f'{config["wrapperSchema"]}/{config["helperSchema"]}/{config["preprocessor"]["schema"]}.{config["preprocessor"]["script"]}'
         )
+        print_activation_reminder(config, build_smoke_test_query(config, manifest))
 
 
 def main() -> None:

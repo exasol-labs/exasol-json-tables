@@ -137,7 +137,7 @@ def main() -> None:
     if "Smoke test rows:" not in activate_stdout:
         raise AssertionError("install --activate-session should print smoke test rows")
 
-    subprocess.run(
+    validate_result = subprocess.run(
         [
             "python3",
             str(ROOT / "tools" / "wrapper_package_tool.py"),
@@ -147,7 +147,16 @@ def main() -> None:
             "--check-installed",
         ],
         check=True,
+        capture_output=True,
+        text=True,
     )
+    validate_stdout = validate_result.stdout
+    if "Activation reminder:" not in validate_stdout:
+        raise AssertionError("validate --check-installed should print an activation reminder")
+    if f'ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = "{PREPROCESSOR_SCHEMA}"."{PREPROCESSOR_SCRIPT}";' not in validate_stdout:
+        raise AssertionError("validate --check-installed should print an activation snippet")
+    if f'FROM "{WRAPPER_SCHEMA}"."DEEPDOC" LIMIT 5;' not in validate_stdout:
+        raise AssertionError("validate --check-installed should print a smoke-test query")
 
     con = connect()
     try:

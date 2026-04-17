@@ -104,6 +104,7 @@ Important contract note:
 - Those helper functions also work on object-array iterator rows such as `JSON_TYPEOF(item."value")`, `JSON_AS_DECIMAL(item."amount")`, and `JSON_AS_BOOLEAN(item."enabled")` after `JOIN item IN s."items"`.
 - Object-array iterator rows also support JSON path and bracket traversal such as `item."nested.note"` and `item."nested.items[LAST].value"`.
 - Helper functions and path/bracket traversal are still not supported on scalar `VALUE` iterators such as `JOIN VALUE tag IN s."tags"`.
+- Path/helper syntax does not resolve through derived-table roots yet. Move the JSON expression into the inner `SELECT` or query the wrapper view directly.
 
 ## Quickstart
 
@@ -156,6 +157,8 @@ python3 tools/wrapper_package_tool.py validate \
   --package-config ./dist/json_wrapper_package.json \
   --check-installed
 ```
+
+`validate --check-installed` also prints an activation reminder plus smoke-test query, so operators can immediately apply the session-level step in the SQL client where they plan to use wrapper syntax.
 
 If helper behavior changes but the wrapper views do not, regenerate only the preprocessor:
 
