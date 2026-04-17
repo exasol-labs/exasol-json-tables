@@ -176,6 +176,16 @@ def main() -> None:
         assert_query_error(
             con,
             '''
+            SELECT JSON_TYPEOF(tag)
+            FROM JSON_VIEW.SAMPLE s
+            JOIN VALUE tag IN s."tags"
+            ''',
+            ["JVS-FUNCTION-ERROR", "JSON_TYPEOF", "VALUE iterators"],
+            "value iterator helper error",
+        )
+        assert_query_error(
+            con,
+            '''
             SELECT s."id"
             FROM JSON_VIEW.SAMPLE s
             JOIN item IN s."meta.items[LAST]"
@@ -187,14 +197,12 @@ def main() -> None:
             con,
             '''
             SELECT
-              d."doc_id",
-              entry._index,
-              entry."extras[LAST]"
-            FROM JSON_VIEW.DEEPDOC d
-            JOIN entry IN d."chain.next.next.next.next.next.next.next.entries"
+              tag."extras[LAST]"
+            FROM JSON_VIEW.SAMPLE s
+            JOIN VALUE tag IN s."tags"
             ''',
-            ["JVS-PATH-ERROR", "extras[LAST]", "iterator aliases"],
-            "iterator alias bracket path error",
+            ["JVS-PATH-ERROR", "extras[LAST]", "VALUE iterators"],
+            "value iterator qualified path error",
         )
         assert_query_error(
             con,

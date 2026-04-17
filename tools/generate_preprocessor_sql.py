@@ -857,81 +857,144 @@ JOIN_MODE_LUA = """
         return path_references
     end
 
-    local function raise_on_qualified_path_references(tokens)
+    local function collect_qualified_path_references(tokens)
+        local references = {}
         local index = 1
         while index <= #tokens do
             local token = tokens[index]
-            if token.type == "word" or token.type == "quoted_identifier" then
+            if token ~= nil and (token.type == "word" or token.type == "quoted_identifier") then
                 local dot_token, dot_index = next_significant_path_token(tokens, index + 1)
-                local member_token = nil
+                local member_token, member_index = nil, nil
                 if dot_token ~= nil and dot_token.type == "punct" and dot_token.text == "." then
-                    member_token = next_significant_path_token(tokens, dot_index + 1)
+                    member_token, member_index = next_significant_path_token(tokens, dot_index + 1)
                 end
                 if member_token ~= nil and member_token.type == "quoted_identifier"
                         and (string.find(member_token.identifier, "[", 1, true) ~= nil
                                 or string.find(member_token.identifier, ".", 1, true) ~= nil) then
-                    raise_path_error(
-                        member_token.identifier,
-                        'Qualified path and bracket syntax is not supported yet. '
-                                .. 'Use an unqualified root JSON path, nested JOIN ... IN alias."path", '
-                                .. 'or plain columns from the iterator aliases.'
-                    )
+                    references[#references + 1] = {
+                        token_index = index,
+                        end_index = member_index,
+                        root_name = token.type == "quoted_identifier" and token.identifier or token.text,
+                        path = member_token.identifier
+                    }
+                    index = member_index + 1
+                else
+                    index = index + 1
+                end
+            else
+                index = index + 1
+            end
+        end
+        return references
+    end
+
+    local function collect_top_level_source_bindings_for_paths(tokens)
+        local lookup = {}
+        local depth = 0
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if token.type == "punct" and token.text == "(" then
+                depth = depth + 1
+            elseif token.type == "punct" and token.text == ")" then
+                depth = depth - 1
+            elseif depth == 0 then
+                local prefix = read_join_prefix_at(tokens, index)
+                if prefix ~= nil then
+                    local binding, insert_after_index = read_standard_source_binding(tokens, prefix.end_index + 1)
+                    if binding ~= nil then
+                        binding.insert_after_index = insert_after_index
+                        local alias_key = normalize_identifier_value(binding.alias_name or binding.table_name)
+                        if alias_key ~= nil then
+                            lookup[alias_key] = binding
+                        end
+                        local table_key = normalize_identifier_value(binding.table_name)
+                        if table_key ~= nil and lookup[table_key] == nil then
+                            lookup[table_key] = binding
+                        end
+                        if insert_after_index ~= nil then
+                            index = insert_after_index
+                        end
+                    end
                 end
             end
             index = index + 1
         end
+        return lookup
     end
 
-    local function rewrite_path_query_block_sql(sqltext)
-        local original_tokens = tokenize_path_sql(sqltext)
-        if not is_path_query_statement(original_tokens) then
-            return sqltext
+    local function add_join_insertion(join_insertions, insert_after_index, join_sql)
+        if insert_after_index == nil or join_sql == nil or join_sql == "" then
+            return
+        end
+        if join_insertions[insert_after_index] == nil then
+            join_insertions[insert_after_index] = {}
+        end
+        join_insertions[insert_after_index][#join_insertions[insert_after_index] + 1] = join_sql
+    end
+
+    local function build_qualified_path_rewrite_plan(tokens)
+        local references = collect_qualified_path_references(tokens)
+        if #references == 0 then
+            return {}, {}
         end
 
-        raise_on_qualified_path_references(original_tokens)
-        local path_references = collect_path_references(original_tokens)
-        if #path_references == 0 then
-            return sqltext
-        end
-
-        local base_table = read_base_table_reference_for_path_tokens(original_tokens)
-        if base_table == nil then
-            error("JVS-PATH-ERROR: Path rewrite currently requires a query with a single base table in FROM.", 0)
-        elseif base_table.kind ~= "json_source" then
-            raise_scope_error(
-                "JSON path syntax",
-                'Path rewriting currently requires the base table in FROM to be one of the configured JSON schemas.'
-            )
-        end
-
-        local root_ref = base_table.reference_sql or render_bound_identifier(base_table.alias_name or base_table.table_name)
+        local binding_lookup = collect_top_level_source_bindings_for_paths(tokens)
         local join_aliases = {}
-        local join_sql_parts = {}
+        local join_insertions = {}
         local replacements = {}
         local next_alias_id = 1
 
-        for _, reference in ipairs(path_references) do
+        for _, reference in ipairs(references) do
+            local binding = binding_lookup[normalize_identifier_value(reference.root_name)]
+            if binding == nil then
+                raise_path_error(
+                    reference.path,
+                    'Could not resolve the qualified path root "' .. reference.root_name .. '" in the current query block.'
+                )
+            elseif binding.kind == "iterator_value" then
+                raise_path_error(
+                    reference.path,
+                    'Path and bracket syntax is not supported on VALUE iterators yet. '
+                            .. 'Use plain SQL on the scalar iterator value or iterate an object array instead.'
+                )
+            elseif binding.kind ~= "iterator_row" and binding.kind ~= "json_source" then
+                raise_path_error(
+                    reference.path,
+                    'Qualified path roots must be wrapper-table aliases or object-array iterator aliases.'
+                )
+            elseif binding.has_row_id ~= true then
+                raise_path_error(
+                    reference.path,
+                    'This path root does not expose row identity, so nested path traversal is not supported.'
+                )
+            end
+
             local steps, parse_error = parse_path_steps(reference.path)
             if steps == nil or #steps == 0 then
                 raise_path_error(reference.path, parse_error or "Invalid path syntax.")
             end
-            local current_ref = root_ref
+
+            local current_ref = binding.reference_sql or render_bound_identifier(binding.alias_name or binding.table_name)
             local current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
-            local current_table_name = base_table.table_name
+            local current_table_name = binding.table_name
             local prefix = {}
             local replacement = nil
+
             for step_index, step in ipairs(steps) do
                 local is_last = step_index == #steps
                 prefix[#prefix + 1] = serialize_step(step)
-                local prefix_key = table.concat(prefix, ".")
+                local prefix_key = normalize_identifier_value(binding.alias_name or binding.table_name)
+                        .. "|" .. table.concat(prefix, ".")
+
                 if step.type == "property" then
                     if is_last then
                         replacement = current_ref .. "." .. encode_quoted_identifier(step.name)
                     else
                         local existing = join_aliases[prefix_key]
-                        local child_table_name = derive_child_table_name(current_table_name, step.name)
+                        local child_table_name = derive_child_table_name_for_iterator(current_table_name, step.name)
                         if existing == nil then
-                            local alias_name = "__jvs_path_" .. tostring(next_alias_id)
+                            local alias_name = "__jvs_qpath_" .. tostring(next_alias_id)
                             next_alias_id = next_alias_id + 1
                             local alias_ref = encode_quoted_identifier(alias_name)
                             existing = {
@@ -939,11 +1002,15 @@ JOIN_MODE_LUA = """
                                 table_name = child_table_name
                             }
                             join_aliases[prefix_key] = existing
-                            join_sql_parts[#join_sql_parts + 1] = " LEFT OUTER JOIN "
-                                    .. qualify_table_name(base_table, child_table_name)
-                                    .. " " .. alias_ref
-                                    .. " ON (" .. current_ref .. "." .. encode_quoted_identifier(step.name .. "|object")
-                                    .. " = " .. alias_ref .. "." .. encode_quoted_identifier("_id") .. ")"
+                            add_join_insertion(
+                                join_insertions,
+                                binding.insert_after_index,
+                                " LEFT OUTER JOIN "
+                                        .. qualify_table_name_for_iterator(binding, child_table_name)
+                                        .. " " .. alias_ref
+                                        .. " ON (" .. current_ref .. "." .. encode_quoted_identifier(step.name .. "|object")
+                                        .. " = " .. alias_ref .. "." .. encode_quoted_identifier("_id") .. ")"
+                            )
                         end
                         current_ref = existing.alias_ref
                         current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
@@ -957,13 +1024,13 @@ JOIN_MODE_LUA = """
                         replacement = current_ref .. "." .. encode_quoted_identifier(step.name .. "|array")
                     else
                         local existing = join_aliases[prefix_key]
-                        local child_table_name = derive_array_child_table_name(current_table_name, step.name)
-                        local alias_name = "__jvs_path_" .. tostring(next_alias_id)
+                        local child_table_name = derive_array_child_table_name_for_iterator(current_table_name, step.name)
                         local selector_sql = build_array_selector_sql(current_ref, step)
                         if selector_sql == nil then
                             raise_path_error(reference.path, "Unsupported array selector.")
                         end
                         if existing == nil then
+                            local alias_name = "__jvs_qpath_" .. tostring(next_alias_id)
                             next_alias_id = next_alias_id + 1
                             local alias_ref = encode_quoted_identifier(alias_name)
                             existing = {
@@ -971,13 +1038,17 @@ JOIN_MODE_LUA = """
                                 table_name = child_table_name
                             }
                             join_aliases[prefix_key] = existing
-                            join_sql_parts[#join_sql_parts + 1] = " LEFT OUTER JOIN "
-                                    .. qualify_table_name(base_table, child_table_name)
-                                    .. " " .. alias_ref
-                                    .. " ON (" .. current_row_id .. " = " .. alias_ref .. "."
-                                    .. encode_quoted_identifier("_parent")
-                                    .. " AND " .. alias_ref .. "." .. encode_quoted_identifier("_pos")
-                                    .. " = " .. selector_sql .. ")"
+                            add_join_insertion(
+                                join_insertions,
+                                binding.insert_after_index,
+                                " LEFT OUTER JOIN "
+                                        .. qualify_table_name_for_iterator(binding, child_table_name)
+                                        .. " " .. alias_ref
+                                        .. " ON (" .. current_row_id .. " = " .. alias_ref .. "."
+                                        .. encode_quoted_identifier("_parent")
+                                        .. " AND " .. alias_ref .. "." .. encode_quoted_identifier("_pos")
+                                        .. " = " .. selector_sql .. ")"
+                            )
                         end
                         current_ref = existing.alias_ref
                         current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
@@ -988,17 +1059,161 @@ JOIN_MODE_LUA = """
                     end
                 end
             end
+
             if replacement == nil then
-                raise_path_error(reference.path, "Unable to rewrite the path expression.")
+                raise_path_error(reference.path, "Unable to rewrite the qualified path expression.")
             end
-            replacements[reference.token_index] = replacement
+
+            replacements[reference.token_index] = {
+                end_index = reference.end_index,
+                replacement_sql = replacement
+            }
+        end
+
+        return replacements, join_insertions
+    end
+
+    local function rewrite_path_query_block_sql(sqltext)
+        local original_tokens = tokenize_path_sql(sqltext)
+        if not is_path_query_statement(original_tokens) then
+            return sqltext
+        end
+
+        local replacements, join_insertions = build_qualified_path_rewrite_plan(original_tokens)
+        local path_references = collect_path_references(original_tokens)
+        if #path_references == 0 and next(replacements) == nil then
+            return sqltext
+        end
+
+        local base_table = nil
+        if #path_references > 0 then
+            base_table = read_base_table_reference_for_path_tokens(original_tokens)
+            if base_table == nil then
+                error("JVS-PATH-ERROR: Path rewrite currently requires a query with a single base table in FROM.", 0)
+            elseif base_table.kind ~= "json_source" then
+                raise_scope_error(
+                    "JSON path syntax",
+                    'Path rewriting currently requires the base table in FROM to be one of the configured JSON schemas.'
+                )
+            end
+        end
+
+        if #path_references > 0 then
+            local root_ref = base_table.reference_sql or render_bound_identifier(base_table.alias_name or base_table.table_name)
+            local join_aliases = {}
+            local join_sql_parts = {}
+            local next_alias_id = 1
+
+            for _, reference in ipairs(path_references) do
+                local steps, parse_error = parse_path_steps(reference.path)
+                if steps == nil or #steps == 0 then
+                    raise_path_error(reference.path, parse_error or "Invalid path syntax.")
+                end
+                local current_ref = root_ref
+                local current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
+                local current_table_name = base_table.table_name
+                local prefix = {}
+                local replacement = nil
+                for step_index, step in ipairs(steps) do
+                    local is_last = step_index == #steps
+                    prefix[#prefix + 1] = serialize_step(step)
+                    local prefix_key = table.concat(prefix, ".")
+                    if step.type == "property" then
+                        if is_last then
+                            replacement = current_ref .. "." .. encode_quoted_identifier(step.name)
+                        else
+                            local existing = join_aliases[prefix_key]
+                            local child_table_name = derive_child_table_name(current_table_name, step.name)
+                            if existing == nil then
+                                local alias_name = "__jvs_path_" .. tostring(next_alias_id)
+                                next_alias_id = next_alias_id + 1
+                                local alias_ref = encode_quoted_identifier(alias_name)
+                                existing = {
+                                    alias_ref = alias_ref,
+                                    table_name = child_table_name
+                                }
+                                join_aliases[prefix_key] = existing
+                                join_sql_parts[#join_sql_parts + 1] = " LEFT OUTER JOIN "
+                                        .. qualify_table_name(base_table, child_table_name)
+                                        .. " " .. alias_ref
+                                        .. " ON (" .. current_ref .. "." .. encode_quoted_identifier(step.name .. "|object")
+                                        .. " = " .. alias_ref .. "." .. encode_quoted_identifier("_id") .. ")"
+                            end
+                            current_ref = existing.alias_ref
+                            current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
+                            current_table_name = existing.table_name
+                        end
+                    elseif step.type == "array" then
+                        if step.selector.kind == "size" then
+                            if not is_last then
+                                raise_path_error(reference.path, "SIZE must be the last selector in a path.")
+                            end
+                            replacement = current_ref .. "." .. encode_quoted_identifier(step.name .. "|array")
+                        else
+                            local existing = join_aliases[prefix_key]
+                            local child_table_name = derive_array_child_table_name(current_table_name, step.name)
+                            local alias_name = "__jvs_path_" .. tostring(next_alias_id)
+                            local selector_sql = build_array_selector_sql(current_ref, step)
+                            if selector_sql == nil then
+                                raise_path_error(reference.path, "Unsupported array selector.")
+                            end
+                            if existing == nil then
+                                next_alias_id = next_alias_id + 1
+                                local alias_ref = encode_quoted_identifier(alias_name)
+                                existing = {
+                                    alias_ref = alias_ref,
+                                    table_name = child_table_name
+                                }
+                                join_aliases[prefix_key] = existing
+                                join_sql_parts[#join_sql_parts + 1] = " LEFT OUTER JOIN "
+                                        .. qualify_table_name(base_table, child_table_name)
+                                        .. " " .. alias_ref
+                                        .. " ON (" .. current_row_id .. " = " .. alias_ref .. "."
+                                        .. encode_quoted_identifier("_parent")
+                                        .. " AND " .. alias_ref .. "." .. encode_quoted_identifier("_pos")
+                                        .. " = " .. selector_sql .. ")"
+                            end
+                            current_ref = existing.alias_ref
+                            current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
+                            current_table_name = existing.table_name
+                            if is_last then
+                                replacement = current_ref .. "." .. encode_quoted_identifier("_value")
+                            end
+                        end
+                    end
+                end
+                if replacement == nil then
+                    raise_path_error(reference.path, "Unable to rewrite the path expression.")
+                end
+                replacements[reference.token_index] = {
+                    end_index = reference.token_index,
+                    replacement_sql = replacement
+                }
+            end
+
+            if #join_sql_parts > 0 then
+                add_join_insertion(join_insertions, base_table.insert_after_index, table.concat(join_sql_parts))
+            end
         end
 
         local out = {}
-        for index, token in ipairs(original_tokens) do
-            out[#out + 1] = replacements[index] or token.text
-            if index == base_table.insert_after_index and #join_sql_parts > 0 then
-                out[#out + 1] = table.concat(join_sql_parts)
+        local index = 1
+        while index <= #original_tokens do
+            local replacement = replacements[index]
+            if replacement ~= nil then
+                out[#out + 1] = replacement.replacement_sql
+                local pending_joins = join_insertions[replacement.end_index]
+                if pending_joins ~= nil then
+                    out[#out + 1] = table.concat(pending_joins)
+                end
+                index = replacement.end_index + 1
+            else
+                out[#out + 1] = original_tokens[index].text
+                local pending_joins = join_insertions[index]
+                if pending_joins ~= nil then
+                    out[#out + 1] = table.concat(pending_joins)
+                end
+                index = index + 1
             end
         end
         return table.concat(out)
@@ -1153,6 +1368,47 @@ ARRAY_ITERATION_LUA = """
         return alias_name, alias_end_index
     end
 
+    local function detect_generated_iterator_subquery_binding(tokens, source_index, closing_index, alias_name)
+        if alias_name == nil then
+            return nil
+        end
+
+        local inner_sql = slice_path_tokens_text(tokens, source_index + 1, closing_index - 1)
+        if string.find(inner_sql, encode_quoted_identifier("__jvs_iter_src"), 1, true) == nil then
+            return nil
+        end
+
+        local inner_tokens = tokenize_path_sql(inner_sql)
+        local first_token = next_significant_path_token(inner_tokens, 1)
+        if first_token == nil or normalize_path_token(first_token) ~= "SELECT" then
+            return nil
+        end
+
+        local base_table = read_base_table_reference_from_path_tokens(inner_tokens)
+        if base_table == nil then
+            return nil
+        end
+
+        local alias_ref = render_bound_identifier(alias_name)
+        local is_value = string.find(
+                inner_sql,
+                encode_quoted_identifier("_value") .. " AS " .. alias_ref,
+                1,
+                true
+        ) ~= nil
+
+        return {
+            alias_name = alias_name,
+            reference_sql = alias_ref,
+            kind = is_value and "iterator_value" or "iterator_row",
+            table_name = base_table.table_name,
+            schema_name = base_table.schema_name,
+            catalog_name = base_table.catalog_name,
+            has_row_id = not is_value,
+            helper_schema_name = helper_schema_name_for_schema_name(base_table.schema_name)
+        }
+    end
+
     local function read_standard_source_binding(tokens, source_start_index)
         local source_token, source_index = next_significant_path_token(tokens, source_start_index)
         if source_token == nil then
@@ -1164,6 +1420,15 @@ ARRAY_ITERATION_LUA = """
                 return nil, nil
             end
             local alias_name, alias_end_index = read_alias_after_source_path_tokens(tokens, closing_index)
+            local generated_iterator_binding = detect_generated_iterator_subquery_binding(
+                tokens,
+                source_index,
+                closing_index,
+                alias_name
+            )
+            if generated_iterator_binding ~= nil then
+                return generated_iterator_binding, alias_end_index
+            end
             if alias_name ~= nil then
                 return {
                     alias_name = alias_name,
@@ -1920,6 +2185,38 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
         return lookup
     end
 
+    local function collect_helper_table_reference_lookup_from_sql(sqltext)
+        local lookup = {}
+        local tokens = tokenize_path_sql(sqltext)
+        local depth = 0
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if token.type == "punct" and token.text == "(" then
+                depth = depth + 1
+            elseif token.type == "punct" and token.text == ")" then
+                depth = depth - 1
+            elseif depth == 0 then
+                local prefix = read_join_prefix_at(tokens, index)
+                if prefix ~= nil then
+                    local binding, _ = read_standard_source_binding(tokens, prefix.end_index + 1)
+                    if binding ~= nil then
+                        local alias_key = normalize_identifier_value(binding.alias_name or binding.table_name)
+                        if alias_key ~= nil then
+                            lookup[alias_key] = binding
+                        end
+                        local table_key = normalize_identifier_value(binding.table_name)
+                        if table_key ~= nil and lookup[table_key] == nil then
+                            lookup[table_key] = binding
+                        end
+                    end
+                end
+            end
+            index = index + 1
+        end
+        return lookup
+    end
+
     local function query_has_top_level_user_join(sqltext)
         local tokens = tokenize_path_sql(sqltext)
         local depth = 0
@@ -2061,6 +2358,21 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
         local visible_name = identifier_parts[#identifier_parts]
         local table_reference = nil
         if #identifier_parts == 1 then
+            local binding = table_reference_lookup[visible_name]
+            if binding ~= nil then
+                if binding.kind == "iterator_value" then
+                    raise_function_error(
+                        function_name,
+                        'JSON helper functions are not supported on VALUE iterators yet. '
+                                .. 'Use plain SQL on the scalar iterator value or iterate an object array instead.'
+                    )
+                elseif binding.kind == "iterator_row" then
+                    raise_function_error(
+                        function_name,
+                        'Expected a JSON property reference such as item."value", not the iterator alias by itself.'
+                    )
+                end
+            end
             if query_has_top_level_user_join(original_sqltext) then
                 raise_function_error(
                     function_name,
@@ -2081,6 +2393,13 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
                 raise_function_error(
                     function_name,
                     "Could not resolve helper argument to a JSON property reference in the current query block."
+                )
+            end
+            if table_reference.kind == "iterator_value" then
+                raise_function_error(
+                    function_name,
+                    'JSON helper functions are not supported on VALUE iterators yet. '
+                            .. 'Use plain SQL on the scalar iterator value or iterate an object array instead.'
                 )
             end
         end
@@ -2158,7 +2477,7 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
 
     local function collect_helper_call_replacements(original_sqltext, tokens, base_table)
         local replacements = {}
-        local table_reference_lookup = collect_helper_table_reference_lookup(tokens)
+        local table_reference_lookup = collect_helper_table_reference_lookup_from_sql(original_sqltext)
         local join_state = {
             next_alias_id = 1,
             alias_by_key = {},

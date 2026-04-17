@@ -95,11 +95,15 @@ Supported syntax sugar:
 - bracket access such as `"tags[0]"`, `"tags[FIRST]"`, `"tags[LAST]"`, `"tags[SIZE]"`
 - mixed deep access such as `"meta.items[LAST].value"`
 - array rowset syntax such as `JOIN item IN s."items"` and `JOIN VALUE tag IN s."tags"`
+- iterator-row path and bracket access such as `item."nested.note"` and `entry."extras[LAST]"`
 
 Important contract note:
 
 - Use `JSON_TYPEOF(...)` and `JSON_AS_*` for JSON-aware variant semantics.
 - Built-in `TYPEOF(...)` and plain SQL `CAST(...)` on the wrapper views reflect the projected SQL type of the view column, not the original JSON runtime type contract.
+- Those helper functions also work on object-array iterator rows such as `JSON_TYPEOF(item."value")`, `JSON_AS_DECIMAL(item."amount")`, and `JSON_AS_BOOLEAN(item."enabled")` after `JOIN item IN s."items"`.
+- Object-array iterator rows also support JSON path and bracket traversal such as `item."nested.note"` and `item."nested.items[LAST].value"`.
+- Helper functions and path/bracket traversal are still not supported on scalar `VALUE` iterators such as `JOIN VALUE tag IN s."tags"`.
 
 ## Quickstart
 
@@ -224,6 +228,24 @@ SELECT
   item._index,
   item.value,
   item.label
+FROM JSON_VIEW.SAMPLE s
+JOIN item IN s."items"
+ORDER BY s."id", item._index;
+```
+
+Iterator rows can now use JSON helpers too:
+
+```sql
+SELECT
+  s."id",
+  item._index,
+  JSON_TYPEOF(item."value") AS item_value_type,
+  JSON_AS_VARCHAR(item."value") AS item_value_text,
+  JSON_AS_DECIMAL(item."amount") AS item_amount_decimal,
+  JSON_AS_BOOLEAN(item."enabled") AS item_enabled_boolean,
+  item."nested.note" AS nested_note,
+  item."nested.items[LAST].value" AS nested_last_item,
+  CASE WHEN JSON_IS_EXPLICIT_NULL(item."optional") THEN '1' ELSE '0' END AS item_optional_explicit_null
 FROM JSON_VIEW.SAMPLE s
 JOIN item IN s."items"
 ORDER BY s."id", item._index;

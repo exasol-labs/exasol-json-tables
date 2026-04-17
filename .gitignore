@@ -29,3 +29,7 @@ dist/
 
 # Logs
 *.log
+
+# Temporary state
+.plans/
+.user-studies/

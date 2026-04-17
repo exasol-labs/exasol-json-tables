@@ -66,6 +66,8 @@ def main() -> None:
             "SAMPLE",
             "SAMPLE_child",
             "SAMPLE_items_arr",
+            "SAMPLE_items_arr_nested",
+            "SAMPLE_items_arr_nested_items_arr",
             "DEEPDOC",
             "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr",
             "__JVS_ROOTS",
@@ -218,6 +220,44 @@ def main() -> None:
     """)
     assert_equal(rowset_rows, [("1", "0", "first", "A"), ("1", "1", "second", "B"), ("2", "0", "only", "C")], "rowset syntax")
 
+    iterator_helper_rows = fetch_all("""
+        SELECT
+          CAST(s."id" AS VARCHAR(10)) AS doc_id,
+          CAST(item._index AS VARCHAR(10)) AS item_index,
+          COALESCE(JSON_TYPEOF(item."value"), 'MISSING') AS item_value_type,
+          COALESCE(JSON_AS_VARCHAR(item."value"), 'NULL') AS item_value_text,
+          COALESCE(CAST(JSON_AS_DECIMAL(item."amount") AS VARCHAR(60)), 'NULL') AS item_amount_decimal,
+          COALESCE(CAST(JSON_AS_BOOLEAN(item."enabled") AS VARCHAR(10)), 'NULL') AS item_enabled_boolean,
+          CASE WHEN JSON_IS_EXPLICIT_NULL(item."optional") THEN '1' ELSE '0' END AS item_optional_explicit_null,
+          COALESCE(JSON_AS_VARCHAR(item."optional"), 'NULL') AS item_optional_text
+        FROM JSON_VIEW.SAMPLE s
+        JOIN item IN s."items"
+        ORDER BY s."id", item._index
+    """)
+    assert_equal(
+        iterator_helper_rows,
+        [("1", "0", "STRING", "first", "7", "TRUE", "0", "x"), ("1", "1", "STRING", "second", "NULL", "FALSE", "1", "NULL"), ("2", "0", "STRING", "only", "5", "NULL", "0", "NULL")],
+        "iterator helper semantics",
+    )
+
+    iterator_path_rows = fetch_all("""
+        SELECT
+          CAST(s."id" AS VARCHAR(10)) AS doc_id,
+          CAST(item._index AS VARCHAR(10)) AS item_index,
+          COALESCE(item."nested.note", 'NULL') AS nested_note,
+          COALESCE(CAST(item."nested.score" AS VARCHAR(20)), 'NULL') AS nested_score,
+          COALESCE(CAST(item."nested.active" AS VARCHAR(10)), 'NULL') AS nested_active,
+          COALESCE(item."nested.items[LAST].value", 'NULL') AS nested_last_item
+        FROM JSON_VIEW.SAMPLE s
+        JOIN item IN s."items"
+        ORDER BY s."id", item._index
+    """)
+    assert_equal(
+        iterator_path_rows,
+        [("1", "0", "nested-a", "11", "TRUE", "na-2"), ("1", "1", "nested-b", "12", "FALSE", "nb-1"), ("2", "0", "NULL", "NULL", "NULL", "NULL")],
+        "iterator path syntax",
+    )
+
     deep_path_rows = fetch_all(f"""
         SELECT
           CAST("doc_id" AS VARCHAR(10)) AS doc_id,
@@ -247,6 +287,21 @@ def main() -> None:
         deep_rowset_rows,
         [("101", "0", "e0", "root", "0", "x0"), ("101", "0", "e0", "root", "1", "x1"), ("101", "1", "e1", "mid", "NULL", "NULL"), ("101", "2", "e2", "tail", "0", "tail-extra"), ("102", "0", "other", "solo", "0", "solo-extra")],
         "deep rowset syntax",
+    )
+
+    iterator_bracket_rows = fetch_all(f"""
+        SELECT
+          CAST(d."doc_id" AS VARCHAR(10)) AS doc_id,
+          CAST(entry._index AS VARCHAR(10)) AS entry_index,
+          COALESCE(entry."extras[LAST]", 'NULL') AS last_extra
+        FROM JSON_VIEW.DEEPDOC d
+        JOIN entry IN {DEEP_ENTRY_ARRAY_PATH}
+        ORDER BY d."doc_id", entry._index
+    """)
+    assert_equal(
+        iterator_bracket_rows,
+        [("101", "0", "x1"), ("101", "1", "NULL"), ("101", "2", "tail-extra"), ("102", "0", "solo-extra")],
+        "iterator bracket syntax",
     )
 
     explicit_null_rows = fetch_all("""
@@ -442,6 +497,7 @@ def main() -> None:
     print("path rows:", path_rows)
     print("array rows:", array_rows)
     print("rowset rows:", rowset_rows)
+    print("iterator helper rows:", iterator_helper_rows)
     print("deep path rows:", deep_path_rows)
     print("deep rowset rows:", deep_rowset_rows)
     print("root explicit-null rows:", explicit_null_rows)
