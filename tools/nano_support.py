@@ -59,7 +59,7 @@ def _base_fixture_statements() -> list[str]:
         'CREATE OR REPLACE TABLE "SAMPLE_meta" ("_id" DECIMAL(18,0) NOT NULL, "info|object" DECIMAL(18,0), "flag" BOOLEAN, "items|array" DECIMAL(18,0))',
         'CREATE OR REPLACE TABLE "SAMPLE_meta_info" ("_id" DECIMAL(18,0) NOT NULL, "note" VARCHAR(100), "note|n" BOOLEAN)',
         'CREATE OR REPLACE TABLE "SAMPLE_tags_arr" ("_parent" DECIMAL(18,0) NOT NULL, "_pos" DECIMAL(18,0) NOT NULL, "_value" VARCHAR(100))',
-        'CREATE OR REPLACE TABLE "SAMPLE_items_arr" ("_parent" DECIMAL(18,0) NOT NULL, "_pos" DECIMAL(18,0) NOT NULL, "value" VARCHAR(100), "label" VARCHAR(100))',
+        'CREATE OR REPLACE TABLE "SAMPLE_items_arr" ("_id" DECIMAL(18,0) NOT NULL, "_parent" DECIMAL(18,0) NOT NULL, "_pos" DECIMAL(18,0) NOT NULL, "value" VARCHAR(100), "label" VARCHAR(100))',
         'CREATE OR REPLACE TABLE "SAMPLE_meta_items_arr" ("_parent" DECIMAL(18,0) NOT NULL, "_pos" DECIMAL(18,0) NOT NULL, "value" VARCHAR(100))',
         "INSERT INTO SAMPLE VALUES (1, 1, 'alpha', 'x', FALSE, 1, FALSE, 10, 42, NULL, FALSE, 10, NULL, 2, 2)",
         "INSERT INTO SAMPLE VALUES (2, 2, 'beta', NULL, TRUE, NULL, FALSE, 20, NULL, '43', FALSE, NULL, 3, 1, 1)",
@@ -71,9 +71,9 @@ def _base_fixture_statements() -> list[str]:
         'INSERT INTO "SAMPLE_tags_arr" VALUES (1, 0, \'red\')',
         'INSERT INTO "SAMPLE_tags_arr" VALUES (1, 1, \'blue\')',
         'INSERT INTO "SAMPLE_tags_arr" VALUES (2, 0, \'green\')',
-        'INSERT INTO "SAMPLE_items_arr" VALUES (1, 0, \'first\', \'A\')',
-        'INSERT INTO "SAMPLE_items_arr" VALUES (1, 1, \'second\', \'B\')',
-        'INSERT INTO "SAMPLE_items_arr" VALUES (2, 0, \'only\', \'C\')',
+        'INSERT INTO "SAMPLE_items_arr" VALUES (1001, 1, 0, \'first\', \'A\')',
+        'INSERT INTO "SAMPLE_items_arr" VALUES (1002, 1, 1, \'second\', \'B\')',
+        'INSERT INTO "SAMPLE_items_arr" VALUES (1003, 2, 0, \'only\', \'C\')',
         'INSERT INTO "SAMPLE_meta_items_arr" VALUES (10, 0, \'m1\')',
         'INSERT INTO "SAMPLE_meta_items_arr" VALUES (10, 1, \'m2\')',
         'INSERT INTO "SAMPLE_meta_items_arr" VALUES (20, 0, \'m3\')',
@@ -104,7 +104,10 @@ def _deep_fixture_statements() -> list[str]:
         'CREATE OR REPLACE TABLE "DEEPDOC_metrics_arr" ("_parent" DECIMAL(18,0) NOT NULL, '
         '"_pos" DECIMAL(18,0) NOT NULL, "_value" DECIMAL(18,0))',
         'CREATE OR REPLACE TABLE "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr" '
-        '("_parent" DECIMAL(18,0) NOT NULL, "_pos" DECIMAL(18,0) NOT NULL, "value" VARCHAR(100), "kind" VARCHAR(100))',
+        '("_id" DECIMAL(18,0) NOT NULL, "_parent" DECIMAL(18,0) NOT NULL, "_pos" DECIMAL(18,0) NOT NULL, '
+        '"value" VARCHAR(100), "kind" VARCHAR(100), "extras|array" DECIMAL(18,0))',
+        'CREATE OR REPLACE TABLE "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr_extras_arr" '
+        '("_parent" DECIMAL(18,0) NOT NULL, "_pos" DECIMAL(18,0) NOT NULL, "_value" VARCHAR(100))',
         "INSERT INTO DEEPDOC VALUES (1, 101, 'deep-alpha', 900, 1000, 3, 3)",
         "INSERT INTO DEEPDOC VALUES (2, 102, 'deep-beta', 901, 2000, 1, 1)",
         "INSERT INTO DEEPDOC VALUES (3, 103, 'deep-gamma', NULL, NULL, NULL, NULL)",
@@ -136,10 +139,14 @@ def _deep_fixture_statements() -> list[str]:
         'INSERT INTO "DEEPDOC_metrics_arr" VALUES (1, 1, 20)',
         'INSERT INTO "DEEPDOC_metrics_arr" VALUES (1, 2, 30)',
         'INSERT INTO "DEEPDOC_metrics_arr" VALUES (2, 0, 7)',
-        'INSERT INTO "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr" VALUES (1007, 0, \'e0\', \'root\')',
-        'INSERT INTO "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr" VALUES (1007, 1, \'e1\', \'mid\')',
-        'INSERT INTO "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr" VALUES (1007, 2, \'e2\', \'tail\')',
-        'INSERT INTO "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr" VALUES (2007, 0, \'other\', \'solo\')',
+        'INSERT INTO "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr" VALUES (5000, 1007, 0, \'e0\', \'root\', 2)',
+        'INSERT INTO "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr" VALUES (5001, 1007, 1, \'e1\', \'mid\', NULL)',
+        'INSERT INTO "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr" VALUES (5002, 1007, 2, \'e2\', \'tail\', 1)',
+        'INSERT INTO "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr" VALUES (6000, 2007, 0, \'other\', \'solo\', 1)',
+        'INSERT INTO "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr_extras_arr" VALUES (5000, 0, \'x0\')',
+        'INSERT INTO "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr_extras_arr" VALUES (5000, 1, \'x1\')',
+        'INSERT INTO "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr_extras_arr" VALUES (5002, 0, \'tail-extra\')',
+        'INSERT INTO "DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr_extras_arr" VALUES (6000, 0, \'solo-extra\')',
     ]
 
 

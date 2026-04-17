@@ -796,7 +796,7 @@ JOIN_MODE_LUA = """
             )
         end
 
-        local root_ref = encode_quoted_identifier(base_table.alias_name or base_table.table_name)
+        local root_ref = render_bound_identifier(base_table.alias_name or base_table.table_name)
         local join_aliases = {}
         local join_sql_parts = {}
         local replacements = {}
@@ -898,6 +898,711 @@ JOIN_MODE_LUA = """
 """
 
 
+ARRAY_ITERATION_LUA = """
+    local next_iterator_alias_id = 1
+
+    local QUERY_BOUNDARY_KEYWORDS = {
+        WHERE = true, GROUP = true, HAVING = true, QUALIFY = true, ORDER = true,
+        LIMIT = true, OFFSET = true, UNION = true, EXCEPT = true, MINUS = true
+    }
+
+    local function raise_iterator_error(message)
+        error("JVS-ITER-ERROR: " .. message, 0)
+    end
+
+    local function copy_scope(scope)
+        local out = {}
+        for key, value in pairs(scope or {}) do
+            out[key] = value
+        end
+        return out
+    end
+
+    local function scope_key(name)
+        return normalize_identifier_value(name)
+    end
+
+    local function render_bound_identifier(name)
+        return encode_quoted_identifier(normalize_identifier_value(name))
+    end
+
+    local function bind_scope(scope, binding)
+        scope[scope_key(binding.alias_name)] = binding
+    end
+
+    local function lookup_scope(scope, alias_name)
+        return scope[scope_key(alias_name)]
+    end
+
+    local function slice_path_tokens_text(tokens, start_index, end_index)
+        local out = {}
+        for index = start_index, end_index do
+            out[#out + 1] = tokens[index].text
+        end
+        return table.concat(out)
+    end
+
+    local function find_matching_path_paren(tokens, opening_index)
+        local depth = 1
+        local index = opening_index + 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if token.type == "punct" and token.text == "(" then
+                depth = depth + 1
+            elseif token.type == "punct" and token.text == ")" then
+                depth = depth - 1
+                if depth == 0 then
+                    return index
+                end
+            end
+            index = index + 1
+        end
+        return nil
+    end
+
+    local function path_token_is_query_start(token)
+        if token == nil then
+            return false
+        end
+        local normalized = normalize_path_token(token)
+        return normalized ~= nil and QUERY_START_KEYWORDS[normalized] == true
+    end
+
+    local function path_token_is_query_boundary(token)
+        if token == nil then
+            return false
+        end
+        local normalized = normalize_path_token(token)
+        return normalized ~= nil and QUERY_BOUNDARY_KEYWORDS[normalized] == true
+    end
+
+    local function path_token_is_source_boundary(token)
+        if token == nil then
+            return true
+        end
+        if token.type == "punct" then
+            return token.text == "," or token.text == ")"
+        end
+        local normalized = normalize_path_token(token)
+        return normalized ~= nil and (
+                normalized == "ON" or normalized == "USING" or QUERY_BOUNDARY_KEYWORDS[normalized] == true
+                or normalized == "JOIN" or normalized == "LEFT" or normalized == "RIGHT"
+                or normalized == "FULL" or normalized == "INNER" or normalized == "CROSS"
+        )
+    end
+
+    local function read_single_identifier_from_path_tokens(tokens, index)
+        local token, token_index = next_significant_path_token(tokens, index)
+        if token == nil then
+            return nil, nil
+        end
+        if token.type == "word" then
+            return token.text, token_index
+        end
+        if token.type == "quoted_identifier" then
+            return token.identifier, token_index
+        end
+        return nil, nil
+    end
+
+    local function read_single_identifier_parts_from_path_tokens(tokens, index)
+        local parts, end_index = read_identifier_parts_from_path_tokens(tokens, index)
+        if parts == nil or #parts ~= 1 then
+            return nil, nil
+        end
+        return parts[1], end_index
+    end
+
+    local function read_alias_after_source_path_tokens(tokens, source_end_index)
+        local alias_name = nil
+        local alias_end_index = source_end_index
+        local maybe_alias, maybe_alias_index = next_significant_path_token(tokens, source_end_index + 1)
+        if maybe_alias == nil then
+            return nil, alias_end_index
+        end
+        if normalize_path_token(maybe_alias) == "AS" then
+            local alias_token, alias_index = next_significant_path_token(tokens, maybe_alias_index + 1)
+            if alias_token ~= nil then
+                local parsed_alias_name = nil
+                parsed_alias_name, _ = read_single_identifier_parts_from_path_tokens(tokens, alias_index)
+                if parsed_alias_name ~= nil then
+                    alias_name = parsed_alias_name
+                    alias_end_index = alias_index
+                end
+            end
+        elseif not path_token_is_source_boundary(maybe_alias) then
+            local parsed_alias_name = nil
+            parsed_alias_name, _ = read_single_identifier_parts_from_path_tokens(tokens, maybe_alias_index)
+            if parsed_alias_name ~= nil then
+                alias_name = parsed_alias_name
+                alias_end_index = maybe_alias_index
+            end
+        end
+        return alias_name, alias_end_index
+    end
+
+    local function read_standard_source_binding(tokens, source_start_index)
+        local source_token, source_index = next_significant_path_token(tokens, source_start_index)
+        if source_token == nil then
+            return nil, nil
+        end
+        if source_token.type == "punct" and source_token.text == "(" then
+            local closing_index = find_matching_path_paren(tokens, source_index)
+            if closing_index == nil then
+                return nil, nil
+            end
+            local alias_name, alias_end_index = read_alias_after_source_path_tokens(tokens, closing_index)
+            if alias_name ~= nil then
+                return {
+                    alias_name = alias_name,
+                    reference_sql = render_bound_identifier(alias_name),
+                    kind = "derived_source",
+                    table_name = nil,
+                    schema_name = nil,
+                    catalog_name = nil,
+                    has_row_id = false
+                }, alias_end_index
+            end
+            return nil, closing_index
+        end
+        local parts, table_end_index = read_identifier_parts_from_path_tokens(tokens, source_start_index)
+        if parts == nil then
+            return nil, nil
+        end
+        local alias_name, alias_end_index = read_alias_after_source_path_tokens(tokens, table_end_index)
+        local resolved_alias_name = alias_name or parts[#parts]
+        local binding = {
+            alias_name = resolved_alias_name,
+            reference_sql = render_bound_identifier(resolved_alias_name),
+            kind = "other_source",
+            table_name = parts[#parts],
+            schema_name = (#parts >= 2) and parts[#parts - 1] or nil,
+            catalog_name = (#parts >= 3) and parts[#parts - 2] or nil,
+            has_row_id = true
+        }
+        if table_reference_is_allowed_virtual_schema({
+            schema_name = binding.schema_name
+        }) then
+            binding.kind = "json_source"
+        end
+        return binding, alias_end_index
+    end
+
+    local function read_iterator_path_source(tokens, source_start_index)
+        local iterator_token, iterator_index = next_significant_path_token(tokens, source_start_index)
+        if iterator_token == nil then
+            return nil
+        end
+
+        local is_value = false
+        if normalize_path_token(iterator_token) == "VALUE" then
+            is_value = true
+            iterator_token, iterator_index = next_significant_path_token(tokens, iterator_index + 1)
+            if iterator_token == nil then
+                raise_iterator_error('Expected an iterator alias after VALUE.')
+            end
+        end
+
+        local alias_name = nil
+        alias_name, iterator_index = read_single_identifier_from_path_tokens(tokens, iterator_index)
+        if alias_name == nil then
+            return nil
+        end
+
+        local in_token, in_index = next_significant_path_token(tokens, iterator_index + 1)
+        if in_token == nil or normalize_path_token(in_token) ~= "IN" then
+            return nil
+        end
+
+        local root_alias_name = nil
+        root_alias_name, in_index = read_single_identifier_from_path_tokens(tokens, in_index + 1)
+        if root_alias_name == nil then
+            raise_iterator_error('Expected an iterator path of the form row_alias."path.to.array".')
+        end
+
+        local dot_token, dot_index = next_significant_path_token(tokens, in_index + 1)
+        if dot_token == nil or dot_token.type ~= "punct" or dot_token.text ~= "." then
+            raise_iterator_error('Expected an iterator path of the form row_alias."path.to.array".')
+        end
+
+        local path_token, path_index = next_significant_path_token(tokens, dot_index + 1)
+        if path_token == nil or path_token.type ~= "quoted_identifier" then
+            raise_iterator_error('Expected an iterator path of the form row_alias."path.to.array".')
+        end
+
+        return {
+            is_value = is_value,
+            alias_name = alias_name,
+            root_alias_name = root_alias_name,
+            path = path_token.identifier,
+            end_index = path_index
+        }
+    end
+
+    local function encode_path_component_for_iterator(name)
+        local out = {}
+        for i = 1, string.len(name) do
+            local byte = string.byte(name, i)
+            local ch = string.char(byte)
+            if string.match(ch, "[%w_]") or ch == "-" then
+                out[#out + 1] = ch
+            else
+                out[#out + 1] = string.format("%%%02X", byte)
+            end
+        end
+        return table.concat(out)
+    end
+
+    local function derive_child_table_name_for_iterator(parent_table_name, segment)
+        return parent_table_name .. "_" .. encode_path_component_for_iterator(segment)
+    end
+
+    local function derive_array_child_table_name_for_iterator(parent_table_name, segment)
+        return parent_table_name .. "_" .. encode_path_component_for_iterator(segment) .. "_arr"
+    end
+
+    local function qualify_table_name_for_iterator(binding, table_name)
+        local out = {}
+        if binding.catalog_name ~= nil then
+            out[#out + 1] = encode_quoted_identifier(binding.catalog_name)
+        end
+        if binding.schema_name ~= nil then
+            out[#out + 1] = encode_quoted_identifier(binding.schema_name)
+        end
+        out[#out + 1] = encode_quoted_identifier(table_name)
+        return table.concat(out, ".")
+    end
+
+    local function trim_selector_text_for_iterator(value)
+        return string.gsub(string.gsub(value, "^%s+", ""), "%s+$", "")
+    end
+
+    local function parse_iterator_array_path(path)
+        local steps = {}
+        local index = 1
+        while index <= #path do
+            local next_special = index
+            while next_special <= #path do
+                local ch = string.sub(path, next_special, next_special)
+                if ch == "." or ch == "[" then
+                    break
+                end
+                next_special = next_special + 1
+            end
+            if next_special == index then
+                local current = string.sub(path, index, index)
+                if current == "." then
+                    return nil, nil, "Empty path segment is not allowed."
+                elseif current == "[" then
+                    return nil, nil, "An array iterator path must target an array property, not an indexed element."
+                end
+                return nil, nil, "Invalid iterator path syntax."
+            end
+            local segment = string.sub(path, index, next_special - 1)
+            local special = string.sub(path, next_special, next_special)
+            if special == "[" then
+                local closing = string.find(path, "]", next_special + 1, true)
+                if closing == nil then
+                    return nil, nil, "Missing closing ] in iterator path."
+                end
+                local selector = trim_selector_text_for_iterator(string.sub(path, next_special + 1, closing - 1))
+                return nil, nil,
+                        'Iterator paths must name an array property directly. Use scalar bracket access for one element'
+                        .. ' or JOIN ... IN row."path" for full traversal. Invalid selector [' .. selector .. '].'
+            end
+            steps[#steps + 1] = segment
+            if special == "." then
+                if next_special == #path then
+                    return nil, nil, "Iterator path cannot end with '.'."
+                end
+                index = next_special + 1
+            else
+                index = next_special
+            end
+        end
+        if #steps == 0 then
+            return nil, nil, "Iterator path cannot be empty."
+        end
+        local object_steps = {}
+        for step_index = 1, #steps - 1 do
+            object_steps[#object_steps + 1] = steps[step_index]
+        end
+        return object_steps, steps[#steps], nil
+    end
+
+    local function build_iterator_relation_sql(qualified_table_name, alias_name, is_value)
+        local relation_alias = render_bound_identifier(alias_name)
+        local inner_alias_name = "__jvs_iter_src"
+        local inner_alias = encode_quoted_identifier(inner_alias_name)
+        if is_value then
+            return "(SELECT " .. inner_alias .. ".*, "
+                    .. inner_alias .. "." .. encode_quoted_identifier("_pos")
+                    .. " AS " .. encode_quoted_identifier("_index") .. ", "
+                    .. inner_alias .. "." .. encode_quoted_identifier("_value")
+                    .. " AS " .. render_bound_identifier(alias_name)
+                    .. " FROM " .. qualified_table_name .. " " .. inner_alias .. ") " .. relation_alias
+        end
+        return "(SELECT " .. inner_alias .. ".*, "
+                .. inner_alias .. "." .. encode_quoted_identifier("_pos")
+                .. " AS " .. encode_quoted_identifier("_index")
+                .. " FROM " .. qualified_table_name .. " " .. inner_alias .. ") " .. relation_alias
+    end
+
+    local function new_generated_iterator_alias()
+        local alias_name = "__jvs_iter_path_" .. tostring(next_iterator_alias_id)
+        next_iterator_alias_id = next_iterator_alias_id + 1
+        return alias_name, encode_quoted_identifier(alias_name)
+    end
+
+    local function build_iterator_binding(iterator_source, root_binding, array_child_table_name)
+        return {
+            alias_name = iterator_source.alias_name,
+            reference_sql = render_bound_identifier(iterator_source.alias_name),
+            kind = iterator_source.is_value and "iterator_value" or "iterator_row",
+            table_name = array_child_table_name,
+            schema_name = root_binding.schema_name,
+            catalog_name = root_binding.catalog_name,
+            has_row_id = not iterator_source.is_value
+        }
+    end
+
+    local function build_iterator_join_clause(iterator_source, root_binding, join_kind)
+        if root_binding == nil then
+            raise_scope_error(
+                "JSON array iteration syntax",
+                'Qualify the JSON virtual-schema table in FROM/JOIN, for example FROM "JSON_VS"."SAMPLE" s.'
+            )
+        end
+        if root_binding.kind ~= "json_source" and root_binding.kind ~= "iterator_row" then
+            if root_binding.kind == "iterator_value" then
+                raise_iterator_error('Scalar VALUE iterators cannot be used as the root of another iterator path.')
+            end
+            raise_scope_error(
+                "JSON array iteration syntax",
+                'Iterator roots must come from a configured JSON virtual schema or from an object-array iterator.'
+            )
+        end
+        if root_binding.has_row_id ~= true then
+            raise_iterator_error('This iterator root does not expose row identity, so nested array traversal is not supported.')
+        end
+
+        local object_steps, array_name, path_error = parse_iterator_array_path(iterator_source.path)
+        if object_steps == nil then
+            raise_iterator_error(path_error)
+        end
+
+        local current_ref = root_binding.reference_sql
+        local current_table_name = root_binding.table_name
+        local current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
+        local out = {}
+        for _, step_name in ipairs(object_steps) do
+            local child_table_name = derive_child_table_name_for_iterator(current_table_name, step_name)
+            local generated_alias_name, generated_alias = new_generated_iterator_alias()
+            out[#out + 1] = " LEFT OUTER JOIN "
+                    .. qualify_table_name_for_iterator(root_binding, child_table_name)
+                    .. " " .. generated_alias
+                    .. " ON (" .. current_ref .. "." .. encode_quoted_identifier(step_name .. "|object")
+                    .. " = " .. generated_alias .. "." .. encode_quoted_identifier("_id") .. ")"
+            current_ref = generated_alias
+            current_table_name = child_table_name
+            current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
+        end
+
+        local array_child_table_name = derive_array_child_table_name_for_iterator(current_table_name, array_name)
+        local join_keyword = (join_kind == "left_join") and " LEFT OUTER JOIN " or " INNER JOIN "
+        out[#out + 1] = join_keyword
+                .. build_iterator_relation_sql(
+                        qualify_table_name_for_iterator(root_binding, array_child_table_name),
+                        iterator_source.alias_name,
+                        iterator_source.is_value
+                )
+                .. " ON (" .. current_row_id .. " = " .. render_bound_identifier(iterator_source.alias_name)
+                .. "." .. encode_quoted_identifier("_parent") .. ")"
+
+        return table.concat(out), build_iterator_binding(iterator_source, root_binding, array_child_table_name), nil
+    end
+
+    local function build_iterator_from_clause(iterator_source, root_binding)
+        if root_binding == nil then
+            raise_scope_error(
+                "JSON array iteration syntax",
+                'Qualify the JSON virtual-schema table in FROM/JOIN, for example FROM "JSON_VS"."SAMPLE" s.'
+            )
+        end
+        if root_binding.kind ~= "json_source" and root_binding.kind ~= "iterator_row" then
+            if root_binding.kind == "iterator_value" then
+                raise_iterator_error('Scalar VALUE iterators cannot be used as the root of another iterator path.')
+            end
+            raise_scope_error(
+                "JSON array iteration syntax",
+                'Iterator roots must come from a configured JSON virtual schema or from an object-array iterator.'
+            )
+        end
+        if root_binding.has_row_id ~= true then
+            raise_iterator_error('This iterator root does not expose row identity, so nested array traversal is not supported.')
+        end
+
+        local object_steps, array_name, path_error = parse_iterator_array_path(iterator_source.path)
+        if object_steps == nil then
+            raise_iterator_error(path_error)
+        end
+
+        local current_ref = root_binding.reference_sql
+        local current_table_name = root_binding.table_name
+        local current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
+        local out = {}
+        local correlation_filter_sql = nil
+        if #object_steps == 0 then
+            local array_child_table_name = derive_array_child_table_name_for_iterator(current_table_name, array_name)
+            out[#out + 1] = "FROM "
+                    .. build_iterator_relation_sql(
+                            qualify_table_name_for_iterator(root_binding, array_child_table_name),
+                            iterator_source.alias_name,
+                            iterator_source.is_value
+                    )
+            correlation_filter_sql = "(" .. current_row_id .. " = " .. render_bound_identifier(iterator_source.alias_name)
+                    .. "." .. encode_quoted_identifier("_parent") .. ")"
+            return table.concat(out), build_iterator_binding(iterator_source, root_binding, array_child_table_name),
+                    correlation_filter_sql
+        end
+
+        local first_step_name = object_steps[1]
+        local first_child_table_name = derive_child_table_name_for_iterator(current_table_name, first_step_name)
+        local first_alias_name, first_alias = new_generated_iterator_alias()
+        out[#out + 1] = "FROM " .. qualify_table_name_for_iterator(root_binding, first_child_table_name)
+                .. " " .. first_alias
+        correlation_filter_sql = "(" .. current_ref .. "." .. encode_quoted_identifier(first_step_name .. "|object")
+                .. " = " .. first_alias .. "." .. encode_quoted_identifier("_id") .. ")"
+        current_ref = first_alias
+        current_table_name = first_child_table_name
+        current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
+
+        for step_index = 2, #object_steps do
+            local step_name = object_steps[step_index]
+            local child_table_name = derive_child_table_name_for_iterator(current_table_name, step_name)
+            local generated_alias_name, generated_alias = new_generated_iterator_alias()
+            out[#out + 1] = " INNER JOIN "
+                    .. qualify_table_name_for_iterator(root_binding, child_table_name)
+                    .. " " .. generated_alias
+                    .. " ON (" .. current_ref .. "." .. encode_quoted_identifier(step_name .. "|object")
+                    .. " = " .. generated_alias .. "." .. encode_quoted_identifier("_id") .. ")"
+            current_ref = generated_alias
+            current_table_name = child_table_name
+            current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
+        end
+
+        local array_child_table_name = derive_array_child_table_name_for_iterator(current_table_name, array_name)
+        out[#out + 1] = " INNER JOIN "
+                .. build_iterator_relation_sql(
+                        qualify_table_name_for_iterator(root_binding, array_child_table_name),
+                        iterator_source.alias_name,
+                        iterator_source.is_value
+                )
+                .. " ON (" .. current_row_id .. " = " .. render_bound_identifier(iterator_source.alias_name)
+                .. "." .. encode_quoted_identifier("_parent") .. ")"
+        return table.concat(out), build_iterator_binding(iterator_source, root_binding, array_child_table_name),
+                correlation_filter_sql
+    end
+
+    local function read_join_prefix_at(tokens, index)
+        local token = tokens[index]
+        local normalized = normalize_path_token(token)
+        if normalized == "FROM" then
+            return {kind = "from", end_index = index}
+        elseif normalized == "JOIN" then
+            return {kind = "inner_join", end_index = index}
+        elseif normalized == "INNER" then
+            local join_token, join_index = next_significant_path_token(tokens, index + 1)
+            if join_token ~= nil and normalize_path_token(join_token) == "JOIN" then
+                return {kind = "inner_join", end_index = join_index}
+            end
+        elseif normalized == "LEFT" then
+            local next_token, next_index = next_significant_path_token(tokens, index + 1)
+            if next_token ~= nil and normalize_path_token(next_token) == "JOIN" then
+                return {kind = "left_join", end_index = next_index}
+            elseif next_token ~= nil and normalize_path_token(next_token) == "OUTER" then
+                local join_token, join_index = next_significant_path_token(tokens, next_index + 1)
+                if join_token ~= nil and normalize_path_token(join_token) == "JOIN" then
+                    return {kind = "left_join", end_index = join_index}
+                end
+            end
+        end
+        return nil
+    end
+
+    local function render_pending_where(pending_filters)
+        return table.concat(pending_filters, " AND ")
+    end
+
+    local function rewrite_iterator_index_references_in_sql(sqltext, scope)
+        local tokens = tokenize_path_sql(sqltext)
+        local out = {}
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            local identifier_name = nil
+            if token.type == "quoted_identifier" then
+                identifier_name = token.identifier
+            elseif token.type == "word" then
+                identifier_name = token.text
+            end
+            local binding = identifier_name and lookup_scope(scope, identifier_name) or nil
+            local dot_token, dot_index = nil, nil
+            local member_token, member_index = nil, nil
+            if binding ~= nil then
+                dot_token, dot_index = next_significant_path_token(tokens, index + 1)
+                if dot_token ~= nil then
+                    member_token, member_index = next_significant_path_token(tokens, dot_index + 1)
+                end
+            end
+            local member_name = nil
+            if member_token ~= nil and member_token.type == "quoted_identifier" then
+                member_name = member_token.identifier
+            elseif member_token ~= nil and member_token.type == "word" then
+                member_name = member_token.text
+            end
+            if binding ~= nil and (binding.kind == "iterator_row" or binding.kind == "iterator_value")
+                    and dot_token ~= nil and dot_token.type == "punct" and dot_token.text == "."
+                    and member_token ~= nil and member_token.type == "word" then
+                out[#out + 1] = token.text
+                out[#out + 1] = "."
+                out[#out + 1] = encode_quoted_identifier(member_name)
+                index = member_index + 1
+            else
+                out[#out + 1] = token.text
+                index = index + 1
+            end
+        end
+        return table.concat(out)
+    end
+
+    local function rewrite_query_block_tokens(tokens, outer_scope)
+        local scope = copy_scope(outer_scope or {})
+        local out = {}
+        local pending_filters = {}
+        local depth = 0
+        local index = 1
+        while index <= #tokens do
+            local token = tokens[index]
+            if depth == 0 and #pending_filters > 0 then
+                if normalize_path_token(token) == "WHERE" then
+                    out[#out + 1] = "WHERE (" .. render_pending_where(pending_filters) .. ") AND "
+                    pending_filters = {}
+                    index = index + 1
+                    goto continue
+                elseif path_token_is_query_boundary(token) then
+                    out[#out + 1] = " WHERE " .. render_pending_where(pending_filters) .. " "
+                    pending_filters = {}
+                end
+            end
+
+            if token.type == "punct" and token.text == "(" then
+                local closing_index = find_matching_path_paren(tokens, index)
+                local first_inside, first_inside_index = next_significant_path_token(tokens, index + 1)
+                if closing_index ~= nil and first_inside_index ~= nil and path_token_is_query_start(first_inside) then
+                    out[#out + 1] = "("
+                    out[#out + 1] = rewrite_query_block_tokens(
+                            {table.unpack(tokens, index + 1, closing_index - 1)},
+                            scope
+                    )
+                    out[#out + 1] = ")"
+                    index = closing_index + 1
+                else
+                    depth = depth + 1
+                    out[#out + 1] = token.text
+                    index = index + 1
+                end
+            elseif token.type == "punct" and token.text == ")" then
+                depth = depth - 1
+                out[#out + 1] = token.text
+                index = index + 1
+            elseif depth == 0 then
+                local prefix = read_join_prefix_at(tokens, index)
+                if prefix ~= nil then
+                    local source_token, source_start_index = next_significant_path_token(tokens, prefix.end_index + 1)
+                    local iterator_source = source_start_index and read_iterator_path_source(tokens, source_start_index) or nil
+                    if iterator_source ~= nil then
+                        local root_binding = lookup_scope(scope, iterator_source.root_alias_name)
+                        local rewritten_clause_sql = nil
+                        local iterator_binding = nil
+                        local correlation_filter_sql = nil
+                        if prefix.kind == "from" then
+                            rewritten_clause_sql, iterator_binding, correlation_filter_sql =
+                                    build_iterator_from_clause(iterator_source, root_binding)
+                            if correlation_filter_sql ~= nil then
+                                pending_filters[#pending_filters + 1] = correlation_filter_sql
+                            end
+                        else
+                            rewritten_clause_sql, iterator_binding = build_iterator_join_clause(
+                                    iterator_source,
+                                    root_binding,
+                                    prefix.kind
+                            )
+                        end
+                        out[#out + 1] = rewritten_clause_sql
+                        bind_scope(scope, iterator_binding)
+                        index = iterator_source.end_index + 1
+                    else
+                        local standard_binding, _ = read_standard_source_binding(tokens, source_start_index)
+                        if standard_binding ~= nil and standard_binding.alias_name ~= nil then
+                            bind_scope(scope, standard_binding)
+                        end
+                        out[#out + 1] = token.text
+                        index = index + 1
+                    end
+                else
+                    out[#out + 1] = token.text
+                    index = index + 1
+                end
+            elseif token.type == "word" or token.type == "quoted_identifier" then
+                local identifier_name = token.type == "quoted_identifier" and token.identifier or token.text
+                local binding = lookup_scope(scope, identifier_name)
+                local dot_token, dot_index = next_significant_path_token(tokens, index + 1)
+                local member_token, member_index = nil, nil
+                if dot_token ~= nil then
+                    member_token, member_index = next_significant_path_token(tokens, dot_index + 1)
+                end
+                local member_name = nil
+                if member_token ~= nil and member_token.type == "quoted_identifier" then
+                    member_name = member_token.identifier
+                elseif member_token ~= nil and member_token.type == "word" then
+                    member_name = member_token.text
+                end
+                if binding ~= nil and (binding.kind == "iterator_row" or binding.kind == "iterator_value")
+                        and dot_token ~= nil and dot_token.type == "punct" and dot_token.text == "."
+                        and normalize_identifier_value(member_name) == "_INDEX" then
+                    out[#out + 1] = token.text
+                    out[#out + 1] = "."
+                    out[#out + 1] = encode_quoted_identifier("_index")
+                    index = member_index + 1
+                else
+                    out[#out + 1] = token.text
+                    index = index + 1
+                end
+            else
+                out[#out + 1] = token.text
+                index = index + 1
+            end
+            ::continue::
+        end
+
+        if #pending_filters > 0 then
+            out[#out + 1] = " WHERE " .. render_pending_where(pending_filters)
+        end
+        return rewrite_iterator_index_references_in_sql(table.concat(out), scope)
+    end
+
+    local function rewrite_array_iteration_in_sql(sqltext)
+        local tokens = tokenize_path_sql(sqltext)
+        local first_token = next_significant_path_token(tokens, 1)
+        if first_token == nil or not path_token_is_query_start(first_token) then
+            return sqltext
+        end
+        return rewrite_query_block_tokens(tokens, {})
+    end
+"""
+
+
 DISABLED_MODE_LUA = """
     local function rewrite_path_identifiers_in_sql(sqltext)
         return sqltext
@@ -965,6 +1670,7 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
         return sqlparsing.iswhitespaceorcomment(token)
     end
 {COMMON_LUA}
+{ARRAY_ITERATION_LUA}
 {path_lua}
 
     local function next_significant(tokens, index)
@@ -1063,14 +1769,12 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
         if not table_reference_is_allowed_virtual_schema(base_table) then
             return false, 'Qualify the JSON virtual-schema table in FROM/JOIN, for example FROM "JSON_VS"."SAMPLE".'
         end
-        if path_tokens_have_top_level_join(path_tokens) then
-            return false, "JSON helper functions currently require a query with a single top-level JSON virtual-schema table in FROM."
-        end
         return true, nil
     end
 
     local function rewrite(sqltext)
-        local rewritten_sql = rewrite_path_identifiers_in_sql(sqltext)
+        local rewritten_sql = rewrite_array_iteration_in_sql(sqltext)
+        rewritten_sql = rewrite_path_identifiers_in_sql(rewritten_sql)
         local tokens = sqlparsing.tokenize(rewritten_sql)
         local out = {{}}
         local index = 1

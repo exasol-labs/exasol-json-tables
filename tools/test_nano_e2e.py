@@ -10,6 +10,7 @@ DEEP_ENTRY_KIND_PATH = '"chain.next.next.next.next.next.next.next.entries[1].kin
 DEEP_ENTRY_FIRST_VALUE_PATH = '"chain.next.next.next.next.next.next.next.entries[FIRST].value"'
 DEEP_ENTRY_LAST_VALUE_PATH = '"chain.next.next.next.next.next.next.next.entries[LAST].value"'
 DEEP_ENTRY_SIZE_PATH = '"chain.next.next.next.next.next.next.next.entries[SIZE]"'
+DEEP_ENTRY_ARRAY_PATH = 'd."chain.next.next.next.next.next.next.next.entries"'
 
 
 def assert_equal(actual, expected, label: str) -> None:
@@ -126,6 +127,81 @@ def main() -> None:
         """).fetchall()
         assert_equal(array_filter_rows, [("101",), ("102",)], "deep array filter query")
 
+        nested_iteration_rows = con.execute(f"""
+            SELECT
+                CAST(d."doc_id" AS VARCHAR(10)),
+                CAST(entry._index AS VARCHAR(10)),
+                entry.value,
+                entry.kind,
+                COALESCE(CAST(extra._index AS VARCHAR(10)), 'NULL'),
+                COALESCE(extra, 'NULL')
+            FROM JSON_VS.DEEPDOC d
+            JOIN entry IN {DEEP_ENTRY_ARRAY_PATH}
+            LEFT JOIN VALUE extra IN entry."extras"
+            ORDER BY d."doc_id", entry._index, extra._index
+        """).fetchall()
+        assert_equal(
+            nested_iteration_rows,
+            [
+                ("101", "0", "e0", "root", "0", "x0"),
+                ("101", "0", "e0", "root", "1", "x1"),
+                ("101", "1", "e1", "mid", "NULL", "NULL"),
+                ("101", "2", "e2", "tail", "0", "tail-extra"),
+                ("102", "0", "other", "solo", "0", "solo-extra"),
+            ],
+            "nested array iteration query",
+        )
+
+        iteration_aggregate_rows = con.execute(f"""
+            SELECT
+                CAST(d."doc_id" AS VARCHAR(10)),
+                COUNT(*),
+                MAX(entry._index)
+            FROM JSON_VS.DEEPDOC d
+            JOIN entry IN {DEEP_ENTRY_ARRAY_PATH}
+            GROUP BY d."doc_id"
+            ORDER BY d."doc_id"
+        """).fetchall()
+        assert_equal(
+            iteration_aggregate_rows,
+            [("101", 3, 2), ("102", 1, 0)],
+            "deep iteration aggregate query",
+        )
+
+        correlated_iteration_rows = con.execute(f"""
+            SELECT CAST(d."doc_id" AS VARCHAR(10))
+            FROM JSON_VS.DEEPDOC d
+            WHERE EXISTS (
+                SELECT 1
+                FROM entry IN {DEEP_ENTRY_ARRAY_PATH}
+                WHERE entry.kind = 'tail'
+            )
+               OR EXISTS (
+                SELECT 1
+                FROM entry IN {DEEP_ENTRY_ARRAY_PATH}
+                LEFT JOIN VALUE extra IN entry."extras"
+                WHERE extra = 'solo-extra'
+            )
+            ORDER BY d."doc_id"
+        """).fetchall()
+        assert_equal(correlated_iteration_rows, [("101",), ("102",)], "deep correlated iteration query")
+
+        value_iteration_rows = con.execute("""
+            SELECT
+                CAST(d."doc_id" AS VARCHAR(10)),
+                CAST(metric._index AS VARCHAR(10)),
+                CAST(metric AS VARCHAR(10))
+            FROM JSON_VS.DEEPDOC d
+            JOIN VALUE metric IN d."metrics"
+            WHERE metric >= 20
+            ORDER BY d."doc_id", metric._index
+        """).fetchall()
+        assert_equal(
+            value_iteration_rows,
+            [("101", "1", "20"), ("101", "2", "30")],
+            "deep scalar iteration query",
+        )
+
         filtered_rows = con.execute(f"""
             SELECT CAST("doc_id" AS VARCHAR(10))
             FROM JSON_VS.DEEPDOC
@@ -181,8 +257,13 @@ def main() -> None:
                 TYPEOF({DEEP_READING_PATH}),
                 "tags[SIZE]",
                 CAST("metrics[LAST]" AS DECIMAL(18,0)),
-                {DEEP_ENTRY_LAST_VALUE_PATH}
-            FROM JSON_VS.DEEPDOC
+                {DEEP_ENTRY_LAST_VALUE_PATH},
+                entry._index,
+                entry.value,
+                extra
+            FROM JSON_VS.DEEPDOC d
+            JOIN entry IN {DEEP_ENTRY_ARRAY_PATH}
+            LEFT JOIN VALUE extra IN entry."extras"
             WHERE JSON_IS_EXPLICIT_NULL({DEEP_LEAF_PATH})
                OR CAST({DEEP_READING_PATH} AS DECIMAL(18,0)) = 100
         """).fetchall()[0][1]
@@ -194,6 +275,7 @@ def main() -> None:
                 '"DEEPDOC_chain_next_next_next_next_next_next_next"',
                 '"DEEPDOC_metrics_arr"',
                 '"DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr"',
+                '"DEEPDOC_chain_next_next_next_next_next_next_next_entries_arr_extras_arr"',
                 '"nickname|n"',
                 '"leaf_note|n"',
                 '"reading|string"',
@@ -221,6 +303,14 @@ def main() -> None:
         print(deep_array_rows)
         print("-- deep array filter query --")
         print(array_filter_rows)
+        print("-- deep nested iteration query --")
+        print(nested_iteration_rows)
+        print("-- deep iteration aggregate query --")
+        print(iteration_aggregate_rows)
+        print("-- deep correlated iteration query --")
+        print(correlated_iteration_rows)
+        print("-- deep scalar iteration query --")
+        print(value_iteration_rows)
         print("-- deep filter query --")
         print(filtered_rows)
         print("-- deep aggregation query --")

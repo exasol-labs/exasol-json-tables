@@ -2,6 +2,13 @@
 
 Lua virtual schema adapter for Exasol that wraps tables produced by [json-to-parquet](https://github.com/exasol/json-to-parquet) and makes them feel much closer to working with the original JSON.
 
+The goal is not just to hide storage details. It is to make JSON queryable in a way that feels natural in SQL:
+
+- scalar properties behave like ordinary columns
+- nested objects can be followed with dot syntax
+- mixed-type values can be inspected and cast from one logical column
+- arrays can be accessed either by position or as row sources in `JOIN` and `EXISTS`
+
 ## What This Feels Like
 
 This is the kind of SQL the interface is designed to make possible:
@@ -31,13 +38,32 @@ WHERE "tags[SIZE]" > 0
 ORDER BY "id";
 ```
 
-That one query combines:
+And when you want to treat an array relationally instead of positionally:
+
+```sql
+SELECT
+  s."id",
+  item._index,
+  item.value,
+  item.label
+FROM JSON_VS.SAMPLE s
+JOIN item IN s."items"
+WHERE EXISTS (
+  SELECT 1
+  FROM VALUE tag IN s."tags"
+  WHERE tag = 'blue'
+)
+ORDER BY s."id", item._index;
+```
+
+Together, those queries show the intended shape of the interface:
 
 - JSON null semantics
 - variant-type introspection and casting
 - nested object traversal
-- array element access
+- positional array access
 - array size introspection
+- array expansion into rows for filtering, correlation, and aggregation
 
 Under the hood, the physical data may actually be spread across mask columns, variant columns, object-link columns, child tables, and array tables. The virtual schema and companion preprocessor let you query it in a much more JSON-shaped way.
 
@@ -48,6 +74,7 @@ Under the hood, the physical data may actually be spread across mask columns, va
 - missing-vs-explicit-null information is pushed into hidden mask columns such as `note|n`
 - mixed-type properties are spread across multiple columns such as `value`, `value|string`, `value|object`, `value|array`
 - nested objects live in separate child tables linked through columns such as `child|object`
+- arrays live in child tables with parent links and ordinality
 
 That layout is efficient, but awkward to query directly.
 
@@ -57,6 +84,7 @@ This virtual schema puts a friendlier surface on top so you can:
 - distinguish `{"note": null}` from a document where `note` did not exist
 - follow nested object paths with dot syntax
 - inspect variant values and cast them to the type you need
+- work with arrays either as positional values or as rowsets using ordinary SQL constructs
 
 ## What You Get
 
@@ -65,7 +93,9 @@ This virtual schema puts a friendlier surface on top so you can:
 - `TYPEOF(col)` reports the actual JSON-oriented runtime type for folded columns.
 - `CAST(col AS ...)` reads from the active physical variant column.
 - Nested object paths can be queried with dotted identifiers such as `"meta.info.note"`.
-- Array elements and sizes can be queried with bracket syntax such as `"tags[0]"`, `"tags[FIRST]"`, `"tags[LAST]"`, `"tags[SIZE]"`, and `"items[LAST].value"`.
+- Arrays support two complementary styles:
+  - positional access with bracket syntax such as `"tags[0]"`, `"tags[FIRST]"`, `"tags[LAST]"`, `"tags[SIZE]"`, and `"items[LAST].value"`
+  - relational expansion with `JOIN item IN row."items"`, `LEFT JOIN`, and `JOIN VALUE tag IN row."tags"`
 - The adapter keeps normal SQL null semantics intact.
 
 ## Recommended Setup
@@ -75,11 +105,12 @@ The best user experience is to install both:
 - the virtual schema adapter
 - the companion SQL preprocessor
 
-The preprocessor enables the two user-facing features Exasol does not pass through to the adapter on its own:
+The preprocessor enables the user-facing JSON syntax Exasol does not pass through to the adapter on its own:
 
 - `JSON_IS_EXPLICIT_NULL(col)`
 - dotted path identifiers such as `"child.value"`
 - bracket access such as `"tags[0]"` and `"meta.items[1].value"`
+- array rowset syntax such as `JOIN item IN row."items"` and `JOIN VALUE tag IN row."tags"`
 
 Build the adapter:
 
@@ -135,7 +166,7 @@ Recommended usage pattern:
 
 - schema-qualify JSON virtual schema tables, for example `FROM JSON_VS.SAMPLE`
 - if you install multiple JSON virtual schemas, repeat `--virtual-schema` for each one when generating the preprocessor
-- treat `JSON_IS_EXPLICIT_NULL(...)` as a direct JSON virtual-schema query feature; joined regular-table queries are intentionally rejected instead of being rewritten ambiguously
+- in mixed-table joins, qualify JSON helper arguments such as `JSON_IS_EXPLICIT_NULL("SAMPLE"."note")` so ordinary SQL name resolution stays unambiguous
 
 ## Mental Model
 
@@ -146,9 +177,11 @@ Think of the virtual schema as giving you a JSON-shaped query surface over relat
 - `TYPEOF(col)` tells you which JSON variant is active on the current row
 - `CAST(col AS ...)` extracts the current scalar value from the right physical backing column
 - `"a.b.c"` follows object links into child tables
-- `"arr[0]"`, `"arr[FIRST]"`, and `"arr[LAST]"` read array elements by position
-- `"arr[SIZE]"` reads the stored array length from the parent row
+- arrays can be used in two equally first-class ways:
+  - `"arr[0]"`, `"arr[FIRST]"`, `"arr[LAST]"`, and `"arr[SIZE]"` for direct positional access
+  - `JOIN item IN row."items"` or `JOIN VALUE tag IN row."tags"` when you want one row per element
 - `"obj.items[LAST].value"` combines object traversal with positional array access
+- rowset array expansion composes with ordinary SQL: `WHERE`, `EXISTS`, `GROUP BY`, `COUNT(*)`, and correlated subqueries
 
 ## Example Source Shape
 
@@ -257,7 +290,9 @@ The preprocessor rewrites those references into the matching `LEFT OUTER JOIN` c
 
 ### Access Arrays by Position or Symbolic Selector
 
-With the preprocessor enabled, you can also read array elements with bracket syntax:
+With the preprocessor enabled, arrays feel natural both as values and as row sources.
+
+For direct positional reads:
 
 ```sql
 SELECT
@@ -281,6 +316,53 @@ This lets you combine:
 - filtering on symbolic selectors, for example `WHERE "tags[SIZE]" = 2` or `WHERE "metrics[LAST]" = 30`
 - typed numeric access, for example `WHERE "metrics[1]" = 20`
 
+### Iterate Arrays as Rows
+
+When you want relational behavior instead of positional lookup, expand the array into rows:
+
+```sql
+SELECT
+  s."id",
+  item._index,
+  item.value,
+  item.label
+FROM JSON_VS.SAMPLE s
+JOIN item IN s."items"
+ORDER BY s."id", item._index;
+```
+
+For scalar arrays:
+
+```sql
+SELECT
+  s."id",
+  tag._index,
+  tag
+FROM JSON_VS.SAMPLE s
+JOIN VALUE tag IN s."tags"
+ORDER BY s."id", tag._index;
+```
+
+And because arrays become ordinary row sources, they work naturally inside correlated subqueries:
+
+```sql
+SELECT s."id"
+FROM JSON_VS.SAMPLE s
+WHERE EXISTS (
+  SELECT 1
+  FROM item IN s."items"
+  WHERE item.value = 'second'
+    AND item.label = 'B'
+);
+```
+
+This is the key complement to bracket access:
+
+- bracket syntax is best when you want one known position such as the first, last, or nth value
+- `JOIN ... IN ...` is best when you want filtering, `EXISTS`, aggregation, same-element binding, or one row per element
+
+Both styles are part of the intended JSON query surface, and they can be mixed freely in the same query.
+
 ### Combine Flat, Variant, and Nested JSON Logic
 
 This is the kind of query the adapter is intended to make straightforward:
@@ -299,6 +381,11 @@ SELECT
   "meta.flag" AS meta_flag,
   "meta.info.note" AS deep_note
 FROM JSON_VS.SAMPLE
+WHERE EXISTS (
+  SELECT 1
+  FROM item IN "SAMPLE"."items"
+  WHERE item.label = 'B'
+)
 ORDER BY "id";
 ```
 
@@ -308,6 +395,7 @@ That gives you one query surface for:
 - variant-type inspection
 - scalar extraction
 - nested traversal
+- rowset array predicates
 
 ## SQL Semantics
 
@@ -330,6 +418,7 @@ Exasol currently strips both of these before normal virtual-schema pushdown:
 - user-defined scalar function calls such as `JSON_IS_EXPLICIT_NULL(col)`
 - quoted dotted identifiers such as `"meta.info.note"`
 - quoted array access such as `"tags[0]"` and `"meta.items[1].value"`
+- array rowset syntax such as `JOIN item IN row."items"` and `JOIN VALUE tag IN row."tags"`
 
 That is why the companion `SQL_PREPROCESSOR_SCRIPT` is part of the recommended setup.
 
@@ -339,6 +428,7 @@ The generated preprocessor also intentionally restricts this syntax to the confi
 
 - quoted dot paths such as `"meta.info.note"` are rewritten into explicit joins against the exposed child virtual tables
 - bracket access such as `"tags[0]"`, `"tags[LAST]"`, `"tags[SIZE]"`, and `"items[LAST].value"` uses the same join-based rewrite
+- array rowset syntax lowers to explicit joins against the exposed array child tables, with `_index` exposed as a user-facing alias for `_pos`
 - metadata stays clean, because synthetic `__path__...` columns are no longer exposed
 - array element expressions keep the physical child-column type instead of being forced to `VARCHAR`
 - `SIZE` reads the parent `<name>|array` length column directly, so it does not need an array-child join
@@ -347,6 +437,7 @@ Current boundaries:
 
 - it is designed for the normal case where the query starts from one base virtual table and path traversal hangs off that table
 - if a joined child table exposes the same leaf column name as an unqualified base-table column, qualify the base-table reference, for example `JSON_IS_EXPLICIT_NULL("SAMPLE"."note")`
+- rowset array paths currently target array properties directly; for example `JOIN item IN s."items"` or `JOIN entry IN d."chain.entries"`
 - when selecting multiple array expressions at once, alias them explicitly if you want stable user-facing result names, because the underlying child columns are often called `_value` or `value`
 - prefer explicit projection over `SELECT *` in queries whose filters trigger path or array joins, because Exasol expands `*` before pushdown
 
@@ -392,6 +483,7 @@ This verifies:
 - configurable helper aliases such as `JSON_IS_EXPLICIT_NULL(...)`
 - dotted path syntax
 - join-based bracket access in projection and predicates
+- rowset array iteration with `JOIN ... IN ...`, `LEFT JOIN`, `JOIN VALUE`, grouping, and correlated subqueries
 - symbolic bracket selectors `FIRST`, `LAST`, and `SIZE`
 - comment-safe path rewriting and preservation of quoted dotted aliases
 - missing-vs-explicit-null predicates
@@ -423,6 +515,7 @@ This verifies:
 - explicit-null vs missing semantics on deep paths
 - variant `TYPEOF(...)` and `CAST(...)` on deep paths
 - root and deeply prefixed array indexing
+- deep nested rowset iteration across object arrays and nested scalar arrays
 - symbolic array selectors at root and deep nested paths
 - filtering and aggregation over rewritten JSON-oriented expressions
 - `EXPLAIN VIRTUAL` output for deep joins without array scalar subqueries

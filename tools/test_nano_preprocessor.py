@@ -136,6 +136,74 @@ def main() -> None:
         """).fetchall()
         assert_equal(array_filter_rows, [("1",)], "array predicate query")
 
+        object_iteration_rows = con.execute("""
+            SELECT
+                CAST(s."id" AS VARCHAR(10)),
+                CAST(item._index AS VARCHAR(10)),
+                item.value,
+                item.label
+            FROM JSON_VS.SAMPLE s
+            JOIN item IN s."items"
+            ORDER BY s."id", item._index
+        """).fetchall()
+        assert_equal(
+            object_iteration_rows,
+            [("1", "0", "first", "A"), ("1", "1", "second", "B"), ("2", "0", "only", "C")],
+            "object array iteration query",
+        )
+
+        value_iteration_rows = con.execute("""
+            SELECT
+                CAST(s."id" AS VARCHAR(10)),
+                CAST(tag._index AS VARCHAR(10)),
+                tag
+            FROM JSON_VS.SAMPLE s
+            JOIN VALUE tag IN s."tags"
+            ORDER BY s."id", tag._index
+        """).fetchall()
+        assert_equal(
+            value_iteration_rows,
+            [("1", "0", "red"), ("1", "1", "blue"), ("2", "0", "green")],
+            "scalar array iteration query",
+        )
+
+        left_iteration_rows = con.execute("""
+            SELECT
+                CAST(s."id" AS VARCHAR(10)),
+                COALESCE(CAST(item._index AS VARCHAR(10)), 'NULL'),
+                COALESCE(item.value, 'NULL')
+            FROM JSON_VS.SAMPLE s
+            LEFT JOIN item IN s."items"
+            ORDER BY s."id", item._index
+        """).fetchall()
+        assert_equal(
+            left_iteration_rows,
+            [("1", "0", "first"), ("1", "1", "second"), ("2", "0", "only"), ("3", "NULL", "NULL")],
+            "left array iteration query",
+        )
+
+        value_group_rows = con.execute("""
+            SELECT tag, COUNT(*)
+            FROM JSON_VS.SAMPLE s
+            JOIN VALUE tag IN s."tags"
+            GROUP BY tag
+            ORDER BY tag
+        """).fetchall()
+        assert_equal(value_group_rows, [("blue", 1), ("green", 1), ("red", 1)], "scalar iteration group by query")
+
+        correlated_rows = con.execute("""
+            SELECT CAST(s."id" AS VARCHAR(10))
+            FROM JSON_VS.SAMPLE s
+            WHERE EXISTS (
+                SELECT 1
+                FROM item IN s."items"
+                WHERE item.value = 'second'
+                  AND item.label = 'B'
+            )
+            ORDER BY s."id"
+        """).fetchall()
+        assert_equal(correlated_rows, [("1",)], "correlated array iteration query")
+
         array_size_filter_rows = con.execute("""
             SELECT CAST("id" AS VARCHAR(10))
             FROM JSON_VS.SAMPLE
@@ -190,8 +258,11 @@ def main() -> None:
             EXPLAIN VIRTUAL
             SELECT CASE WHEN JSON_IS_EXPLICIT_NULL("SAMPLE"."note") THEN 1 ELSE 0 END,
                    "child.value", "meta.info.note", "tags[FIRST]", "tags[LAST]", "tags[SIZE]",
-                   "items[LAST].value", "meta.items[LAST].value", "meta.items[SIZE]"
+                   "items[LAST].value", "meta.items[LAST].value", "meta.items[SIZE]",
+                   item._index, item.value, tag
             FROM JSON_VS.SAMPLE
+            JOIN item IN "SAMPLE"."items"
+            LEFT JOIN VALUE tag IN "SAMPLE"."tags"
         """).fetchall()
         explain_sql = explain_rows[0][1]
         for expected_fragment in ['"note|n"', '"SAMPLE_child"', '"SAMPLE_meta_info"', '"SAMPLE_tags_arr"',
@@ -208,6 +279,11 @@ def main() -> None:
         print("path syntax:", path_rows)
         print("array access:", array_rows)
         print("array predicate:", array_filter_rows)
+        print("object iteration:", object_iteration_rows)
+        print("value iteration:", value_iteration_rows)
+        print("left iteration:", left_iteration_rows)
+        print("value group by:", value_group_rows)
+        print("correlated iteration:", correlated_rows)
         print("array size predicate:", array_size_filter_rows)
         print("dotted alias:", alias_result_rows)
         print("comment query:", comment_rows)

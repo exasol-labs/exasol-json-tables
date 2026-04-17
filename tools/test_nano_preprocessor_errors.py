@@ -150,6 +150,51 @@ def main() -> None:
 
         assert_query_error(
             con,
+            '''
+            SELECT s."id"
+            FROM JVS_SRC.SAMPLE s
+            JOIN item IN s."items"
+            ''',
+            ["JVS-SCOPE-ERROR", "JSON array iteration syntax", "JSON_VS"],
+            "regular table iterator scope error",
+        )
+
+        assert_query_error(
+            con,
+            '''
+            SELECT s."id"
+            FROM JSON_VS.SAMPLE s
+            JOIN item IN s."items[0]"
+            ''',
+            ["JVS-ITER-ERROR", "Iterator paths must name an array property directly", "scalar bracket access"],
+            "indexed iterator path error",
+        )
+
+        assert_query_error(
+            con,
+            '''
+            SELECT s."id"
+            FROM JSON_VS.SAMPLE s
+            JOIN VALUE tag IN s."tags"
+            LEFT JOIN VALUE nested IN tag."extras"
+            ''',
+            ["JVS-ITER-ERROR", "Scalar VALUE iterators cannot be used as the root"],
+            "value iterator root error",
+        )
+
+        assert_query_error(
+            con,
+            '''
+            SELECT s."id"
+            FROM JSON_VS.SAMPLE s
+            JOIN item IN s."meta.items[LAST]"
+            ''',
+            ["JVS-ITER-ERROR", "Iterator paths must name an array property directly"],
+            "terminal indexed iterator path error",
+        )
+
+        assert_query_error(
+            con,
             "SELECT JSON_IS_EXPLICIT_NULL() FROM JSON_VS.SAMPLE",
             ["JVS-FUNCTION-ERROR", "JSON_IS_EXPLICIT_NULL", "Expected exactly one argument"],
             "zero-argument helper error",
@@ -183,8 +228,8 @@ def main() -> None:
             FROM JSON_VS.SAMPLE S
             JOIN JVS_SRC.SAMPLE T ON S."id" = T."id"
             ''',
-            ["JVS-SCOPE-ERROR", "JSON helper functions", "single top-level JSON virtual-schema table"],
-            "unqualified multi-table helper scope error",
+            ['identifier "note" is ambiguous'],
+            "unqualified multi-table helper ambiguity error",
         )
 
         invalid_output_path = Path(ROOT / "dist" / "should_not_exist.sql")
