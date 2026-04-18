@@ -16,6 +16,13 @@ from generate_wrapper_preprocessor_sql import (
     DEFAULT_VARIANT_VARCHAR_FUNCTION_NAMES,
     generate_wrapper_preprocessor_sql_text,
 )
+from result_family_materializer import (
+    materialize_result_family,
+    materialized_family_result_to_dict,
+    ResultFamilyMaterializationSpec,
+    result_family_spec_from_dict,
+    result_family_spec_to_dict,
+)
 from wrapper_schema_support import ROOT, connect_for_generation, generate_wrapper_artifacts
 
 
@@ -39,6 +46,17 @@ def parse_args() -> argparse.Namespace:
     )
     add_connection_arguments(generate_parser)
     add_generation_arguments(generate_parser)
+
+    result_generate_parser = subparsers.add_parser(
+        "generate-result-family-package",
+        help=(
+            "Materialize a durable result family into the source schema and generate the full wrapper package "
+            "plus persisted result-family config/manifest artifacts."
+        ),
+    )
+    add_connection_arguments(result_generate_parser)
+    add_generation_arguments(result_generate_parser)
+    add_result_family_arguments(result_generate_parser)
 
     regenerate_parser = subparsers.add_parser(
         "regenerate-preprocessor",
@@ -85,6 +103,11 @@ def parse_args() -> argparse.Namespace:
         "--skip-views",
         action="store_true",
         help="Do not install the wrapper views/helper schema SQL.",
+    )
+    install_parser.add_argument(
+        "--skip-source-family",
+        action="store_true",
+        help="Do not materialize the durable result-family source schema, even if the package contains one.",
     )
     install_parser.add_argument(
         "--skip-preprocessor",
@@ -230,6 +253,18 @@ def add_generation_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_result_family_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--result-family-config",
+        type=Path,
+        required=True,
+        help=(
+            "JSON file describing how to materialize the durable result family. "
+            "Supported kinds: family_preserving_subset, synthesized_family, structured_shape."
+        ),
+    )
+
+
 def validate_distinct_schemas(source_schema: str, wrapper_schema: str, helper_schema: str) -> None:
     if len({source_schema, wrapper_schema, helper_schema}) != 3:
         raise SystemExit(
@@ -248,6 +283,8 @@ def build_package_paths(output_dir: Path, package_name: str) -> dict[str, Path]:
         "manifest": output_dir / f"{package_name}_manifest.json",
         "preprocessorSql": output_dir / f"{package_name}_preprocessor.sql",
         "packageConfig": output_dir / f"{package_name}_package.json",
+        "resultFamilyConfig": output_dir / f"{package_name}_result_family.json",
+        "resultFamilyManifest": output_dir / f"{package_name}_result_family_manifest.json",
     }
 
 
@@ -333,6 +370,26 @@ def package_config_from_args(args: argparse.Namespace, paths: dict[str, Path]) -
     }
 
 
+def package_config_for_result_family(
+    args: argparse.Namespace,
+    paths: dict[str, Path],
+    *,
+    result_family_spec: ResultFamilyMaterializationSpec,
+) -> dict[str, Any]:
+    config = package_config_from_args(args, paths)
+    output_dir = Path(args.output_dir).resolve()
+    config["resultFamily"] = {
+        "materializationConfig": relative_path_text(paths["resultFamilyConfig"], base_dir=output_dir),
+        "materializedFamilyManifest": relative_path_text(paths["resultFamilyManifest"], base_dir=output_dir),
+        "kind": result_family_spec_to_dict(result_family_spec)["kind"],
+    }
+    return config
+
+
+def load_result_family_spec(path: Path):
+    return result_family_spec_from_dict(json.loads(path.read_text()))
+
+
 def load_manifest_and_validate(config: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text())
     manifest_public_schema = validate_identifier("Manifest public schema", manifest["publicSchema"])
@@ -343,6 +400,22 @@ def load_manifest_and_validate(config: dict[str, Any], manifest_path: Path) -> d
             f"but the package config expects {config['wrapperSchema']}/{config['helperSchema']}."
         )
     return manifest
+
+
+def has_result_family(config: dict[str, Any]) -> bool:
+    return "resultFamily" in config
+
+
+def resolve_result_family_config_path(config_path: Path, config: dict[str, Any]) -> Path | None:
+    if not has_result_family(config):
+        return None
+    return resolve_configured_path(config_path, config["resultFamily"]["materializationConfig"]).resolve()
+
+
+def resolve_result_family_manifest_path(config_path: Path, config: dict[str, Any]) -> Path | None:
+    if not has_result_family(config):
+        return None
+    return resolve_configured_path(config_path, config["resultFamily"]["materializedFamilyManifest"]).resolve()
 
 
 def generate_preprocessor_from_package_config(config: dict[str, Any], manifest: dict[str, Any]) -> str:
@@ -363,6 +436,21 @@ def generate_preprocessor_from_package_config(config: dict[str, Any], manifest: 
         blocked_helper_message=helper_profile["blockedHelperMessage"],
         activate_session=bool(preprocessor_config["activateSession"]),
     )
+
+
+def load_result_family_manifest_and_validate(config: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
+    manifest = json.loads(manifest_path.read_text())
+    if manifest["sourceSchema"] != config["sourceSchema"]:
+        raise SystemExit(
+            f"Result-family manifest {manifest_path} describes source schema {manifest['sourceSchema']}, "
+            f"but the package config expects {config['sourceSchema']}."
+        )
+    if manifest["tableKind"] != "table":
+        raise SystemExit(
+            f"Result-family manifest {manifest_path} must describe a durable table family, "
+            f"got tableKind={manifest['tableKind']!r}."
+        )
+    return manifest
 
 
 def split_plain_sql_statements(sql_text: str) -> list[str]:
@@ -620,6 +708,15 @@ def validate_package_files(config_path: Path, config: dict[str, Any], manifest_p
     if config["sourceSchema"] in {config["wrapperSchema"], config["helperSchema"]}:
         raise SystemExit("Source schema must differ from the wrapper and helper schemas in the package config.")
     load_manifest_and_validate(config, manifest_path)
+    if has_result_family(config):
+        result_family_config_path = resolve_result_family_config_path(config_path, config)
+        result_family_manifest_path = resolve_result_family_manifest_path(config_path, config)
+        if result_family_config_path is None or not result_family_config_path.exists():
+            raise SystemExit(f"Result-family config file does not exist: {result_family_config_path}")
+        if result_family_manifest_path is None or not result_family_manifest_path.exists():
+            raise SystemExit(f"Result-family manifest file does not exist: {result_family_manifest_path}")
+        load_result_family_spec(result_family_config_path)
+        load_result_family_manifest_and_validate(config, result_family_manifest_path)
 
 
 def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, Any]) -> None:
@@ -677,6 +774,28 @@ def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, 
         raise SystemExit(f"Installed preprocessor script {script_schema}.{script_name} was not found.")
 
 
+def validate_installed_result_family(con, config: dict[str, Any], result_family_manifest: dict[str, Any]) -> None:
+    source_schema = config["sourceSchema"]
+    source_table_names = {
+        row[0]
+        for row in con.execute(
+            f"""
+            SELECT DISTINCT COLUMN_TABLE
+            FROM SYS.EXA_ALL_COLUMNS
+            WHERE COLUMN_SCHEMA = '{source_schema}'
+            """
+        ).fetchall()
+    }
+    expected_tables = set(result_family_manifest["createdTables"])
+    missing_tables = sorted(expected_tables - source_table_names)
+    if missing_tables:
+        raise SystemExit(f"Installed result-family source schema is missing expected tables: {missing_tables}")
+
+    expected_roots = sorted(result_family_manifest["familyDescription"]["rootTables"])
+    if expected_roots != sorted(result_family_manifest["familyDescription"]["familyTablesByRoot"]):
+        raise SystemExit("Result-family manifest root table metadata is inconsistent.")
+
+
 def command_generate(args: argparse.Namespace) -> None:
     paths = build_package_paths(args.output_dir, args.package_name)
     config = package_config_from_args(args, paths)
@@ -697,6 +816,45 @@ def command_generate(args: argparse.Namespace) -> None:
     paths["preprocessorSql"].write_text(generate_preprocessor_from_package_config(config, artifacts.manifest))
     write_json(paths["packageConfig"], config)
 
+    print(f"Wrote {paths['viewsSql']}")
+    print(f"Wrote {paths['manifest']}")
+    print(f"Wrote {paths['preprocessorSql']}")
+    print(f"Wrote {paths['packageConfig']}")
+
+
+def command_generate_result_family_package(args: argparse.Namespace) -> None:
+    paths = build_package_paths(args.output_dir, args.package_name)
+    result_family_spec = load_result_family_spec(args.result_family_config.resolve())
+    config = package_config_for_result_family(args, paths, result_family_spec=result_family_spec)
+
+    con = connect_for_generation(args.dsn, args.user, args.password)
+    try:
+        materialized_family = materialize_result_family(
+            con,
+            target_schema=config["sourceSchema"],
+            spec=result_family_spec,
+            table_kind="table",
+            reset_schema=True,
+        )
+        artifacts = generate_wrapper_artifacts(
+            con,
+            config["sourceSchema"],
+            config["wrapperSchema"],
+            config["helperSchema"],
+        )
+    finally:
+        con.close()
+
+    paths["viewsSql"].parent.mkdir(parents=True, exist_ok=True)
+    write_json(paths["resultFamilyConfig"], result_family_spec_to_dict(result_family_spec))
+    write_json(paths["resultFamilyManifest"], materialized_family_result_to_dict(materialized_family))
+    paths["viewsSql"].write_text(artifacts.sql)
+    write_json(paths["manifest"], artifacts.manifest)
+    paths["preprocessorSql"].write_text(generate_preprocessor_from_package_config(config, artifacts.manifest))
+    write_json(paths["packageConfig"], config)
+
+    print(f"Wrote {paths['resultFamilyConfig']}")
+    print(f"Wrote {paths['resultFamilyManifest']}")
     print(f"Wrote {paths['viewsSql']}")
     print(f"Wrote {paths['manifest']}")
     print(f"Wrote {paths['preprocessorSql']}")
@@ -727,11 +885,21 @@ def command_install(args: argparse.Namespace) -> None:
     manifest_path = resolve_configured_path(config_path, config["generatedFiles"]["manifest"]).resolve()
     validate_package_files(config_path, config, manifest_path, views_sql_path, preprocessor_sql_path)
     manifest = load_manifest_and_validate(config, manifest_path)
+    result_family_config_path = resolve_result_family_config_path(config_path, config)
+    result_family_spec = load_result_family_spec(result_family_config_path) if result_family_config_path else None
     smoke_test_sql = build_smoke_test_query(config, manifest)
     smoke_test_rows = None
 
     con = connect_for_generation(args.dsn, args.user, args.password)
     try:
+        if result_family_spec is not None and not args.skip_source_family:
+            materialize_result_family(
+                con,
+                target_schema=config["sourceSchema"],
+                spec=result_family_spec,
+                table_kind="table",
+                reset_schema=True,
+            )
         if not args.skip_views:
             execute_plain_sql_file(con, views_sql_path.read_text())
         if not args.skip_preprocessor:
@@ -742,6 +910,8 @@ def command_install(args: argparse.Namespace) -> None:
     finally:
         con.close()
 
+    if result_family_spec is not None and not args.skip_source_family:
+        print(f"Installed durable result family into source schema {config['sourceSchema']}")
     if not args.skip_views:
         print(f"Installed {views_sql_path}")
     if not args.skip_preprocessor:
@@ -764,10 +934,18 @@ def command_validate(args: argparse.Namespace) -> None:
     ).resolve()
     validate_package_files(config_path, config, manifest_path, views_sql_path, preprocessor_sql_path)
     manifest = load_manifest_and_validate(config, manifest_path)
+    result_family_manifest_path = resolve_result_family_manifest_path(config_path, config)
+    result_family_manifest = (
+        load_result_family_manifest_and_validate(config, result_family_manifest_path)
+        if result_family_manifest_path is not None
+        else None
+    )
 
     if args.check_installed:
         con = connect_for_generation(args.dsn, args.user, args.password)
         try:
+            if result_family_manifest is not None:
+                validate_installed_result_family(con, config, result_family_manifest)
             validate_installed_package(con, config, manifest)
         finally:
             con.close()
@@ -785,6 +963,8 @@ def main() -> None:
     args = parse_args()
     if args.command == "generate":
         command_generate(args)
+    elif args.command == "generate-result-family-package":
+        command_generate_result_family_package(args)
     elif args.command == "regenerate-preprocessor":
         command_regenerate_preprocessor(args)
     elif args.command == "install":

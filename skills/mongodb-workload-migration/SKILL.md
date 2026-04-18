@@ -32,16 +32,22 @@ Do not use this skill for generic JSON querying unless the problem is specifical
 In this repository, inspect first:
 
 - `README.md`
+- `structured-result-materialization-study.md`
 - `tests/study_mongodb_migration_focus.py`
 - `tests/test_wrapper_surface.py`
 - `tests/test_wrapper_errors.py`
+- `tests/test_structured_result_ergonomics.py`
+- `tests/test_structured_results_from_relational.py`
 - `tools/wrapper_package_tool.py`
+- `tools/structured_result_tool.py`
 
 Useful live checks:
 
 - `python3 tests/study_mongodb_migration_focus.py`
 - `python3 tests/test_wrapper_surface.py`
 - `python3 tests/test_wrapper_errors.py`
+- `python3 tests/test_structured_result_ergonomics.py`
+- `python3 tests/test_structured_results_from_relational.py`
 
 ## Migration Mental Model
 
@@ -71,6 +77,7 @@ Important practical rule:
 
 - If the target can be expressed as rows, joins, groups, or windows, the wrapper surface is usually a good destination.
 - If the target must preserve or rebuild nested document shapes, expect more manual SQL and more migration friction.
+- In this repository, that nested-output gap is now partially addressed by the **structured results** workflow. Use it when the migrated workload needs to yield nested arrays/objects again instead of plain rows.
 
 ## Core Translation Table
 
@@ -183,6 +190,12 @@ So for these patterns, set expectations explicitly:
 
 The analytical logic may port well, while the result shape may not.
 
+Important update for this repository:
+
+- there is now a supported **structured results** path for rebuilding nested outputs inside Exasol
+- use it when the user needs Mongo-like nested payloads, report objects, or API-facing shapes
+- do not promise MongoDB-native pipeline semantics, but do treat structured results as the preferred way to keep shape-building in the database
+
 ### VALUE iterators stay plain SQL
 
 `VALUE` iterators intentionally do not support full JSON helper/path semantics.
@@ -214,7 +227,7 @@ Move those expressions into the inner `SELECT` or query the wrapper view directl
    - use ordinary SQL joins for collection-to-collection logic
 5. Translate output shape last.
    - if rows are acceptable, stop there
-   - if nested output is required, call that out as extra work
+   - if nested output is required, switch to the structured-results workflow instead of treating it as ad hoc application-layer glue
 
 ## Good Default Recommendations
 
@@ -226,6 +239,14 @@ When a Mongo user asks “what is the SQL version of this?”:
 - prefer window functions for `$setWindowFields`
 - prefer warning about shape divergence for `$facet`, `$filter`, `$map`, `$reduce`
 
+When a Mongo user asks for the **same nested output shape**:
+
+- first decide whether the result really needs to stay nested
+- if yes, use structured results rather than trying to force everything into one flat query result
+- prefer the higher-level `structured_shape` config first
+- use the one-shot preview tool to validate the shape quickly
+- only drop to low-level `synthesized_family` if the shape needs exact table-family control
+
 ## What To Validate On Nano
 
 For a serious migration task, validate all three:
@@ -236,6 +257,11 @@ For a serious migration task, validate all three:
    - does Mongo-style misuse fail with a good wrapper error?
 3. **shape consequence**
    - is the result analytically equivalent but structurally different from Mongo output?
+
+If nested output matters, validate a fourth:
+
+4. **structured output path**
+   - can the migrated workload be materialized as a structured result family and exported back to nested JSON-like rows?
 
 In this repository, `tests/study_mongodb_migration_focus.py` is the best starting harness.
 
@@ -273,6 +299,15 @@ WHERE l.key1 = item.key1
   AND l.key2 = item.key2
 ```
 
+### `$lookup` + nested output
+
+If the Mongo workload expects joined nested arrays/documents in the output:
+
+- first write the analytical SQL that produces the needed rows
+- then decide whether to:
+  - keep rows,
+  - or rebuild structure through structured results inside Exasol
+
 ### `$setWindowFields`
 
 ```sql
@@ -285,6 +320,55 @@ SELECT ...,
        )
 FROM expanded
 ```
+
+### Structured results for Mongo-style nested output
+
+Use this when the user wants something closer to:
+
+- Mongo aggregation output
+- API-shaped nested documents
+- report payloads with nested arrays/objects
+
+Recommended path in this repository:
+
+1. Start with the SQL that computes the desired root/object/array content.
+2. Author a `structured_shape` config that describes the output hierarchy.
+3. Run:
+
+```bash
+python3 tools/structured_result_tool.py preview-json \
+  --result-family-config ./dist/result_family_input.json \
+  --target-schema JVS_RESULT_PREVIEW \
+  --table-kind local_temporary
+```
+
+4. If the output shape is right, package it durably with:
+
+```bash
+python3 tools/wrapper_package_tool.py generate-result-family-package \
+  --source-schema JVS_RESULT_SRC \
+  --wrapper-schema JSON_VIEW_RESULT \
+  --helper-schema JSON_VIEW_RESULT_INTERNAL \
+  --preprocessor-schema JVS_RESULT_PP \
+  --preprocessor-script JSON_RESULT_PREPROCESSOR \
+  --output-dir ./dist \
+  --package-name json_result \
+  --result-family-config ./dist/result_family_input.json
+```
+
+5. If `structured_shape` is too limiting, move down to `synthesized_family`.
+
+Use this especially for Mongo patterns like:
+
+- `$lookup` followed by document nesting
+- `$facet` outputs that need multiple nested arrays
+- grouped results that should return arrays of child objects
+- analyst or API workflows that want nested result payloads instead of rows
+
+Tell the user clearly:
+
+- this is not MongoDB-native output semantics
+- but it is the repository’s supported way to keep structural work inside Exasol rather than rebuilding everything in application code
 
 ## Research Anchors
 
@@ -312,4 +396,9 @@ Always evaluate both:
 - semantic portability
 - result-shape portability
 
-This wrapper architecture is now strong on semantic portability for analytics workloads. The main remaining gap is document-shaped output reconstruction.
+This wrapper architecture is now strong on semantic portability for analytics workloads.
+For result shape portability:
+
+- plain row-oriented ports are the easiest path
+- structured results are the supported path when nested output must stay inside Exasol
+- the remaining gap is automatic Mongo-style output parity, not the total absence of a nested-output workflow
