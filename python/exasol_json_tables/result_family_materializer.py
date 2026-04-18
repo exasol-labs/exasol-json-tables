@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Literal, Union
 
 from .wrapper_schema_support import (
@@ -10,6 +11,7 @@ from .wrapper_schema_support import (
     build_table_models,
     fetch_source_columns,
     find_root_tables,
+    load_installed_wrapper_manifests,
 )
 
 
@@ -100,6 +102,9 @@ class MaterializedFamilyResult:
 
 
 ResultFamilyMaterializationSpec = Union[FamilyPreservingSubsetSpec, SynthesizedFamilySpec, StructuredShapeSpec]
+FROM_OR_JOIN_SCHEMA_RE = re.compile(
+    r'(?is)\b(?:FROM|JOIN)\s+(?:"((?:[^"]|"")+)"|([A-Za-z][A-Za-z0-9_]*))\s*\.\s*(?:"(?:[^"]|"")+"|[A-Za-z][A-Za-z0-9_]*)'
+)
 
 
 def _prepare_target_schema(con, target_schema: str, table_kind: TableKind, reset_schema: bool) -> None:
@@ -137,6 +142,52 @@ def _create_table_as_select(
             {select_sql}
             """
         )
+
+
+def _extract_schema_names_from_sql(sql: str) -> set[str]:
+    matches: set[str] = set()
+    for match in FROM_OR_JOIN_SCHEMA_RE.finditer(sql):
+        schema_name = match.group(1) or match.group(2)
+        if schema_name:
+            matches.add(schema_name.replace('""', '"'))
+    return matches
+
+
+def _wrapper_manifests_for_family_spec(con, family_spec: SynthesizedFamilySpec) -> list[dict[str, Any]]:
+    referenced_schemas: set[str] = set()
+    for table_spec in family_spec.table_specs:
+        referenced_schemas.update(_extract_schema_names_from_sql(table_spec.select_sql))
+    if not referenced_schemas:
+        return []
+    return load_installed_wrapper_manifests(con, referenced_schemas)
+
+
+def _ephemeral_preprocessor_names(target_schema: str) -> tuple[str, str]:
+    return (f"{target_schema}_PP_TMP", "JSON_TABLES_RESULT_PREPROCESSOR")
+
+
+def _install_ephemeral_wrapper_preprocessor(
+    con,
+    *,
+    target_schema: str,
+    manifests: list[dict[str, Any]],
+) -> tuple[str, str]:
+    from .generate_wrapper_preprocessor_sql import generate_wrapper_preprocessor_sql_text
+    from .wrapper_package_tool import execute_generated_preprocessor_sql
+
+    script_schema, script_name = _ephemeral_preprocessor_names(target_schema)
+    sql_text = generate_wrapper_preprocessor_sql_text(
+        schema=script_schema,
+        script=script_name,
+        wrapper_schemas=[str(manifest["publicSchema"]) for manifest in manifests],
+        helper_schemas=[str(manifest["helperSchema"]) for manifest in manifests],
+        manifests=manifests,
+        activate_session=False,
+    )
+    execute_generated_preprocessor_sql(con, sql_text)
+    con.execute(f"OPEN SCHEMA {qident(target_schema)}")
+    con.execute(f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {qqualified(script_schema, script_name)}")
+    return script_schema, script_name
 
 
 def describe_source_families(con, source_schema: str) -> FamilyDescription:
@@ -722,14 +773,29 @@ def materialize_synthesized_family(
         raise ValueError(f"table_specs contain duplicate table names: {table_names!r}")
 
     _prepare_target_schema(con, target_schema, table_kind, reset_schema)
-    for table_spec in family_spec.table_specs:
-        _create_table_as_select(
-            con,
-            target_schema,
-            table_spec.table_name,
-            table_spec.select_sql,
-            table_kind,
-        )
+    wrapper_manifests = _wrapper_manifests_for_family_spec(con, family_spec)
+    temp_preprocessor_schema: str | None = None
+    try:
+        if wrapper_manifests:
+            temp_preprocessor_schema, _ = _install_ephemeral_wrapper_preprocessor(
+                con,
+                target_schema=target_schema,
+                manifests=wrapper_manifests,
+            )
+        for table_spec in family_spec.table_specs:
+            _create_table_as_select(
+                con,
+                target_schema,
+                table_spec.table_name,
+                table_spec.select_sql,
+                table_kind,
+            )
+    finally:
+        if temp_preprocessor_schema is not None:
+            try:
+                con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")
+            finally:
+                con.execute(f"DROP SCHEMA IF EXISTS {qident(temp_preprocessor_schema)} CASCADE")
 
     family_description = describe_source_families(con, target_schema)
     if family_spec.root_table not in family_description.root_tables:

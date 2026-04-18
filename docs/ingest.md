@@ -85,6 +85,8 @@ exasol-json-tables ingest \
   --exasol exasol://sys:exasol@127.0.0.1:8563/JVS_SRC
 ```
 
+When you use `--exasol`, the CLI creates the target source schema first if it does not already exist. That makes direct ingest behave like the one-shot workflow instead of failing late after local scan and staging work.
+
 If you want to stage via a temp directory and clean it up afterward:
 
 ```bash
@@ -97,6 +99,8 @@ exasol-json-tables ingest \
 ```
 
 If you use `ingest-and-wrap` instead, you can also drive the connection through `--dsn`, `--user`, and `--password` without constructing the ingest URL yourself.
+
+The same rule applies there too: the derived or explicit source schema is created automatically before ingest starts.
 
 ## Input Shape
 

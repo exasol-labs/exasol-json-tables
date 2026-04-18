@@ -441,6 +441,19 @@ def command_ingest(args: argparse.Namespace) -> None:
     if output_dir is None and args.exasol is None:
         output_dir = artifact_dir
 
+    if args.exasol is not None:
+        parsed_exasol = _parse_exasol_url(args.exasol)
+        ingest_schema = parsed_exasol.get("schema")
+        ingest_user = str(parsed_exasol.get("user") or "")
+        ingest_password = str(parsed_exasol.get("password") or "")
+        if ingest_schema and ingest_user and ingest_password:
+            _ensure_schema_exists(
+                dsn=str(parsed_exasol["dsn"]),
+                user=ingest_user,
+                password=ingest_password,
+                schema=str(ingest_schema),
+            )
+
     command = [
         "cargo",
         "run",

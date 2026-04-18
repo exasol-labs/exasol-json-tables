@@ -112,6 +112,8 @@ exasol-json-tables ingest \
   --exasol exasol://sys:exasol@db.example.com:8563/JVS_SRC
 ```
 
+For direct ingest, the CLI creates the target source schema if it does not already exist. If schema creation is not allowed for your user, the command will now fail early at that step instead of after scan and staging work.
+
 ## Compatibility Entrypoints
 
 The `tools/` scripts still exist, but they are now compatibility and developer entrypoints, not the main product surface.

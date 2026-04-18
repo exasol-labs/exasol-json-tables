@@ -52,7 +52,6 @@ def test_unified_cli_ingest_wrap_validate_with_manifest_handoff() -> None:
         con = connect()
         try:
             cleanup_schemas(con)
-            con.execute(f'CREATE SCHEMA "{SOURCE_SCHEMA}"')
         finally:
             con.close()
 
@@ -417,10 +416,82 @@ def test_unified_cli_ingest_and_wrap_with_derived_defaults() -> None:
                     con.close()
 
 
+def test_unified_cli_ingest_and_wrap_with_lowercase_root_name() -> None:
+    fixture_path = ROOT / "crates" / "json_tables_ingest" / "tests" / "fixtures" / "sample.json"
+    with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_lowercase_") as tmpdir:
+        tmp = Path(tmpdir)
+        artifact_root = tmp / "artifacts"
+        staging_dir = tmp / "staging"
+        input_path = tmp / "sample.json"
+        shutil.copyfile(fixture_path, input_path)
+
+        workflow_name = "lowercase_sample"
+        run_artifact_dir = artifact_root / workflow_name
+        package_config_path = run_artifact_dir / f"{workflow_name}_wrapper_package.json"
+        package_config: Optional[dict[str, object]] = None
+
+        try:
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "ingest-and-wrap",
+                    "--input",
+                    str(input_path),
+                    "--name",
+                    workflow_name,
+                    "--artifact-dir",
+                    str(artifact_root),
+                    "--exasol-temp-dir",
+                    str(staging_dir),
+                    "--exasol-cleanup",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            assert "Unified CLI completed ingest-and-wrap workflow." in result.stdout
+            package_config = json.loads(package_config_path.read_text())
+
+            con = connect()
+            try:
+                con.execute(
+                    f'ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = "{package_config["preprocessor"]["schema"]}"."{package_config["preprocessor"]["script"]}"'
+                )
+                rows = con.execute(
+                    f'''
+                    SELECT
+                      CAST("id" AS VARCHAR(20)),
+                      JSON_AS_VARCHAR("name"),
+                      COALESCE("meta.team", 'NULL'),
+                      COALESCE("tags[LAST]", 'NULL')
+                    FROM "{package_config["wrapperSchema"]}"."sample"
+                    ORDER BY 1
+                    '''
+                ).fetchall()
+            finally:
+                con.close()
+
+            assert rows == [
+                ("1", "Alice", "A", "y"),
+                ("2", "Bob", "NULL", "NULL"),
+                ("3", "Carol", "NULL", "NULL"),
+            ]
+        finally:
+            if package_config is not None:
+                con = connect()
+                try:
+                    cleanup_package_schemas(con, package_config)
+                finally:
+                    con.close()
+
+
 if __name__ == "__main__":
     test_unified_cli_ingest_wrap_validate_with_manifest_handoff()
     test_unified_cli_structured_results_preview_json()
     test_unified_cli_wrap_deploy_chains_install_and_validate()
     test_unified_cli_ingest_and_wrap_with_derived_defaults()
+    test_unified_cli_ingest_and_wrap_with_lowercase_root_name()
     print("-- unified cli regression --")
     print("verified ingest/wrap/validate orchestration, wrap deploy, ingest-and-wrap defaults, and structured-results preview-json")

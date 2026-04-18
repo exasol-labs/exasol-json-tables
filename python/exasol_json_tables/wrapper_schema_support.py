@@ -733,3 +733,145 @@ def generate_wrapper_artifacts_from_source_manifest(
         public_schema=public_schema.upper(),
         helper_schema=helper_schema.upper(),
     )
+
+
+def load_installed_wrapper_manifest(con, helper_schema: str) -> dict[str, Any]:
+    helper_schema = helper_schema.upper()
+    roots_rows = con.execute(
+        f"""
+        SELECT ROOT_TABLE, SOURCE_SCHEMA, PUBLIC_SCHEMA, PUBLIC_VIEW, HELPER_SCHEMA
+        FROM {quote_qualified(helper_schema, "__JVS_ROOTS")}
+        ORDER BY ROOT_TABLE
+        """
+    ).fetchall()
+    if not roots_rows:
+        raise ValueError(f"Helper schema {helper_schema} does not contain any __JVS_ROOTS rows.")
+
+    source_schema = str(roots_rows[0][1])
+    public_schema = str(roots_rows[0][2])
+    manifest_helper_schema = str(roots_rows[0][4])
+
+    relationships_rows = con.execute(
+        f"""
+        SELECT ROOT_TABLE, PARENT_TABLE, CHILD_TABLE, SEGMENT_NAME, RELATION_KIND
+        FROM {quote_qualified(helper_schema, "__JVS_RELATIONSHIPS")}
+        ORDER BY ROOT_TABLE, PARENT_TABLE, CHILD_TABLE, SEGMENT_NAME
+        """
+    ).fetchall()
+    relationships_by_root: dict[str, list[dict[str, str]]] = {}
+    for row in relationships_rows:
+        relationships_by_root.setdefault(str(row[0]), []).append(
+            {
+                "parentTable": str(row[1]),
+                "childTable": str(row[2]),
+                "segmentName": str(row[3]),
+                "relationKind": str(row[4]),
+            }
+        )
+
+    member_rows = con.execute(
+        f"""
+        SELECT
+          ROOT_TABLE,
+          SOURCE_TABLE,
+          BASE_NAME,
+          VISIBLE_NAME,
+          MEMBER_NAME,
+          MEMBER_KIND,
+          MEMBER_TYPE,
+          IS_VISIBLE,
+          IS_PRIMARY,
+          NULL_MASK_NAME
+        FROM {quote_qualified(helper_schema, "__JVS_COLUMN_MEMBERS")}
+        ORDER BY ROOT_TABLE, SOURCE_TABLE, BASE_NAME, MEMBER_NAME
+        """
+    ).fetchall()
+
+    tables_by_name: dict[str, dict[str, Any]] = {}
+    groups_by_table_and_base: dict[tuple[str, str], dict[str, Any]] = {}
+    family_tables_by_root: dict[str, set[str]] = {}
+
+    for row in member_rows:
+        root_table = str(row[0])
+        source_table = str(row[1])
+        base_name = str(row[2])
+        visible_name = None if row[3] is None else str(row[3])
+        member_name = str(row[4])
+        member_type = str(row[6])
+        is_primary = bool(row[8])
+        null_mask_name = None if row[9] is None else str(row[9])
+
+        family_tables_by_root.setdefault(root_table, set()).add(source_table)
+        table_entry = tables_by_name.setdefault(
+            source_table,
+            {
+                "tableName": source_table,
+                "rootTable": root_table,
+                "isPublicRoot": False,
+                "groups": [],
+            },
+        )
+        group_key = (source_table, base_name)
+        group_entry = groups_by_table_and_base.get(group_key)
+        if group_entry is None:
+            group_entry = {
+                "baseName": base_name,
+                "visibleName": visible_name,
+                "nullMaskName": null_mask_name,
+                "members": [],
+            }
+            groups_by_table_and_base[group_key] = group_entry
+            table_entry["groups"].append(group_entry)
+        group_entry["members"].append(
+            {
+                "name": member_name,
+                "type": member_type,
+                "ordinal": len(group_entry["members"]) + 1,
+                "isPrimary": is_primary,
+            }
+        )
+
+    roots: list[dict[str, Any]] = []
+    public_root_views = {str(row[3]): str(row[0]) for row in roots_rows}
+    for table_entry in tables_by_name.values():
+        if table_entry["tableName"] in public_root_views:
+            table_entry["isPublicRoot"] = True
+
+    for row in roots_rows:
+        root_table = str(row[0])
+        public_view = str(row[3])
+        roots.append(
+            {
+                "tableName": root_table,
+                "publicView": public_view,
+                "familyTables": sorted(family_tables_by_root.get(root_table, {root_table})),
+                "relationships": relationships_by_root.get(root_table, []),
+            }
+        )
+
+    return {
+        "sourceSchema": source_schema,
+        "publicSchema": public_schema,
+        "helperSchema": manifest_helper_schema,
+        "roots": roots,
+        "tables": [tables_by_name[name] for name in sorted(tables_by_name)],
+    }
+
+
+def load_installed_wrapper_manifests(con, wrapper_schemas: Iterable[str] | None = None) -> list[dict[str, Any]]:
+    requested = None if wrapper_schemas is None else {str(schema).upper() for schema in wrapper_schemas}
+    helper_schema_rows = con.execute(
+        """
+        SELECT TABLE_SCHEMA
+        FROM SYS.EXA_ALL_TABLES
+        WHERE TABLE_NAME = '__JVS_ROOTS'
+        ORDER BY TABLE_SCHEMA
+        """
+    ).fetchall()
+    manifests: list[dict[str, Any]] = []
+    for (helper_schema,) in helper_schema_rows:
+        manifest = load_installed_wrapper_manifest(con, str(helper_schema))
+        if requested is not None and str(manifest["publicSchema"]).upper() not in requested:
+            continue
+        manifests.append(manifest)
+    return manifests

@@ -570,16 +570,18 @@ COMMON_LUA = """
     local function read_identifier_parts_from_path_tokens(tokens, index)
         local token, token_index = next_significant_path_token(tokens, index)
         if token == nil then
-            return nil, nil
+            return nil, nil, nil
         end
 
         local parts = nil
+        local last_part_quoted = false
         if token.type == "word" then
             parts = {token.text}
         elseif token.type == "quoted_identifier" then
             parts = {token.identifier}
+            last_part_quoted = true
         else
-            return nil, nil
+            return nil, nil, nil
         end
 
         local current_index = token_index
@@ -595,15 +597,17 @@ COMMON_LUA = """
             end
             if next_token.type == "word" then
                 parts[#parts + 1] = next_token.text
+                last_part_quoted = false
             elseif next_token.type == "quoted_identifier" then
                 parts[#parts + 1] = next_token.identifier
+                last_part_quoted = true
             else
                 break
             end
             current_index = next_index
         end
 
-        return parts, current_index
+        return parts, current_index, last_part_quoted
     end
 
     local function read_base_table_reference_from_path_tokens(tokens)
@@ -1528,7 +1532,10 @@ ARRAY_ITERATION_LUA = """
         return normalize_identifier_value(name)
     end
 
-    local function render_bound_identifier(name)
+    local function render_bound_identifier(name, is_quoted)
+        if is_quoted then
+            return encode_quoted_identifier(name)
+        end
         return encode_quoted_identifier(normalize_identifier_value(name))
     end
 
@@ -1600,54 +1607,61 @@ ARRAY_ITERATION_LUA = """
     local function read_single_identifier_from_path_tokens(tokens, index)
         local token, token_index = next_significant_path_token(tokens, index)
         if token == nil then
-            return nil, nil
+            return nil, nil, nil
         end
         if token.type == "word" then
-            return token.text, token_index
+            return token.text, token_index, false
         end
         if token.type == "quoted_identifier" then
-            return token.identifier, token_index
+            return token.identifier, token_index, true
         end
-        return nil, nil
+        return nil, nil, nil
     end
 
     local function read_single_identifier_parts_from_path_tokens(tokens, index)
-        local parts, end_index = read_identifier_parts_from_path_tokens(tokens, index)
+        local parts, end_index, is_quoted = read_identifier_parts_from_path_tokens(tokens, index)
         if parts == nil or #parts ~= 1 then
-            return nil, nil
+            return nil, nil, nil
         end
-        return parts[1], end_index
+        return parts[1], end_index, is_quoted
     end
 
     local function read_alias_after_source_path_tokens(tokens, source_end_index)
         local alias_name = nil
         local alias_end_index = source_end_index
+        local alias_quoted = false
         local maybe_alias, maybe_alias_index = next_significant_path_token(tokens, source_end_index + 1)
         if maybe_alias == nil then
-            return nil, alias_end_index
+            return nil, alias_end_index, alias_quoted
         end
         if normalize_path_token(maybe_alias) == "AS" then
             local alias_token, alias_index = next_significant_path_token(tokens, maybe_alias_index + 1)
             if alias_token ~= nil then
-                local parsed_alias_name = nil
-                parsed_alias_name, _ = read_single_identifier_parts_from_path_tokens(tokens, alias_index)
+                local parsed_alias_name, _, parsed_alias_quoted = read_single_identifier_parts_from_path_tokens(
+                    tokens,
+                    alias_index
+                )
                 if parsed_alias_name ~= nil then
                     alias_name = parsed_alias_name
                     alias_end_index = alias_index
+                    alias_quoted = parsed_alias_quoted
                 end
             end
         elseif not path_token_is_source_boundary(maybe_alias) then
-            local parsed_alias_name = nil
-            parsed_alias_name, _ = read_single_identifier_parts_from_path_tokens(tokens, maybe_alias_index)
+            local parsed_alias_name, _, parsed_alias_quoted = read_single_identifier_parts_from_path_tokens(
+                tokens,
+                maybe_alias_index
+            )
             if parsed_alias_name ~= nil then
                 alias_name = parsed_alias_name
                 alias_end_index = maybe_alias_index
+                alias_quoted = parsed_alias_quoted
             end
         end
-        return alias_name, alias_end_index
+        return alias_name, alias_end_index, alias_quoted
     end
 
-    local function detect_generated_iterator_subquery_binding(tokens, source_index, closing_index, alias_name)
+    local function detect_generated_iterator_subquery_binding(tokens, source_index, closing_index, alias_name, alias_quoted)
         if alias_name == nil then
             return nil
         end
@@ -1668,7 +1682,7 @@ ARRAY_ITERATION_LUA = """
             return nil
         end
 
-        local alias_ref = render_bound_identifier(alias_name)
+        local alias_ref = render_bound_identifier(alias_name, alias_quoted)
         local is_value = string.find(
                 inner_sql,
                 encode_quoted_identifier("_value") .. " AS " .. alias_ref,
@@ -1698,12 +1712,13 @@ ARRAY_ITERATION_LUA = """
             if closing_index == nil then
                 return nil, nil
             end
-            local alias_name, alias_end_index = read_alias_after_source_path_tokens(tokens, closing_index)
+            local alias_name, alias_end_index, alias_quoted = read_alias_after_source_path_tokens(tokens, closing_index)
             local generated_iterator_binding = detect_generated_iterator_subquery_binding(
                 tokens,
                 source_index,
                 closing_index,
-                alias_name
+                alias_name,
+                alias_quoted
             )
             if generated_iterator_binding ~= nil then
                 return generated_iterator_binding, alias_end_index
@@ -1711,7 +1726,7 @@ ARRAY_ITERATION_LUA = """
             if alias_name ~= nil then
                 return {
                     alias_name = alias_name,
-                    reference_sql = render_bound_identifier(alias_name),
+                    reference_sql = render_bound_identifier(alias_name, alias_quoted),
                     kind = "derived_source",
                     table_name = nil,
                     schema_name = nil,
@@ -1721,15 +1736,16 @@ ARRAY_ITERATION_LUA = """
             end
             return nil, closing_index
         end
-        local parts, table_end_index = read_identifier_parts_from_path_tokens(tokens, source_start_index)
+        local parts, table_end_index, table_name_quoted = read_identifier_parts_from_path_tokens(tokens, source_start_index)
         if parts == nil then
             return nil, nil
         end
-        local alias_name, alias_end_index = read_alias_after_source_path_tokens(tokens, table_end_index)
+        local alias_name, alias_end_index, alias_quoted = read_alias_after_source_path_tokens(tokens, table_end_index)
         local resolved_alias_name = alias_name or parts[#parts]
+        local resolved_alias_quoted = alias_name and alias_quoted or table_name_quoted
         local binding = {
             alias_name = resolved_alias_name,
-            reference_sql = render_bound_identifier(resolved_alias_name),
+            reference_sql = render_bound_identifier(resolved_alias_name, resolved_alias_quoted),
             kind = "other_source",
             table_name = parts[#parts],
             schema_name = (#parts >= 2) and parts[#parts - 1] or nil,
@@ -1779,8 +1795,7 @@ ARRAY_ITERATION_LUA = """
             end
         end
 
-        local alias_name = nil
-        alias_name, iterator_index = read_single_identifier_from_path_tokens(tokens, iterator_index)
+        local alias_name, iterator_index, alias_quoted = read_single_identifier_from_path_tokens(tokens, iterator_index)
         if alias_name == nil then
             return nil
         end
@@ -1809,6 +1824,8 @@ ARRAY_ITERATION_LUA = """
         return {
             is_value = is_value,
             alias_name = alias_name,
+            alias_quoted = alias_quoted,
+            reference_sql = render_bound_identifier(alias_name, alias_quoted),
             root_alias_name = root_alias_name,
             path = path_token.identifier,
             end_index = path_index
@@ -1907,16 +1924,16 @@ ARRAY_ITERATION_LUA = """
         return object_steps, steps[#steps], nil
     end
 
-    local function build_iterator_relation_sql(qualified_table_name, alias_name, is_value)
-        local relation_alias = render_bound_identifier(alias_name)
+    local function build_iterator_relation_sql(qualified_table_name, iterator_source)
+        local relation_alias = iterator_source.reference_sql
         local inner_alias_name = "__jvs_iter_src"
         local inner_alias = encode_quoted_identifier(inner_alias_name)
-        if is_value then
+        if iterator_source.is_value then
             return "(SELECT " .. inner_alias .. ".*, "
                     .. inner_alias .. "." .. encode_quoted_identifier("_pos")
                     .. " AS " .. encode_quoted_identifier("_index") .. ", "
                     .. inner_alias .. "." .. encode_quoted_identifier("_value")
-                    .. " AS " .. render_bound_identifier(alias_name)
+                    .. " AS " .. iterator_source.reference_sql
                     .. " FROM " .. qualified_table_name .. " " .. inner_alias .. ") " .. relation_alias
         end
         return "(SELECT " .. inner_alias .. ".*, "
@@ -1934,7 +1951,7 @@ ARRAY_ITERATION_LUA = """
     local function build_iterator_binding(iterator_source, root_binding, array_child_table_name)
         return {
             alias_name = iterator_source.alias_name,
-            reference_sql = render_bound_identifier(iterator_source.alias_name),
+            reference_sql = iterator_source.reference_sql,
             kind = iterator_source.is_value and "iterator_value" or "iterator_row",
             table_name = array_child_table_name,
             schema_name = root_binding.schema_name,
@@ -1991,10 +2008,9 @@ ARRAY_ITERATION_LUA = """
         out[#out + 1] = join_keyword
                 .. build_iterator_relation_sql(
                         qualify_table_name_for_iterator(root_binding, array_child_table_name),
-                        iterator_source.alias_name,
-                        iterator_source.is_value
+                        iterator_source
                 )
-                .. " ON (" .. current_row_id .. " = " .. render_bound_identifier(iterator_source.alias_name)
+                .. " ON (" .. current_row_id .. " = " .. iterator_source.reference_sql
                 .. "." .. encode_quoted_identifier("_parent") .. ")"
 
         return table.concat(out), build_iterator_binding(iterator_source, root_binding, array_child_table_name), nil
@@ -2035,10 +2051,9 @@ ARRAY_ITERATION_LUA = """
             out[#out + 1] = "FROM "
                     .. build_iterator_relation_sql(
                             qualify_table_name_for_iterator(root_binding, array_child_table_name),
-                            iterator_source.alias_name,
-                            iterator_source.is_value
+                            iterator_source
                     )
-            correlation_filter_sql = "(" .. current_row_id .. " = " .. render_bound_identifier(iterator_source.alias_name)
+            correlation_filter_sql = "(" .. current_row_id .. " = " .. iterator_source.reference_sql
                     .. "." .. encode_quoted_identifier("_parent") .. ")"
             return table.concat(out), build_iterator_binding(iterator_source, root_binding, array_child_table_name),
                     correlation_filter_sql
@@ -2073,10 +2088,9 @@ ARRAY_ITERATION_LUA = """
         out[#out + 1] = " INNER JOIN "
                 .. build_iterator_relation_sql(
                         qualify_table_name_for_iterator(root_binding, array_child_table_name),
-                        iterator_source.alias_name,
-                        iterator_source.is_value
+                        iterator_source
                 )
-                .. " ON (" .. current_row_id .. " = " .. render_bound_identifier(iterator_source.alias_name)
+                .. " ON (" .. current_row_id .. " = " .. iterator_source.reference_sql
                 .. "." .. encode_quoted_identifier("_parent") .. ")"
         return table.concat(out), build_iterator_binding(iterator_source, root_binding, array_child_table_name),
                 correlation_filter_sql
@@ -2612,6 +2626,9 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
     end
 
     local function table_reference_sql(table_reference)
+        if table_reference.reference_sql ~= nil then
+            return table_reference.reference_sql
+        end
         if table_reference.alias_name ~= nil and string.sub(table_reference.alias_name, 1, 6) == "__jvs_" then
             return encode_quoted_identifier(table_reference.alias_name)
         end
@@ -2962,6 +2979,10 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
     local function rewrite_helper_query_block_sql(sqltext)
         local tokens = sqlparsing.tokenize(sqltext)
         local base_table = read_base_table_reference(tokens)
+        local path_base_table = read_base_table_reference_for_path_tokens(tokenize_path_sql(sqltext))
+        if base_table ~= nil and path_base_table ~= nil and path_base_table.reference_sql ~= nil then
+            base_table.reference_sql = path_base_table.reference_sql
+        end
         local helper_call_replacements, helper_join_sql_parts =
                 collect_helper_call_replacements(sqltext, tokens, base_table)
         local out = {}
