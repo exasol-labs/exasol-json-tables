@@ -173,4 +173,7 @@ If you want more control, the same flow is also available as separate commands:
 
 ## Skills
 
+- Ingest skill: [skills/exasol-json-tables-ingest/SKILL.md](skills/exasol-json-tables-ingest/SKILL.md)
+- Query skill: [skills/exasol-json-tables-query/SKILL.md](skills/exasol-json-tables-query/SKILL.md)
+- Reshape skill: [skills/exasol-json-tables-reshape/SKILL.md](skills/exasol-json-tables-reshape/SKILL.md)
 - MongoDB migration skill: [skills/mongodb-workload-migration/SKILL.md](skills/mongodb-workload-migration/SKILL.md)
