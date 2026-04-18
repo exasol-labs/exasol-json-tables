@@ -220,6 +220,30 @@ def main() -> None:
     """)
     assert_equal(rowset_rows, [("1", "0", "first", "A"), ("1", "1", "second", "B"), ("2", "0", "only", "C")], "rowset syntax")
 
+    correlated_rowset_rows = fetch_all("""
+        SELECT CAST(s."id" AS VARCHAR(10))
+        FROM JSON_VIEW.SAMPLE s
+        WHERE EXISTS (
+          SELECT 1
+          FROM item IN s."items"
+          WHERE item.label = 'B' AND item.value = 'second'
+        )
+        ORDER BY s."id"
+    """)
+    assert_equal(correlated_rowset_rows, [("1",)], "correlated object-array rowset syntax")
+
+    correlated_value_rowset_rows = fetch_all("""
+        SELECT CAST(s."id" AS VARCHAR(10))
+        FROM JSON_VIEW.SAMPLE s
+        WHERE EXISTS (
+          SELECT 1
+          FROM VALUE tag IN s."tags"
+          WHERE tag = 'blue'
+        )
+        ORDER BY s."id"
+    """)
+    assert_equal(correlated_value_rowset_rows, [("1",)], "correlated scalar-array rowset syntax")
+
     iterator_helper_rows = fetch_all("""
         SELECT
           CAST(s."id" AS VARCHAR(10)) AS doc_id,
@@ -339,6 +363,24 @@ def main() -> None:
         ORDER BY "id"
     """)
     assert_equal(root_variant_rows, [("1", "NUMBER", "42", "42", "OBJECT", "TRUE"), ("2", "STRING", "43", "43", "ARRAY", "FALSE"), ("3", "NULL", "NULL", "NULL", "MISSING", "NULL")], "root variant semantics")
+
+    mixed_type_rows = fetch_all("""
+        SELECT
+          CAST("id" AS VARCHAR(10)),
+          TYPEOF("value"),
+          COALESCE(JSON_TYPEOF("value"), 'MISSING')
+        FROM JSON_VIEW.SAMPLE
+        ORDER BY "id"
+    """)
+    mixed_type_rows_qualified = fetch_all("""
+        SELECT
+          CAST(s."id" AS VARCHAR(10)),
+          TYPEOF(s."value"),
+          COALESCE(JSON_TYPEOF(s."value"), 'MISSING')
+        FROM JSON_VIEW.SAMPLE s
+        ORDER BY s."id"
+    """)
+    assert_equal(mixed_type_rows, mixed_type_rows_qualified, "mixed built-in and JSON typeof semantics")
 
     deep_variant_rows = fetch_all(f"""
         SELECT

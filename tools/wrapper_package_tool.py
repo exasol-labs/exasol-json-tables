@@ -454,16 +454,89 @@ def iter_scalar_group_names(table: dict[str, Any]) -> list[str]:
     return scalar_names
 
 
+def score_smoke_scalar_name(name: str) -> tuple[int, int, str]:
+    normalized = name.lower()
+    exact_scores = {
+        "title": 0,
+        "name": 1,
+        "label": 2,
+        "status": 3,
+        "type": 4,
+        "value": 5,
+        "theme": 6,
+        "doc_id": 10,
+        "id": 11,
+    }
+    if normalized in exact_scores:
+        return (exact_scores[normalized], len(normalized), normalized)
+    if normalized.endswith("_id"):
+        return (12, len(normalized), normalized)
+    if any(token in normalized for token in ["title", "name", "label", "status", "type", "value", "theme"]):
+        return (14, len(normalized), normalized)
+    if any(token in normalized for token in ["note", "nickname", "optional", "comment", "description", "message"]):
+        return (40, len(normalized), normalized)
+    return (20, len(normalized), normalized)
+
+
+def choose_preferred_scalar_name(scalar_names: list[str], *, exclude: set[str] | None = None) -> str | None:
+    exclude = exclude or set()
+    candidates = [name for name in scalar_names if name not in exclude]
+    if not candidates:
+        return None
+    return min(candidates, key=score_smoke_scalar_name)
+
+
+def choose_display_id_name(scalar_names: list[str]) -> str:
+    for name in scalar_names:
+        normalized = name.lower()
+        if normalized == "id" or normalized == "doc_id" or normalized.endswith("_id"):
+            return name
+    return "_id"
+
+
 def build_smoke_test_query(config: dict[str, Any], manifest: dict[str, Any]) -> str:
     table_lookup = {table["tableName"]: table for table in manifest["tables"]}
     wrapper_schema = config["wrapperSchema"]
+    helper_profile = config.get("helperProfile", {})
+    variant_varchar_helpers = helper_profile.get("variantVarcharFunctionNames") or []
+
+    def cast_id_expression(column_name: str) -> str:
+        return f'CAST("{column_name}" AS VARCHAR(200))'
+
+    def build_helper_smoke_query(root: dict[str, Any], root_table: dict[str, Any]) -> str | None:
+        if not variant_varchar_helpers:
+            return None
+        scalar_names = iter_scalar_group_names(root_table)
+        if not scalar_names:
+            return None
+        display_id_name = choose_display_id_name(scalar_names)
+        sample_name = choose_preferred_scalar_name(scalar_names, exclude={display_id_name})
+        if sample_name is None:
+            sample_name = choose_preferred_scalar_name(scalar_names)
+        if sample_name is None:
+            return None
+        helper_name = variant_varchar_helpers[0]
+        helper_expr = f'{helper_name}("{sample_name}")'
+        return (
+            f'SELECT {cast_id_expression(display_id_name)} AS "sample_id", '
+            f"COALESCE({helper_expr}, 'NULL') AS \"sample_value\" "
+            f'FROM {encode_quoted_identifier(wrapper_schema)}.{encode_quoted_identifier(root["publicView"])} '
+            f"ORDER BY CASE WHEN {helper_expr} IS NULL THEN 1 ELSE 0 END, 1 "
+            "LIMIT 5;"
+        )
 
     for root in sorted(manifest["roots"], key=lambda root: root["publicView"]):
+        root_table = table_lookup[root["tableName"]]
+        helper_query = build_helper_smoke_query(root, root_table)
+        if helper_query is not None:
+            return helper_query
+
         relationship_lookup: dict[str, list[dict[str, Any]]] = {}
         for relationship in root.get("relationships", []):
             relationship_lookup.setdefault(relationship["parentTable"], []).append(relationship)
 
-        def find_object_scalar_path(table_name: str, prefix: list[str]) -> list[str] | None:
+        def find_object_scalar_paths(table_name: str, prefix: list[str]) -> list[list[str]]:
+            out: list[list[str]] = []
             object_relationships = [
                 relationship for relationship in relationship_lookup.get(table_name, [])
                 if relationship["relationKind"] == "object"
@@ -473,24 +546,29 @@ def build_smoke_test_query(config: dict[str, Any], manifest: dict[str, Any]) -> 
                 child_table = table_lookup.get(relationship["childTable"])
                 if child_table is None:
                     continue
-                scalar_names = iter_scalar_group_names(child_table)
-                if scalar_names:
-                    return prefix + [segment, scalar_names[0]]
+                for scalar_name in iter_scalar_group_names(child_table):
+                    out.append(prefix + [segment, scalar_name])
             for relationship in object_relationships:
                 segment = relationship["segmentName"]
                 child_table = table_lookup.get(relationship["childTable"])
                 if child_table is None:
                     continue
-                nested_path = find_object_scalar_path(relationship["childTable"], prefix + [segment])
-                if nested_path is not None:
-                    return nested_path
-            return None
+                out.extend(find_object_scalar_paths(relationship["childTable"], prefix + [segment]))
+            return out
 
-        object_path = find_object_scalar_path(root["tableName"], [])
-        if object_path is not None:
+        object_path_candidates = find_object_scalar_paths(root["tableName"], [])
+        if object_path_candidates:
+            display_id_name = choose_display_id_name(iter_scalar_group_names(root_table))
+            object_path = min(
+                object_path_candidates,
+                key=lambda path: (len(path), score_smoke_scalar_name(path[-1]), ".".join(path)),
+            )
+            object_expr = f'"{ ".".join(object_path) }"'
             return (
-                f'SELECT "{ ".".join(object_path) }" '
+                f'SELECT {cast_id_expression(display_id_name)} AS "sample_id", '
+                f"COALESCE({object_expr}, 'NULL') AS \"sample_value\" "
                 f'FROM {encode_quoted_identifier(wrapper_schema)}.{encode_quoted_identifier(root["publicView"])} '
+                f"ORDER BY CASE WHEN {object_expr} IS NULL THEN 1 ELSE 0 END, 1 "
                 "LIMIT 5;"
             )
 
@@ -500,9 +578,13 @@ def build_smoke_test_query(config: dict[str, Any], manifest: dict[str, Any]) -> 
         ]
         if root_array_relationships:
             segment = root_array_relationships[0]["segmentName"]
+            display_id_name = choose_display_id_name(iter_scalar_group_names(root_table))
+            array_expr = f'CAST("{segment}[SIZE]" AS VARCHAR(20))'
             return (
-                f'SELECT "{segment}[SIZE]" '
+                f'SELECT {cast_id_expression(display_id_name)} AS "sample_id", '
+                f"COALESCE({array_expr}, 'NULL') AS \"sample_value\" "
                 f'FROM {encode_quoted_identifier(wrapper_schema)}.{encode_quoted_identifier(root["publicView"])} '
+                f"ORDER BY CASE WHEN {array_expr} IS NULL THEN 1 ELSE 0 END, 1 "
                 "LIMIT 5;"
             )
 

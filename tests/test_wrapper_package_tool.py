@@ -113,8 +113,12 @@ def main() -> None:
         raise AssertionError("install output should include a next-step heading")
     if f'ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = "{PREPROCESSOR_SCHEMA}"."{PREPROCESSOR_SCRIPT}";' not in install_stdout:
         raise AssertionError("install output should include an activation snippet")
-    if f'FROM "{WRAPPER_SCHEMA}"."DEEPDOC" LIMIT 5;' not in install_stdout:
+    if f'FROM "{WRAPPER_SCHEMA}"."DEEPDOC"' not in install_stdout:
         raise AssertionError("install output should include a smoke-test query against the wrapper schema")
+    if 'JSON_AS_VARCHAR("title")' not in install_stdout:
+        raise AssertionError("install output should prefer a visible helper-based smoke-test field")
+    if 'AS "sample_id"' not in install_stdout or 'AS "sample_value"' not in install_stdout:
+        raise AssertionError("install output should show contextual smoke-test columns")
 
     activate_result = subprocess.run(
         [
@@ -136,6 +140,8 @@ def main() -> None:
         raise AssertionError("install --activate-session should explain the session-local activation scope")
     if "Smoke test rows:" not in activate_stdout:
         raise AssertionError("install --activate-session should print smoke test rows")
+    if "deep-alpha" not in activate_stdout:
+        raise AssertionError("install --activate-session should surface a visible non-NULL smoke-test value")
 
     validate_result = subprocess.run(
         [
@@ -155,8 +161,8 @@ def main() -> None:
         raise AssertionError("validate --check-installed should print an activation reminder")
     if f'ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = "{PREPROCESSOR_SCHEMA}"."{PREPROCESSOR_SCRIPT}";' not in validate_stdout:
         raise AssertionError("validate --check-installed should print an activation snippet")
-    if f'FROM "{WRAPPER_SCHEMA}"."DEEPDOC" LIMIT 5;' not in validate_stdout:
-        raise AssertionError("validate --check-installed should print a smoke-test query")
+    if f'FROM "{WRAPPER_SCHEMA}"."DEEPDOC"' not in validate_stdout or 'JSON_AS_VARCHAR("title")' not in validate_stdout:
+        raise AssertionError("validate --check-installed should print the high-signal smoke-test query")
 
     con = connect()
     try:

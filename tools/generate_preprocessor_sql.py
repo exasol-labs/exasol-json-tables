@@ -743,6 +743,42 @@ JOIN_MODE_LUA = """
         return nil
     end
 
+    local function lookup_path_group_config_for_binding(binding, table_name, visible_name)
+        if binding == nil or table_name == nil or visible_name == nil then
+            return nil
+        end
+        local schema_name = binding.helper_schema_name
+                or helper_schema_name_for_table_reference(binding)
+                or binding.schema_name
+        local schema_tables = GROUP_CONFIG_BY_SCHEMA_AND_TABLE[normalize_identifier_value(schema_name)]
+        if schema_tables == nil then
+            return nil
+        end
+        local table_groups = schema_tables[normalize_identifier_value(table_name)]
+        if table_groups == nil then
+            return nil
+        end
+        local normalized_visible_name = normalize_identifier_value(visible_name)
+        local group_config = table_groups[normalized_visible_name]
+        if group_config ~= nil then
+            return group_config
+        end
+        return table_groups[normalize_identifier_value(visible_name .. "|array")]
+    end
+
+    local function ensure_property_step_can_navigate(path, binding, current_table_name, step_name)
+        local group_config = lookup_path_group_config_for_binding(binding, current_table_name, step_name)
+        local variant_columns = group_config and group_config.variantColumns or nil
+        if variant_columns ~= nil and variant_columns["ARRAY"] ~= nil and variant_columns["OBJECT"] == nil then
+            raise_path_error(
+                path,
+                'Path step "' .. step_name .. '" resolves to an array. '
+                        .. 'Use JOIN ... IN row."' .. step_name .. '" for traversal or "'
+                        .. step_name .. '[index]" for a single element.'
+            )
+        end
+    end
+
     local function parse_path_steps(path)
         local steps = {}
         local index = 1
@@ -997,6 +1033,7 @@ JOIN_MODE_LUA = """
                     if is_last then
                         replacement = current_ref .. "." .. encode_quoted_identifier(step.name)
                     else
+                        ensure_property_step_can_navigate(reference.path, binding, current_table_name, step.name)
                         local existing = join_aliases[prefix_key]
                         local child_table_name = derive_child_table_name_for_iterator(current_table_name, step.name)
                         if existing == nil then
@@ -1142,6 +1179,7 @@ JOIN_MODE_LUA = """
                         if is_last then
                             replacement = current_ref .. "." .. encode_quoted_identifier(step.name)
                         else
+                            ensure_property_step_can_navigate(reference.path, base_table, current_table_name, step.name)
                             local existing = join_aliases[prefix_key]
                             local child_table_name = derive_child_table_name(current_table_name, step.name)
                             if existing == nil then
@@ -1849,7 +1887,10 @@ ARRAY_ITERATION_LUA = """
         return nil
     end
 
-    local function rewrite_sql_with_query_blocks(sqltext, query_block_rewriter)
+    local function rewrite_sql_with_query_blocks(sqltext, query_block_rewriter, options)
+        options = options or {}
+        local recurse_parenthesized_query_blocks = options.recurse_parenthesized_query_blocks ~= false
+        local recurse_as_query_blocks = options.recurse_as_query_blocks ~= false
         local tokens = tokenize_path_sql(sqltext)
         local out = {}
         local index = 1
@@ -1858,11 +1899,13 @@ ARRAY_ITERATION_LUA = """
             if token.type == "punct" and token.text == "(" then
                 local closing_index = find_matching_path_paren(tokens, index)
                 local first_inside, first_inside_index = next_significant_path_token(tokens, index + 1)
-                if closing_index ~= nil and first_inside_index ~= nil and path_token_is_query_start(first_inside) then
+                if recurse_parenthesized_query_blocks and closing_index ~= nil and first_inside_index ~= nil
+                        and path_token_is_query_start(first_inside) then
                     out[#out + 1] = "("
                     out[#out + 1] = rewrite_sql_with_query_blocks(
                             slice_path_tokens_text(tokens, index + 1, closing_index - 1),
-                            query_block_rewriter
+                            query_block_rewriter,
+                            options
                     )
                     out[#out + 1] = ")"
                     index = closing_index + 1
@@ -1872,14 +1915,15 @@ ARRAY_ITERATION_LUA = """
                 end
             elseif normalize_path_token(token) == "AS" then
                 local next_token, next_index = next_significant_path_token(tokens, index + 1)
-                if next_token ~= nil and path_token_is_query_start(next_token) then
+                if recurse_as_query_blocks and next_token ~= nil and path_token_is_query_start(next_token) then
                     out[#out + 1] = token.text
                     if next_index > index + 1 then
                         out[#out + 1] = slice_path_tokens_text(tokens, index + 1, next_index - 1)
                     end
                     out[#out + 1] = rewrite_sql_with_query_blocks(
                             slice_path_tokens_text(tokens, next_index, #tokens),
-                            query_block_rewriter
+                            query_block_rewriter,
+                            options
                     )
                     return table.concat(out)
                 else
@@ -2176,7 +2220,11 @@ ARRAY_ITERATION_LUA = """
     end
 
     local function rewrite_array_iteration_in_sql(sqltext)
-        return rewrite_sql_with_query_blocks(sqltext, rewrite_array_iteration_query_sql)
+        return rewrite_sql_with_query_blocks(
+                sqltext,
+                rewrite_array_iteration_query_sql,
+                {recurse_parenthesized_query_blocks = false}
+        )
     end
 """
 
@@ -2349,14 +2397,6 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
         return render_bound_identifier(table_reference.alias_name or table_reference.table_name)
     end
 
-    local function build_boolean_from_mask(reference_sql, null_mask_name)
-        if null_mask_name == nil then
-            return "FALSE"
-        end
-        return "(CASE WHEN " .. reference_sql .. "." .. encode_quoted_identifier(null_mask_name)
-                .. " = TRUE THEN TRUE ELSE FALSE END)"
-    end
-
     local function add_projection_column(column_names, seen_columns, column_name)
         if column_name == nil then
             return
@@ -2386,13 +2426,48 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
         return column_names
     end
 
-    local function render_column_reference(reference_sql, column_name)
-        return reference_sql .. "." .. encode_quoted_identifier(column_name)
+    local function build_helper_reference(reference_sql, projected_alias_by_name)
+        return {
+            reference_sql = reference_sql,
+            projected_alias_by_name = projected_alias_by_name or {}
+        }
+    end
+
+    local function helper_reference_table_sql(reference)
+        if type(reference) == "table" then
+            return reference.reference_sql
+        end
+        return reference
+    end
+
+    local function projected_column_name(reference, column_name)
+        if type(reference) == "table" and reference.projected_alias_by_name ~= nil then
+            local projected = reference.projected_alias_by_name[normalize_identifier_value(column_name)]
+            if projected ~= nil then
+                return projected
+            end
+        end
+        return column_name
+    end
+
+    local function build_boolean_from_mask(reference, null_mask_name)
+        if null_mask_name == nil then
+            return "FALSE"
+        end
+        return "(CASE WHEN " .. helper_reference_table_sql(reference) .. "."
+                .. encode_quoted_identifier(projected_column_name(reference, null_mask_name))
+                .. " = TRUE THEN TRUE ELSE FALSE END)"
+    end
+
+    local function render_column_reference(reference, column_name)
+        return helper_reference_table_sql(reference) .. "." .. encode_quoted_identifier(
+                projected_column_name(reference, column_name)
+        )
     end
 
     local function build_helper_root_projection_join(table_reference, column_names, join_state)
         if column_names == nil or #column_names == 0 then
-            return table_reference_sql(table_reference)
+            return build_helper_reference(table_reference_sql(table_reference))
         end
 
         local key_parts = {normalize_identifier_value(table_reference.alias_name or table_reference.table_name)}
@@ -2408,7 +2483,10 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
         local alias_name = "__jvs_null_" .. tostring(join_state.next_alias_id)
         join_state.next_alias_id = join_state.next_alias_id + 1
         local alias_ref = encode_quoted_identifier(alias_name)
-        join_state.alias_by_key[join_key] = alias_ref
+        local projected_alias_by_name = {}
+        local row_id_alias = "__jvs_row_id"
+        local helper_reference = build_helper_reference(alias_ref, projected_alias_by_name)
+        join_state.alias_by_key[join_key] = helper_reference
 
         local helper_table_sql = {}
         if table_reference.catalog_name ~= nil then
@@ -2419,9 +2497,14 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
         )
         helper_table_sql[#helper_table_sql + 1] = encode_quoted_identifier(table_reference.table_name)
 
-        local projected_columns = {encode_quoted_identifier("_id")}
-        for _, column_name in ipairs(column_names) do
+        local projected_columns = {
+            encode_quoted_identifier("_id") .. " AS " .. encode_quoted_identifier(row_id_alias)
+        }
+        for column_index, column_name in ipairs(column_names) do
+            local projected_alias = "__jvs_col_" .. tostring(column_index)
+            projected_alias_by_name[normalize_identifier_value(column_name)] = projected_alias
             projected_columns[#projected_columns + 1] = encode_quoted_identifier(column_name)
+                    .. " AS " .. encode_quoted_identifier(projected_alias)
         end
 
         join_state.join_sql_parts[#join_state.join_sql_parts + 1] =
@@ -2430,8 +2513,8 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
                 .. " FROM " .. table.concat(helper_table_sql, ".") .. ") "
                 .. alias_ref
                 .. " ON (" .. table_reference_sql(table_reference) .. "." .. encode_quoted_identifier("_id")
-                .. " = " .. alias_ref .. "." .. encode_quoted_identifier("_id") .. ")"
-        return alias_ref
+                .. " = " .. alias_ref .. "." .. encode_quoted_identifier(row_id_alias) .. ")"
+        return helper_reference
     end
 
     local function resolve_wrapper_helper_argument(
@@ -2529,7 +2612,7 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
                 join_state
             )
         end
-        return table_reference_sql(table_reference)
+        return build_helper_reference(table_reference_sql(table_reference))
     end
 
     local function build_wrapper_explicit_null_replacement(table_reference, group_config, join_state)

@@ -96,6 +96,12 @@ def main() -> None:
         )
         assert_query_error(
             con,
+            'SELECT CAST("id" AS VARCHAR(10)), "items.value" FROM JSON_VIEW.SAMPLE ORDER BY "id"',
+            ["JVS-PATH-ERROR", '"items.value"', 'JOIN ... IN row."items"', '"items[index]"'],
+            "array property dot-traversal guidance error",
+        )
+        assert_query_error(
+            con,
             'SELECT "meta..note" FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", "Empty path segment is not allowed"],
             "empty path segment error",

@@ -139,6 +139,8 @@ The install command now prints an immediate next-step snippet:
 
 - `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = ...`
 - a copy/paste smoke-test query against one of the generated root views
+  The package tool now prefers a helper-based query over a likely populated field such as `title` or `name`,
+  includes an id column for context, and orders non-`NULL` rows first so the result is visibly confirmatory.
 
 For local/dev verification, you can also ask the installer to activate the preprocessor in its own session and run that smoke test immediately:
 
@@ -158,7 +160,7 @@ python3 tools/wrapper_package_tool.py validate \
   --check-installed
 ```
 
-`validate --check-installed` also prints an activation reminder plus smoke-test query, so operators can immediately apply the session-level step in the SQL client where they plan to use wrapper syntax.
+`validate --check-installed` also prints an activation reminder plus the same high-signal smoke-test query, so operators can immediately apply the session-level step in the SQL client where they plan to use wrapper syntax.
 
 If helper behavior changes but the wrapper views do not, regenerate only the preprocessor:
 
