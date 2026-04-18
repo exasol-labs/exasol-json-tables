@@ -1,0 +1,34 @@
+[
+  {
+    "id": 1,
+    "only_null": null,
+    "missing_vs_null": null,
+    "arr_mix": null,
+    "mixed_num_arr": [1, 2.5],
+    "obj_arr": [
+      { "a": 1 },
+      { "a": null }
+    ],
+    "only_null_arr": [null, null]
+  },
+  {
+    "id": 2,
+    "missing_vs_null": 10,
+    "arr_mix": [],
+    "mixed_num_arr": [],
+    "obj_arr": [],
+    "only_null_arr": []
+  },
+  {
+    "id": 3,
+    "missing_vs_null": null,
+    "arr_mix": [1, 2],
+    "mixed_num_arr": [3],
+    "obj_arr": [
+      { "a": 2 },
+      { "a": 3 }
+    ],
+    "only_null": null,
+    "only_null_arr": [null]
+  }
+]

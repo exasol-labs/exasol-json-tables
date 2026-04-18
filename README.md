@@ -1,18 +1,75 @@
-# JSON Wrapper Views for Exasol
+# Exasol JSON Tables
 
-This repo turns `json-to-parquet` tables in Exasol into a much nicer SQL surface.
+Exasol JSON Tables makes JSON feel natural inside Exasol.
 
-Instead of querying raw helper columns like `note|n`, `child|object`, or array child tables directly, you get:
+It gives you one workflow for:
 
-- root document views such as `JSON_VIEW.SAMPLE`
-- JSON-aware helper functions such as `JSON_IS_EXPLICIT_NULL(...)` and `JSON_TYPEOF(...)`
-- dotted path access like `"meta.info.note"`
-- bracket access like `"tags[LAST]"` or `"items[id]"`
-- array expansion like `JOIN item IN s."items"`
+- ingesting raw JSON or NDJSON into Exasol
+- querying that data with JSON-friendly SQL instead of raw helper tables
+- reshaping SQL results back into nested, JSON-like output when you need it
 
-It also goes the other way: you can materialize SQL results back into the same source-like table-family shape and use that as a nested structured result.
+The point is simple: JSON data is useful because it is flexible and nested, but most relational workflows strip that structure away and leave you to rebuild it by hand. Exasol JSON Tables keeps the data relational enough for SQL and analytics, while preserving the parts that make JSON practical in the first place.
 
-## What This Feels Like
+## Why Use It
+
+Without this, JSON workflows in Exasol usually mean some combination of:
+
+- awkward helper columns like explicit-null flags and object references
+- manually joining child tables for nested objects and arrays
+- losing the distinction between missing values and explicit JSON `null`
+- rebuilding nested outputs in application code after the query
+
+Exasol JSON Tables gives you a cleaner surface:
+
+- query nested fields with path syntax like `"meta.info.note"`
+- index and expand arrays with syntax like `"tags[LAST]"` and `JOIN item IN s."items"`
+- inspect variants with `JSON_TYPEOF(...)` and `JSON_AS_*`
+- keep missing vs explicit `null` semantics intact
+- materialize structured results back into a reusable nested contract
+
+It is especially useful if you want to:
+
+- analyze semi-structured event or API data directly in Exasol
+- build bronze/silver/gold pipelines on top of JSON-shaped source data
+- migrate analytics workloads from MongoDB into SQL
+- return nested, document-style output from ordinary relational tables
+
+## What You Get
+
+Exasol JSON Tables has three main capabilities:
+
+### Ingest
+
+Take JSON or NDJSON and load it into Exasol using a stable table-family contract that preserves:
+
+- nested objects
+- arrays
+- explicit JSON `null`
+- mixed/variant fields
+
+### Query
+
+Install a wrapper surface on top of those source tables so users query documents instead of low-level storage details.
+
+That surface supports:
+
+- dotted paths
+- bracket access
+- rowset expansion for arrays
+- explicit-null helpers
+- JSON-aware variant helpers
+
+### Reshape
+
+Take query results and materialize them back into the same nested contract, so they can:
+
+- be queried again through the wrapper surface
+- be used as a durable intermediate result
+- be exported back to nested JSON-like rows
+
+## Quick Example
+
+After installation and wrapper setup, a query can look like this:
 
 ```sql
 SELECT
@@ -24,16 +81,13 @@ SELECT
   END AS note_state,
   JSON_TYPEOF("value") AS value_type,
   JSON_AS_VARCHAR("value") AS value_text,
-  "child.value" AS child_value,
   "meta.info.note" AS deep_note,
-  "tags[FIRST]" AS first_tag,
-  "tags[LAST]" AS last_tag,
-  "tags[SIZE]" AS tag_count
+  "tags[LAST]" AS last_tag
 FROM JSON_VIEW.SAMPLE
 ORDER BY "id";
 ```
 
-And when an array should behave like rows instead of a scalar:
+And when arrays should behave like rows:
 
 ```sql
 SELECT
@@ -46,107 +100,77 @@ JOIN item IN s."items"
 ORDER BY s."id", item._index;
 ```
 
-## Why This Exists
+## Install
 
-`json-to-parquet` stores JSON in a relational layout:
+The supported product entrypoint is:
 
-- explicit-null provenance is stored in mask columns such as `note|n`
-- mixed-type values are split across sibling columns such as `value` and `value|string`
-- nested objects live in child tables linked by columns such as `child|object`
-- arrays live in child tables with `_parent` and `_pos`
+- `exasol-json-tables`
 
-That layout is efficient, but not pleasant to query directly.
-
-This repo generates a cleaner SQL surface so users can stay on the root document view and still:
-
-- distinguish missing from explicit JSON `null`
-- traverse nested objects with dot syntax
-- inspect and extract mixed-type values from one logical column
-- access arrays positionally or expand them into rows
-- materialize nested structured results back into a reusable source-like table family
-
-## Installation
-
-Generate the package:
+Install the Python package:
 
 ```bash
-python3 tools/wrapper_package_tool.py generate \
-  --source-schema JVS_SRC \
-  --wrapper-schema JSON_VIEW \
-  --helper-schema JSON_VIEW_INTERNAL \
-  --preprocessor-schema JVS_WRAP_PP \
-  --preprocessor-script JSON_WRAPPER_PREPROCESSOR \
-  --output-dir ./dist \
-  --package-name json_wrapper
+python3 -m pip install -e .
 ```
 
-Install it:
+Build the Rust ingest engine:
 
 ```bash
-python3 tools/wrapper_package_tool.py install \
-  --package-config ./dist/json_wrapper_package.json
+cargo build --manifest-path crates/json_tables_ingest/Cargo.toml
 ```
 
-Validate it:
+Then verify the CLI:
 
 ```bash
-python3 tools/wrapper_package_tool.py validate \
-  --package-config ./dist/json_wrapper_package.json \
-  --check-installed
+exasol-json-tables --help
 ```
 
-Enable wrapper syntax in the SQL session where you want to use it:
+For repo-local development, `python3 -m pip install -r requirements-dev.txt` installs the same package in editable mode.
+
+## Quickstart
+
+The simplest end-to-end path is a single command:
+
+```bash
+exasol-json-tables ingest-and-wrap \
+  --input ./data.json \
+  --name customer_events \
+  --artifact-dir ./dist/exasol-json-tables \
+  --exasol-temp-dir /tmp/exasol-json-tables
+```
+
+That will:
+
+1. ingest the JSON into Exasol
+2. emit a source manifest
+3. generate the wrapper package
+4. install it
+5. validate it
+
+After that, activate the wrapper syntax in your SQL session:
 
 ```sql
 ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSOR;
 ```
 
-Recommended operator flow:
+If you want more control, the same flow is also available as separate commands:
 
-1. `generate`
-2. `install`
-3. run the printed activation and smoke-test snippet in your SQL session
-4. `validate --check-installed`
-5. after source-schema changes, regenerate and reinstall the package
+- `exasol-json-tables ingest`
+- `exasol-json-tables wrap generate`
+- `exasol-json-tables wrap install`
+- `exasol-json-tables wrap deploy`
+- `exasol-json-tables validate`
+- `exasol-json-tables structured-results ...`
 
-## Feature Overview
+## Further Reading
 
-The maintained user-facing surface is:
-
-- public root/document views in a wrapper schema, for example `JSON_VIEW`
-- a generated helper schema, for example `JSON_VIEW_INTERNAL`
-- a scoped SQL preprocessor that only activates JSON syntax on those wrapper schemas
-
-Core helpers:
-
-- `JSON_IS_EXPLICIT_NULL(expr)`
-- `JSON_TYPEOF(expr)`
-- `JSON_AS_VARCHAR(expr)`
-- `JSON_AS_DECIMAL(expr)`
-- `JSON_AS_BOOLEAN(expr)`
-
-Core syntax:
-
-- dotted paths like `"child.value"` and `"meta.info.note"`
-- bracket access like `"tags[0]"`, `"tags[FIRST]"`, `"tags[LAST]"`, `"tags[SIZE]"`, `"tags[id]"`, and `"tags[?]"`
-- mixed deep traversal like `"meta.items[LAST].value"`
-- rowset expansion like `JOIN item IN s."items"` and `JOIN VALUE tag IN s."tags"`
-- iterator-row JSON traversal like `item."nested.note"` and `item."nested.items[LAST].value"`
-
-Structured results:
-
-- materialize SQL output back into a source-like table family
-- query that result again through the same wrapper surface
-- export it back to nested JSON-like rows
-- build document-shaped output from either JSON-derived data or ordinary relational tables
-
-## Documentation
-
+- Installation: [docs/installation.md](docs/installation.md)
+- Ingest guide: [docs/ingest.md](docs/ingest.md)
 - Query surface reference: [docs/query-surface.md](docs/query-surface.md)
 - Structured results: [docs/structured-results.md](docs/structured-results.md)
+- Architecture: [docs/architecture.md](docs/architecture.md)
 - Testing and validation: [docs/testing.md](docs/testing.md)
-- Generated artifacts and code map: [docs/developer-guide.md](docs/developer-guide.md)
+- Developer guide: [docs/developer-guide.md](docs/developer-guide.md)
 
-### Agent skills:
+## Skills
 
 - MongoDB migration skill: [skills/mongodb-workload-migration/SKILL.md](skills/mongodb-workload-migration/SKILL.md)

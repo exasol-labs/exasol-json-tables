@@ -336,7 +336,7 @@ Recommended path in this repository:
 3. Run:
 
 ```bash
-python3 tools/structured_result_tool.py preview-json \
+exasol-json-tables structured-results preview-json \
   --result-family-config ./dist/result_family_input.json \
   --target-schema JVS_RESULT_PREVIEW \
   --table-kind local_temporary
@@ -345,7 +345,7 @@ python3 tools/structured_result_tool.py preview-json \
 4. If the output shape is right, package it durably with:
 
 ```bash
-python3 tools/wrapper_package_tool.py generate-result-family-package \
+exasol-json-tables structured-results package \
   --source-schema JVS_RESULT_SRC \
   --wrapper-schema JSON_VIEW_RESULT \
   --helper-schema JSON_VIEW_RESULT_INTERNAL \

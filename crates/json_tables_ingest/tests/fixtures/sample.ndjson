@@ -1,0 +1,3 @@
+{"id":1,"name":"Alice","score":12.5,"active":true,"age":30,"note":null,"tags":["a","b"]}
+{"id":2,"name":"Bob","score":15,"active":false,"age":null,"misc":"extra","tags":[]}
+{"id":3,"name":"Carol","score":null,"active":true,"age":28,"height":170.2,"note":"hello","tags":["c"]}

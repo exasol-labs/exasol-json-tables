@@ -1,50 +1,96 @@
 # Structured Results
 
-The same mapping is also useful in the other direction.
+Structured results let you take SQL output and put it back into the same nested contract that Exasol JSON Tables uses for ingested JSON.
 
-Instead of only querying existing JSON documents, you can materialize a query result back into a
-source-like table family and then use it as:
+That means a result can become:
 
 - a nested result that can be queried again through the wrapper surface
-- a durable scratch-layer intermediate for downstream SQL
-- a shape that can be exported back to JSON-like rows later
+- a durable intermediate result for downstream SQL
+- a shape that can be exported back to nested JSON-like rows later
 
-The easiest mental model is:
+This is useful both when the input already came from JSON and when the input is ordinary relational data that you want to turn into document-shaped output.
 
-- ordinary wrapper views make JSON-shaped source data easy to query
-- structured results let you take SQL output and put it back into that same JSON-shaped contract
+## The Mental Model
 
-You do not need JSON-shaped input for this.
+The easiest way to think about it is:
 
-Structured results also work well when your source is plain relational tables such as:
-
-- `orders`
-- `order_items`
-- `customers`
-- `products`
-
-In that case, the structured-result family becomes the layer that turns relational joins back into
-a nested document-shaped output.
+- the wrapper surface makes JSON-shaped source data pleasant to query
+- structured results take SQL output and put it back into that same JSON-shaped contract
 
 If the result is nested, it will usually become:
 
 - one root table
 - plus child tables for nested objects and arrays
 
-That makes this useful for two different workflows:
+## When To Use Structured Results
 
-- reshape JSON-derived tables into a new nested result
-- produce nested document-style output from ordinary relational analytics models
+Use structured results when:
 
-There are now two authoring levels for structured results:
+- you want nested output from ordinary relational tables
+- you want to persist a nested intermediate result inside Exasol
+- you want to keep shape-building inside SQL instead of rebuilding everything in application code
+- you want to export a query result back to nested JSON-like rows later
 
-- `structured_shape`: a higher-level nested shape config for common cases
-- `synthesized_family`: the lower-level table-family config when you need exact control
+If you only need a flat analytical result, plain SQL tables or views are usually enough.
 
-## Structured Results Quickstart
+## Two Authoring Levels
 
-For a durable structured result, the easiest starting point is now a `structured_shape` config.
-This describes the nested output shape directly and compiles down to the same source-like family contract.
+There are two ways to describe a structured result:
+
+- `structured_shape`
+  This is the higher-level, recommended starting point for common nested outputs.
+- `synthesized_family`
+  This is the lower-level format when you want exact control over the generated table family.
+
+## Two Main Workflows
+
+### 1. One-Shot Preview
+
+Use this when you want to check the nested result shape immediately:
+
+```bash
+exasol-json-tables structured-results preview-json \
+  --result-family-config ./dist/result_family_input.json \
+  --target-schema JVS_RESULT_PREVIEW \
+  --table-kind local_temporary
+```
+
+That materializes the family in the current command session and prints the nested JSON-like rows directly.
+
+### 2. Durable Package
+
+Use this when you want a reusable result family that can be installed, queried again, and handed off operationally:
+
+```bash
+exasol-json-tables structured-results package \
+  --source-schema JVS_RESULT_SRC \
+  --wrapper-schema JSON_VIEW_RESULT \
+  --helper-schema JSON_VIEW_RESULT_INTERNAL \
+  --preprocessor-schema JVS_RESULT_PP \
+  --preprocessor-script JSON_RESULT_PREPROCESSOR \
+  --output-dir ./dist \
+  --package-name json_result \
+  --result-family-config ./dist/result_family_input.json
+```
+
+This writes:
+
+- the normal wrapper package files
+- the persisted materialization config
+- the materialized family manifest
+
+Install it like any other wrapper package:
+
+```bash
+exasol-json-tables wrap install \
+  --package-config ./dist/json_result_package.json
+```
+
+For result-family packages, `install` also recreates the durable source-like family before it installs the wrapper views and preprocessor.
+
+## Quickstart Example
+
+For a durable structured result, the easiest starting point is usually `structured_shape`.
 
 Example:
 
@@ -76,51 +122,7 @@ Example:
 }
 ```
 
-If you want the nested result immediately, without first creating a durable package, use the one-shot
-preview command:
-
-```bash
-python3 tools/structured_result_tool.py preview-json \
-  --result-family-config ./dist/result_family_input.json \
-  --target-schema JVS_RESULT_PREVIEW \
-  --table-kind local_temporary
-```
-
-That materializes the family in the current command session and prints the nested JSON-like rows directly.
-
-Then package that durable result family:
-
-```bash
-python3 tools/wrapper_package_tool.py generate-result-family-package \
-  --source-schema JVS_RESULT_SRC \
-  --wrapper-schema JSON_VIEW_RESULT \
-  --helper-schema JSON_VIEW_RESULT_INTERNAL \
-  --preprocessor-schema JVS_RESULT_PP \
-  --preprocessor-script JSON_RESULT_PREPROCESSOR \
-  --output-dir ./dist \
-  --package-name json_result \
-  --result-family-config ./dist/result_family_input.json
-```
-
-This writes both the normal wrapper package files and two result-family-specific artifacts:
-
-- the persisted materialization config
-- the materialized family manifest
-
-Install it the same way as a normal wrapper package:
-
-```bash
-python3 tools/wrapper_package_tool.py install \
-  --package-config ./dist/json_result_package.json
-```
-
-For result-family packages, `install` also recreates the durable source-like family before it
-installs the wrapper views and preprocessor.
-
-If you need exact control over the physical table family, you can still use the lower-level
-`synthesized_family` format with explicit `tableSpecs`.
-
-After activation, the structured result behaves like any other wrapped JSON document surface:
+After installation and activation, the structured result behaves like any other wrapped JSON document surface:
 
 ```sql
 ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_RESULT_PP.JSON_RESULT_PREPROCESSOR;
@@ -133,42 +135,24 @@ FROM JSON_VIEW_RESULT.DOC_REPORT
 ORDER BY "doc_id";
 ```
 
-And if you want to turn that source-like family back into nested JSON-like rows, use the export helper
-programmatically:
-
-```python
-from nano_support import connect
-from result_family_json_export import export_root_family_to_json
-
-con = connect()
-rows = export_root_family_to_json(con, source_schema="JVS_RESULT_SRC", root_table="DOC_REPORT")
-print(rows)
-con.close()
-```
-
-Use durable structured results when you want reproducibility, operator handoff, or further SQL modeling.
-Use the lower-level in-session installer when the result family only needs to live inside the current session,
-for example on top of `LOCAL TEMPORARY` tables.
-
 ## Structured Results From Regular Tables
 
-This is a very common pattern: start from ordinary relational tables, then materialize a nested result family
-that is easier to query, export, or hand off as document-shaped output.
+This is a common pattern: start from ordinary relational tables, then materialize a nested result family that is easier to query, export, or hand off as document-shaped output.
 
 For example, suppose you have upstream tables like:
 
-- `JVS_RELATIONAL_UPSTREAM.ORDERS`
-- `JVS_RELATIONAL_UPSTREAM.ORDER_ITEMS`
-- `JVS_RELATIONAL_UPSTREAM.CUSTOMERS`
-- `JVS_RELATIONAL_UPSTREAM.PRODUCTS`
-- `JVS_RELATIONAL_UPSTREAM.ORDER_TAGS`
+- `ORDERS`
+- `ORDER_ITEMS`
+- `CUSTOMERS`
+- `PRODUCTS`
+- `ORDER_TAGS`
 
 You can materialize them into one nested result family with either:
 
-- a `structured_shape` config, which is easier to author
-- or a lower-level `synthesized_family` config, if you want to control every generated table
+- `structured_shape`, which is easier to author
+- `synthesized_family`, if you want explicit control over every generated table
 
-For example, here is a higher-level `structured_shape` version:
+Example root-level `structured_shape` fragment:
 
 ```json
 {
@@ -188,9 +172,7 @@ For example, here is a higher-level `structured_shape` version:
 }
 ```
 
-The full shape config also defines the nested `customer`, `items`, and `tags` child nodes. The compact example
-above is only showing the root-level part of the shape. For a complete working example, see
-[tests/test_structured_result_ergonomics.py](../tests/test_structured_result_ergonomics.py).
+For a complete working example, see [tests/test_structured_result_ergonomics.py](../tests/test_structured_result_ergonomics.py).
 
 Once packaged and installed, that relationally sourced result behaves just like any other structured result:
 
@@ -207,41 +189,38 @@ FROM JSON_VIEW_RELATIONAL_RESULT.ORDER_REPORT
 ORDER BY "order_id";
 ```
 
-And it exports back to nested JSON-like rows through the same export helper:
+## Export Back To Nested Rows
+
+If you want to turn a source-like family back into nested JSON-like rows, use the export helper programmatically:
 
 ```python
 from nano_support import connect
 from result_family_json_export import export_root_family_to_json
 
 con = connect()
-rows = export_root_family_to_json(con, source_schema="JVS_RELATIONAL_RESULT_SRC", root_table="ORDER_REPORT")
+rows = export_root_family_to_json(con, source_schema="JVS_RESULT_SRC", root_table="DOC_REPORT")
 print(rows)
 con.close()
 ```
 
-Durable structured-result families can use the same package tool. Provide a materialization config and the tool will:
+The same export path works for:
 
-- materialize the durable source-like result family into the target source schema
-- write the materialization recipe and materialized family manifest into the package
-- generate the wrapper/helper/preprocessor artifacts on top of that durable result family
+- family-preserving subsets
+- durable synthesized result families
+- in-session wrapped local-temporary result families
 
-Example:
+## Choosing Between Durable And Session-Local
 
-```bash
-python3 tools/wrapper_package_tool.py generate-result-family-package \
-  --source-schema JVS_RESULT_SRC \
-  --wrapper-schema JSON_VIEW_RESULT \
-  --helper-schema JSON_VIEW_RESULT_INTERNAL \
-  --preprocessor-schema JVS_RESULT_PP \
-  --preprocessor-script JSON_RESULT_PREPROCESSOR \
-  --output-dir ./dist \
-  --package-name json_result \
-  --result-family-config ./dist/result_family_input.json
-```
+Use durable structured results when you want:
 
-The generated package can then be installed and validated with the same `install` and `validate` commands. For durable result-family packages, `install` recreates the packaged source family before installing the wrapper artifacts.
+- reproducibility
+- operator handoff
+- further SQL modeling
+- reusable nested results
 
-See also:
+Use the lower-level in-session path when the result family only needs to live inside the current session, for example on top of `LOCAL TEMPORARY` tables.
+
+## See Also
 
 - [structured-result-materialization-study.md](../structured-result-materialization-study.md)
 - [tests/test_result_family_materializer.py](../tests/test_result_family_materializer.py)

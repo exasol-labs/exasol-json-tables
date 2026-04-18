@@ -1,16 +1,30 @@
 # Query Surface
 
-This document is the detailed reference for the wrapper SQL surface.
+This page is the detailed reference for the JSON-friendly SQL surface that Exasol JSON Tables installs on top of the raw source tables.
+
+## What The Wrapper Surface Is
+
+The maintained user-facing query surface is a wrapper package consisting of:
+
+- public root/document views in a wrapper schema, for example `JSON_VIEW`
+- a helper schema, for example `JSON_VIEW_INTERNAL`
+- a scoped SQL preprocessor that only activates JSON syntax on those wrapper schemas
+
+This means users query the wrapper views, not the raw helper tables produced by ingestion.
+
+## Before You Query
+
+Make sure the wrapper package has been installed, then activate the preprocessor in the SQL session where you want to use the JSON-aware syntax:
+
+```sql
+ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSOR;
+```
+
+Without that activation, the wrapper views still exist, but the extra JSON syntax sugar such as dotted paths and bracket access will not be rewritten.
 
 ## Supported Surface
 
-The maintained user-facing surface is the wrapper package:
-
-- public root/document views in a wrapper schema, for example `JSON_VIEW`
-- hidden implementation details in a helper schema, for example `JSON_VIEW_INTERNAL`
-- a scoped preprocessor that only activates JSON syntax on those wrapper schemas
-
-Supported helper functions:
+### Helper Functions
 
 - `JSON_IS_EXPLICIT_NULL(expr)`
 - `JSON_TYPEOF(expr)`
@@ -18,7 +32,7 @@ Supported helper functions:
 - `JSON_AS_DECIMAL(expr)`
 - `JSON_AS_BOOLEAN(expr)`
 
-Supported syntax sugar:
+### Syntax Sugar
 
 - dotted paths such as `"child.value"` or `"meta.info.note"`
 - bracket access such as `"tags[0]"`, `"tags[FIRST]"`, `"tags[LAST]"`, `"tags[SIZE]"`, `"tags[id]"`, or `"tags[?]"`
@@ -26,18 +40,16 @@ Supported syntax sugar:
 - array rowset syntax such as `JOIN item IN s."items"` and `JOIN VALUE tag IN s."tags"`
 - iterator-row path and bracket access such as `item."nested.note"` and `entry."extras[LAST]"`
 
-Important contract notes:
+## Core Semantics
 
-- Use `JSON_TYPEOF(...)` and `JSON_AS_*` for JSON-aware variant semantics.
-- Built-in `TYPEOF(...)` and plain SQL `CAST(...)` on the wrapper views reflect the projected SQL type of the view column, not the original JSON runtime type contract.
-- Those helper functions also work on object-array iterator rows such as `JSON_TYPEOF(item."value")`, `JSON_AS_DECIMAL(item."amount")`, and `JSON_AS_BOOLEAN(item."enabled")` after `JOIN item IN s."items"`.
-- Object-array iterator rows also support JSON path and bracket traversal such as `item."nested.note"` and `item."nested.items[LAST].value"`.
-- Helper functions and path/bracket traversal are still not supported on scalar `VALUE` iterators such as `JOIN VALUE tag IN s."tags"`.
-- Path/helper syntax does not resolve through derived-table roots yet. Move the JSON expression into the inner `SELECT` or query the wrapper view directly.
+### Missing vs Explicit `null`
 
-## Semantics
+Use `JSON_IS_EXPLICIT_NULL(...)` when you care about the difference between:
 
-### Missing vs explicit `null`
+- a property that was present and explicitly `null`
+- a property that was missing from the original JSON
+
+Example:
 
 ```sql
 SELECT
@@ -48,7 +60,9 @@ FROM JSON_VIEW.SAMPLE
 ORDER BY "id";
 ```
 
-### Variant values
+### Variant Values
+
+Use `JSON_TYPEOF(...)` and `JSON_AS_*` for JSON-aware variant semantics:
 
 ```sql
 SELECT
@@ -60,7 +74,9 @@ FROM JSON_VIEW.SAMPLE
 ORDER BY "id";
 ```
 
-### Nested paths
+Important: built-in `TYPEOF(...)` and plain SQL `CAST(...)` on wrapper views reflect the projected SQL type of the view column, not the original per-row JSON type contract.
+
+### Nested Paths
 
 ```sql
 SELECT
@@ -71,7 +87,7 @@ FROM JSON_VIEW.SAMPLE
 ORDER BY "id";
 ```
 
-### Array access
+### Array Access
 
 ```sql
 SELECT
@@ -85,7 +101,20 @@ FROM JSON_VIEW.SAMPLE
 ORDER BY "id";
 ```
 
-### Rowset expansion
+Dynamic bracket selectors support:
+
+- numeric literals
+- `FIRST`
+- `LAST`
+- `SIZE`
+- `?`
+- direct field names on the current row, such as `"tags[id]"` or `item."nested.items[pick].value"`
+
+Arbitrary SQL expressions such as `"tags[id + 1]"` are intentionally rejected.
+
+### Array Expansion Into Rows
+
+When arrays should behave like rowsets, use `JOIN ... IN ...`:
 
 ```sql
 SELECT
@@ -98,7 +127,21 @@ JOIN item IN s."items"
 ORDER BY s."id", item._index;
 ```
 
-Iterator rows can use JSON helpers too:
+If you want the scalar value directly from a scalar array, use a `VALUE` iterator:
+
+```sql
+SELECT
+  s."id",
+  tag._index,
+  tag
+FROM JSON_VIEW.SAMPLE s
+JOIN VALUE tag IN s."tags"
+ORDER BY s."id", tag._index;
+```
+
+## Iterator-Row Semantics
+
+Object-array iterator rows can use JSON helpers too:
 
 ```sql
 SELECT
@@ -116,9 +159,16 @@ JOIN item IN s."items"
 ORDER BY s."id", item._index;
 ```
 
-### Modeling-Friendly SQL
+Current boundary:
 
-The same surface is intended to work in the shapes people actually use for silver/gold models:
+- object-array iterator rows support JSON helpers, path traversal, and bracket traversal
+- scalar `VALUE` iterators support plain SQL on the scalar value, but JSON helper/path syntax is intentionally not supported on them
+
+## Modeling-Friendly SQL
+
+The wrapper surface is meant to work in normal modeling shapes, not just direct ad hoc queries.
+
+### CTEs
 
 ```sql
 WITH item_features AS (
@@ -136,14 +186,7 @@ FROM item_features
 ORDER BY doc_id, item_index;
 ```
 
-In joined queries, qualify root-document helper arguments with the root alias:
-
-```sql
-JSON_IS_EXPLICIT_NULL(s."note")
-JSON_TYPEOF(s."value")
-```
-
-Persisted modeling flows are supported too:
+### Persisted Modeling Objects
 
 ```sql
 CREATE OR REPLACE VIEW JVS_ANALYTICS.ITEM_MODEL AS
@@ -156,11 +199,25 @@ FROM JSON_VIEW.SAMPLE s
 JOIN item IN s."items";
 ```
 
+### Joined Queries
+
+In joined queries, qualify root-document helper arguments with the root alias:
+
+```sql
+JSON_IS_EXPLICIT_NULL(s."note")
+JSON_TYPEOF(s."value")
+```
+
 ## Known Boundaries
 
-- The preprocessor is session-local. Run `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = ...` in the SQL session where you want wrapper syntax.
+- The preprocessor is session-local. Activate it in the SQL session where you want wrapper syntax.
 - In joined queries, qualify root-document helper arguments with the root alias, for example `JSON_IS_EXPLICIT_NULL(s."note")`.
+- Path/helper syntax does not start from derived-table roots yet. Move the JSON expression into the inner `SELECT` or query the wrapper view directly.
 - `VALUE` iterators support plain SQL on the scalar value, but JSON helper/path syntax is intentionally not supported on them.
-- Path/helper syntax does not start from derived-table roots. Move the JSON expression into the inner `SELECT` or query the wrapper view directly.
-- Dynamic bracket selectors support `?` and direct field names on the current row, for example `"tags[id]"` or `item."nested.items[pick].value"`. Arbitrary SQL expressions such as `"tags[id + 1]"` are still intentionally rejected.
-- Use `JSON_TYPEOF(...)` and `JSON_AS_*` for JSON-aware variant semantics. Built-in `TYPEOF(...)` and plain `CAST(...)` reflect the wrapper view’s SQL types, not the original per-row JSON type contract.
+- Use `JSON_TYPEOF(...)` and `JSON_AS_*` for JSON-aware variant semantics. Built-in `TYPEOF(...)` and plain `CAST(...)` reflect wrapper view SQL types, not the original per-row JSON type contract.
+
+## Where To Go Next
+
+- Installation and setup: [installation.md](installation.md)
+- Ingest details: [ingest.md](ingest.md)
+- Structured outputs: [structured-results.md](structured-results.md)

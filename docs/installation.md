@@ -1,0 +1,138 @@
+# Installation
+
+This page covers the practical setup for Exasol JSON Tables.
+
+The supported product entrypoint is:
+
+- `exasol-json-tables`
+
+That command is provided by the Python package defined in [pyproject.toml](../pyproject.toml).
+
+## What You Need
+
+For the full workflow, you need:
+
+- Python 3.9 or newer
+- Rust and Cargo, if you want to run the ingest stage from this repo
+- access to an Exasol database
+
+If you only want to install wrapper views on top of an existing source schema, the Python package is enough. The Rust ingest engine is only needed for JSON/NDJSON ingestion.
+
+## Standard Install
+
+Install the Python package:
+
+```bash
+python3 -m pip install .
+```
+
+Build the Rust ingest engine:
+
+```bash
+cargo build --manifest-path crates/json_tables_ingest/Cargo.toml
+```
+
+Verify the installed CLI:
+
+```bash
+exasol-json-tables --help
+```
+
+If the console script is not on your shell path yet, `python3 -m exasol_json_tables --help` should behave the same way.
+
+## Development Install
+
+For repo-local development, the simplest setup is:
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+cargo build --manifest-path crates/json_tables_ingest/Cargo.toml
+```
+
+`requirements-dev.txt` installs the local package in editable mode, so the same `exasol-json-tables` command works while you are editing the code.
+
+## Quickstart
+
+The common happy path is:
+
+```bash
+exasol-json-tables ingest-and-wrap \
+  --input ./data.json \
+  --name customer_events \
+  --artifact-dir ./dist/exasol-json-tables \
+  --exasol-temp-dir /tmp/exasol-json-tables
+```
+
+That command:
+
+1. ingests the JSON into Exasol
+2. writes a source manifest into a per-run artifact directory
+3. generates the wrapper package
+4. installs it
+5. validates it
+
+If you do not pass explicit connection arguments, this path assumes the local Nano-style defaults described below. For other environments, provide `--dsn`, `--user`, `--password`, or an explicit ingest `--exasol` URL.
+
+After installation, activate the wrapper syntax in the SQL session where you want to query the data:
+
+```sql
+ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSOR;
+```
+
+## Connection Models
+
+There are two common ways to run the workflow.
+
+### Local Nano Defaults
+
+Many tests and examples assume a local Exasol Nano instance at:
+
+- host: `127.0.0.1`
+- port: `8563`
+- user: `sys`
+- password: `exasol`
+
+The wrapper-side helpers default to that environment.
+
+### Explicit Connection Arguments
+
+For other environments, use the connection options on the CLI. Common options include:
+
+- `--dsn`
+- `--user`
+- `--password`
+- `--exasol` for the ingest URL
+
+For example:
+
+```bash
+exasol-json-tables ingest \
+  --input ./data.json \
+  --artifact-dir ./dist/exasol-json-tables \
+  --exasol exasol://sys:exasol@db.example.com:8563/JVS_SRC
+```
+
+## Compatibility Entrypoints
+
+The `tools/` scripts still exist, but they are now compatibility and developer entrypoints, not the main product surface.
+
+Examples:
+
+- `python3 tools/exasol_json_tables.py`
+- `python3 tools/wrapper_package_tool.py`
+- `python3 tools/structured_result_tool.py`
+
+Use them when:
+
+- you are working directly in the repo
+- you are debugging lower-level modules
+- you are following an older internal script or test harness
+
+For normal user-facing workflows, prefer the installed `exasol-json-tables` command.
+
+## Next Reading
+
+- Workflow overview: [README.md](../README.md)
+- Ingest details: [ingest.md](ingest.md)
+- Query surface: [query-surface.md](query-surface.md)
+- Structured results: [structured-results.md](structured-results.md)

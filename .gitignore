@@ -26,10 +26,13 @@ venv/
 
 # Generated build artifacts
 dist/
+**/target/
 
 # Logs
 *.log
 
 # Temporary state
-.plans/
-.user-studies/
+plans/
+user-studies/
+.cargo-home/
+.exanano-config

@@ -1,0 +1,30 @@
+[
+  {
+    "id": 1,
+    "name": "Alice",
+    "active": true,
+    "score": 12.5,
+    "age": 30,
+    "note": null,
+    "meta": { "team": "A" },
+    "tags": ["x", "y"]
+  },
+  {
+    "id": 2,
+    "name": "Bob",
+    "active": false,
+    "score": 15,
+    "age": null,
+    "misc": "extra"
+  },
+  {
+    "id": 3,
+    "name": "Carol",
+    "active": true,
+    "score": null,
+    "age": 28,
+    "height": 170.2,
+    "note": "hello",
+    "meta": {}
+  }
+]

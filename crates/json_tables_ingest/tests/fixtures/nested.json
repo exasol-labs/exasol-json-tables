@@ -1,0 +1,38 @@
+[
+  {
+    "id": 1,
+    "name": "parent1",
+    "child": {
+      "a": 10,
+      "b": "x"
+    },
+    "meta": {},
+    "alt_child": null
+  },
+  {
+    "id": 2,
+    "name": "parent2",
+    "child": {
+      "a": 20,
+      "c": true
+    },
+    "meta": {
+      "flag": false
+    },
+    "alt_child": {
+      "d": 3.14
+    }
+  },
+  {
+    "id": 3,
+    "name": "parent3",
+    "child": null,
+    "meta": {
+      "flag": true,
+      "info": {
+        "note": "deep"
+      }
+    },
+    "alt_child": {}
+  }
+]

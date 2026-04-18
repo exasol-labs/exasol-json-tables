@@ -2,7 +2,7 @@
 
 import _package_bootstrap  # noqa: F401
 
-from exasol_json_tables.structured_result_tool import *  # noqa: F401,F403
+from exasol_json_tables.cli import main
 
 
 if __name__ == "__main__":
