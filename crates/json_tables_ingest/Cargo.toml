@@ -3,7 +3,7 @@ name = "json_to_parquet"
 version = "0.1.0"
 edition = "2021"
 description = "CLI tool to convert JSON input into Parquet output files."
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
