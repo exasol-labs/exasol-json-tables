@@ -732,13 +732,14 @@ JOIN_MODE_LUA = """
         return string.upper(selector.kind)
     end
 
-    local function build_array_selector_sql(parent_ref, step)
+    local function build_array_selector_sql(parent_ref, step, array_column_name)
+        array_column_name = array_column_name or (step.name .. "|array")
         if step.selector.kind == "index" then
             return tostring(step.selector.index)
         elseif step.selector.kind == "first" then
             return "0"
         elseif step.selector.kind == "last" then
-            return "(" .. parent_ref .. "." .. encode_quoted_identifier(step.name .. "|array") .. " - 1)"
+            return "(" .. parent_ref .. "." .. encode_quoted_identifier(array_column_name) .. " - 1)"
         end
         return nil
     end
@@ -777,6 +778,122 @@ JOIN_MODE_LUA = """
                         .. step_name .. '[index]" for a single element.'
             )
         end
+    end
+
+    local function add_path_projection_column(column_names, seen_columns, column_name)
+        if column_name == nil then
+            return
+        end
+        local key = normalize_identifier_value(column_name)
+        if key == nil or seen_columns[key] then
+            return
+        end
+        seen_columns[key] = true
+        column_names[#column_names + 1] = column_name
+    end
+
+    local function build_path_root_projection_join(table_reference, column_names, join_state)
+        if column_names == nil or #column_names == 0 then
+            return table_reference.reference_sql or render_bound_identifier(table_reference.alias_name or table_reference.table_name)
+        end
+
+        local key_parts = {normalize_identifier_value(table_reference.alias_name or table_reference.table_name)}
+        for _, column_name in ipairs(column_names) do
+            key_parts[#key_parts + 1] = normalize_identifier_value(column_name)
+        end
+        local join_key = table.concat(key_parts, "|")
+        local existing = join_state.alias_by_key[join_key]
+        if existing ~= nil then
+            return existing
+        end
+
+        local alias_name = "__jvs_phidden_" .. tostring(join_state.manager.next_alias_id)
+        join_state.manager.next_alias_id = join_state.manager.next_alias_id + 1
+        local alias_ref = encode_quoted_identifier(alias_name)
+        join_state.alias_by_key[join_key] = alias_ref
+
+        local helper_table_sql = {}
+        if table_reference.catalog_name ~= nil then
+            helper_table_sql[#helper_table_sql + 1] = encode_quoted_identifier(table_reference.catalog_name)
+        end
+        helper_table_sql[#helper_table_sql + 1] = encode_quoted_identifier(
+                helper_schema_name_for_table_reference(table_reference) or table_reference.schema_name
+        )
+        helper_table_sql[#helper_table_sql + 1] = encode_quoted_identifier(table_reference.table_name)
+
+        local projected_columns = {encode_quoted_identifier("_id")}
+        local seen_columns = {["_ID"] = true}
+        for _, column_name in ipairs(column_names) do
+            add_path_projection_column(projected_columns, seen_columns, encode_quoted_identifier(column_name))
+        end
+
+        local base_ref = table_reference.reference_sql or render_bound_identifier(table_reference.alias_name or table_reference.table_name)
+        join_state.join_sql_parts[#join_state.join_sql_parts + 1] =
+                " LEFT OUTER JOIN (SELECT "
+                .. table.concat(projected_columns, ", ")
+                .. " FROM " .. table.concat(helper_table_sql, ".") .. ") "
+                .. alias_ref
+                .. " ON (" .. base_ref .. "." .. encode_quoted_identifier("_id")
+                .. " = " .. alias_ref .. "." .. encode_quoted_identifier("_id") .. ")"
+        return alias_ref
+    end
+
+    local function count_variant_columns(variant_columns)
+        if variant_columns == nil then
+            return 0
+        end
+        local count = 0
+        for _ in pairs(variant_columns) do
+            count = count + 1
+        end
+        return count
+    end
+
+    local function resolve_root_hidden_path_source(binding, current_table_name, step_name, variant_label, join_state)
+        if binding == nil or binding.kind ~= "json_source" then
+            return nil, nil
+        end
+        if normalize_identifier_value(current_table_name) ~= normalize_identifier_value(binding.table_name) then
+            return nil, nil
+        end
+        local group_config = lookup_path_group_config_for_binding(binding, current_table_name, step_name)
+        local variant_columns = group_config and group_config.variantColumns or nil
+        if variant_columns == nil or count_variant_columns(variant_columns) <= 1 then
+            return nil, nil
+        end
+        local hidden_column_name = variant_columns[variant_label]
+        if hidden_column_name == nil then
+            return nil, nil
+        end
+        return build_path_root_projection_join(binding, {hidden_column_name}, join_state), hidden_column_name
+    end
+
+    local function resolve_object_step_source(binding, current_ref, current_table_name, step_name, join_state)
+        local hidden_ref, hidden_column_name = resolve_root_hidden_path_source(
+                binding,
+                current_table_name,
+                step_name,
+                "OBJECT",
+                join_state
+        )
+        if hidden_ref ~= nil then
+            return hidden_ref, hidden_column_name
+        end
+        return current_ref, (step_name .. "|object")
+    end
+
+    local function resolve_array_step_source(binding, current_ref, current_table_name, step_name, join_state)
+        local hidden_ref, hidden_column_name = resolve_root_hidden_path_source(
+                binding,
+                current_table_name,
+                step_name,
+                "ARRAY",
+                join_state
+        )
+        if hidden_ref ~= nil then
+            return hidden_ref, hidden_column_name
+        end
+        return current_ref, (step_name .. "|array")
     end
 
     local function parse_path_steps(path)
@@ -979,7 +1096,26 @@ JOIN_MODE_LUA = """
         local join_aliases = {}
         local join_insertions = {}
         local replacements = {}
-        local next_alias_id = 1
+        local alias_manager = {next_alias_id = 1}
+        local root_hidden_join_states = {}
+
+        local function path_join_state_for_binding(binding)
+            local binding_key = normalize_identifier_value(binding.alias_name or binding.table_name)
+            local state = root_hidden_join_states[binding_key]
+            if state ~= nil then
+                return state
+            end
+            if join_insertions[binding.insert_after_index] == nil then
+                join_insertions[binding.insert_after_index] = {}
+            end
+            state = {
+                manager = alias_manager,
+                alias_by_key = {},
+                join_sql_parts = join_insertions[binding.insert_after_index]
+            }
+            root_hidden_join_states[binding_key] = state
+            return state
+        end
 
         for _, reference in ipairs(references) do
             local binding = binding_lookup[normalize_identifier_value(reference.root_name)]
@@ -1036,9 +1172,16 @@ JOIN_MODE_LUA = """
                         ensure_property_step_can_navigate(reference.path, binding, current_table_name, step.name)
                         local existing = join_aliases[prefix_key]
                         local child_table_name = derive_child_table_name_for_iterator(current_table_name, step.name)
+                        local step_source_ref, step_object_column_name = resolve_object_step_source(
+                                binding,
+                                current_ref,
+                                current_table_name,
+                                step.name,
+                                path_join_state_for_binding(binding)
+                        )
                         if existing == nil then
-                            local alias_name = "__jvs_qpath_" .. tostring(next_alias_id)
-                            next_alias_id = next_alias_id + 1
+                            local alias_name = "__jvs_qpath_" .. tostring(alias_manager.next_alias_id)
+                            alias_manager.next_alias_id = alias_manager.next_alias_id + 1
                             local alias_ref = encode_quoted_identifier(alias_name)
                             existing = {
                                 alias_ref = alias_ref,
@@ -1051,7 +1194,7 @@ JOIN_MODE_LUA = """
                                 " LEFT OUTER JOIN "
                                         .. qualify_table_name_for_iterator(binding, child_table_name)
                                         .. " " .. alias_ref
-                                        .. " ON (" .. current_ref .. "." .. encode_quoted_identifier(step.name .. "|object")
+                                        .. " ON (" .. step_source_ref .. "." .. encode_quoted_identifier(step_object_column_name)
                                         .. " = " .. alias_ref .. "." .. encode_quoted_identifier("_id") .. ")"
                             )
                         end
@@ -1060,21 +1203,28 @@ JOIN_MODE_LUA = """
                         current_table_name = existing.table_name
                     end
                 elseif step.type == "array" then
+                    local array_source_ref, array_column_name = resolve_array_step_source(
+                            binding,
+                            current_ref,
+                            current_table_name,
+                            step.name,
+                            path_join_state_for_binding(binding)
+                    )
                     if step.selector.kind == "size" then
                         if not is_last then
                             raise_path_error(reference.path, "SIZE must be the last selector in a path.")
                         end
-                        replacement = current_ref .. "." .. encode_quoted_identifier(step.name .. "|array")
+                        replacement = array_source_ref .. "." .. encode_quoted_identifier(array_column_name)
                     else
                         local existing = join_aliases[prefix_key]
                         local child_table_name = derive_array_child_table_name_for_iterator(current_table_name, step.name)
-                        local selector_sql = build_array_selector_sql(current_ref, step)
+                        local selector_sql = build_array_selector_sql(array_source_ref, step, array_column_name)
                         if selector_sql == nil then
                             raise_path_error(reference.path, "Unsupported array selector.")
                         end
                         if existing == nil then
-                            local alias_name = "__jvs_qpath_" .. tostring(next_alias_id)
-                            next_alias_id = next_alias_id + 1
+                            local alias_name = "__jvs_qpath_" .. tostring(alias_manager.next_alias_id)
+                            alias_manager.next_alias_id = alias_manager.next_alias_id + 1
                             local alias_ref = encode_quoted_identifier(alias_name)
                             existing = {
                                 alias_ref = alias_ref,
@@ -1159,7 +1309,12 @@ JOIN_MODE_LUA = """
             local root_ref = base_table.reference_sql or render_bound_identifier(base_table.alias_name or base_table.table_name)
             local join_aliases = {}
             local join_sql_parts = {}
-            local next_alias_id = 1
+            local alias_manager = {next_alias_id = 1}
+            local root_hidden_join_state = {
+                manager = alias_manager,
+                alias_by_key = {},
+                join_sql_parts = join_sql_parts
+            }
 
             for _, reference in ipairs(path_references) do
                 local steps, parse_error = parse_path_steps(reference.path)
@@ -1182,9 +1337,16 @@ JOIN_MODE_LUA = """
                             ensure_property_step_can_navigate(reference.path, base_table, current_table_name, step.name)
                             local existing = join_aliases[prefix_key]
                             local child_table_name = derive_child_table_name(current_table_name, step.name)
+                            local step_source_ref, step_object_column_name = resolve_object_step_source(
+                                    base_table,
+                                    current_ref,
+                                    current_table_name,
+                                    step.name,
+                                    root_hidden_join_state
+                            )
                             if existing == nil then
-                                local alias_name = "__jvs_path_" .. tostring(next_alias_id)
-                                next_alias_id = next_alias_id + 1
+                                local alias_name = "__jvs_path_" .. tostring(alias_manager.next_alias_id)
+                                alias_manager.next_alias_id = alias_manager.next_alias_id + 1
                                 local alias_ref = encode_quoted_identifier(alias_name)
                                 existing = {
                                     alias_ref = alias_ref,
@@ -1194,7 +1356,7 @@ JOIN_MODE_LUA = """
                                 join_sql_parts[#join_sql_parts + 1] = " LEFT OUTER JOIN "
                                         .. qualify_table_name(base_table, child_table_name)
                                         .. " " .. alias_ref
-                                        .. " ON (" .. current_ref .. "." .. encode_quoted_identifier(step.name .. "|object")
+                                        .. " ON (" .. step_source_ref .. "." .. encode_quoted_identifier(step_object_column_name)
                                         .. " = " .. alias_ref .. "." .. encode_quoted_identifier("_id") .. ")"
                             end
                             current_ref = existing.alias_ref
@@ -1202,21 +1364,28 @@ JOIN_MODE_LUA = """
                             current_table_name = existing.table_name
                         end
                     elseif step.type == "array" then
+                        local array_source_ref, array_column_name = resolve_array_step_source(
+                                base_table,
+                                current_ref,
+                                current_table_name,
+                                step.name,
+                                root_hidden_join_state
+                        )
                         if step.selector.kind == "size" then
                             if not is_last then
                                 raise_path_error(reference.path, "SIZE must be the last selector in a path.")
                             end
-                            replacement = current_ref .. "." .. encode_quoted_identifier(step.name .. "|array")
+                            replacement = array_source_ref .. "." .. encode_quoted_identifier(array_column_name)
                         else
                             local existing = join_aliases[prefix_key]
                             local child_table_name = derive_array_child_table_name(current_table_name, step.name)
-                            local alias_name = "__jvs_path_" .. tostring(next_alias_id)
-                            local selector_sql = build_array_selector_sql(current_ref, step)
+                            local alias_name = "__jvs_path_" .. tostring(alias_manager.next_alias_id)
+                            local selector_sql = build_array_selector_sql(array_source_ref, step, array_column_name)
                             if selector_sql == nil then
                                 raise_path_error(reference.path, "Unsupported array selector.")
                             end
                             if existing == nil then
-                                next_alias_id = next_alias_id + 1
+                                alias_manager.next_alias_id = alias_manager.next_alias_id + 1
                                 local alias_ref = encode_quoted_identifier(alias_name)
                                 existing = {
                                     alias_ref = alias_ref,
