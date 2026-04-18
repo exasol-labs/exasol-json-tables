@@ -52,6 +52,8 @@ Most important tests:
 - `tests/test_unified_cli.py`
 - `tests/test_wrapper_variant_semantics.py`
 
+For agented workflow commands such as `ingest-and-wrap`, `wrap generate`, `wrap install`, `wrap deploy`, and `validate`, prefer `--json`. The JSON summary includes package paths, activation SQL, smoke-test SQL, schema names, and wrapper-scope warnings.
+
 ## Mental Model
 
 The maintained query surface is:
@@ -146,6 +148,7 @@ Run Nano-backed tests sequentially when they rebuild the same schemas.
 - In joined queries, qualify root-document helper arguments with the root alias, for example `JSON_IS_EXPLICIT_NULL(s."note")`.
 - When changing preprocessor behavior, inspect both happy-path and wrong-first-attempt ergonomics.
 - Keep install/activation guidance aligned with package-tool behavior.
+- Prefer `--json` for wrapper lifecycle commands instead of scraping printed next-step text.
 
 ## Current Boundaries
 

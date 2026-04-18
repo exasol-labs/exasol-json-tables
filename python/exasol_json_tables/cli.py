@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import re
 import subprocess
 import sys
@@ -62,6 +64,81 @@ def _copy_namespace(args: argparse.Namespace, **updates) -> argparse.Namespace:
     payload = vars(args).copy()
     payload.update(updates)
     return argparse.Namespace(**payload)
+
+
+def _stdout_to_stderr(enabled: bool):
+    return contextlib.redirect_stdout(sys.stderr) if enabled else contextlib.nullcontext()
+
+
+def _emit_json_summary(payload: dict[str, object]) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _wrapper_agent_warnings() -> list[str]:
+    return [
+        "Wrapper JSON syntax is session-scoped: activate the preprocessor in each SQL session before using path, bracket, iterator, or helper syntax.",
+        "Wrapper JSON syntax applies on wrapper schemas only, not on the raw source schema or helper schema.",
+    ]
+
+
+def _build_wrapper_summary_from_config_path(config_path: Path) -> dict[str, object]:
+    config_path = config_path.resolve()
+    config = wrapper_package_tool.load_package_config(config_path)
+    manifest_path = wrapper_package_tool.resolve_configured_path(
+        config_path, config["generatedFiles"]["manifest"]
+    ).resolve()
+    summary: dict[str, object] = {
+        "packageConfig": str(config_path),
+        "sourceSchema": config["sourceSchema"],
+        "wrapperSchema": config["wrapperSchema"],
+        "helperSchema": config["helperSchema"],
+        "preprocessor": {
+            "schema": config["preprocessor"]["schema"],
+            "script": config["preprocessor"]["script"],
+            "activationSql": wrapper_package_tool.build_activation_sql(config, include_semicolon=True),
+            "activationRequired": True,
+        },
+        "generatedFiles": {
+            "manifest": str(manifest_path),
+            "viewsSql": str(
+                wrapper_package_tool.resolve_configured_path(config_path, config["generatedFiles"]["viewsSql"]).resolve()
+            ),
+            "preprocessorSql": str(
+                wrapper_package_tool.resolve_configured_path(
+                    config_path, config["generatedFiles"]["preprocessorSql"]
+                ).resolve()
+            ),
+        },
+        "warnings": _wrapper_agent_warnings(),
+    }
+    if config.get("sourceManifest") is not None:
+        summary["sourceManifest"] = str(Path(config["sourceManifest"]).resolve())
+    if "resultFamily" in config:
+        summary["resultFamily"] = {
+            "kind": config["resultFamily"]["kind"],
+            "materializationConfig": str(
+                wrapper_package_tool.resolve_configured_path(
+                    config_path, config["resultFamily"]["materializationConfig"]
+                ).resolve()
+            ),
+            "materializedFamilyManifest": str(
+                wrapper_package_tool.resolve_configured_path(
+                    config_path, config["resultFamily"]["materializedFamilyManifest"]
+                ).resolve()
+            ),
+        }
+    if manifest_path.exists():
+        manifest = wrapper_package_tool.load_manifest_and_validate(config, manifest_path)
+        summary["smokeTestSql"] = wrapper_package_tool.build_smoke_test_query(config, manifest)
+    return summary
+
+
+def add_json_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a machine-readable JSON summary on stdout. Human-oriented progress logs are sent to stderr.",
+    )
 
 
 def _normalize_identifier_token(raw: str, *, fallback: str = "DATA", limit: int = 40) -> str:
@@ -222,6 +299,7 @@ def add_ingest_arguments(parser: argparse.ArgumentParser) -> None:
         default=ROOT / "crates" / "json_tables_ingest" / "Cargo.toml",
         help="Rust ingest crate manifest path.",
     )
+    add_json_argument(parser)
 
 
 def add_wrap_generate_arguments(parser: argparse.ArgumentParser) -> None:
@@ -238,6 +316,7 @@ def add_wrap_generate_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Disable automatic source-manifest discovery from the artifact directory.",
     )
+    add_json_argument(parser)
 
 
 def add_wrap_install_arguments(parser: argparse.ArgumentParser) -> None:
@@ -253,6 +332,7 @@ def add_wrap_install_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Activate the preprocessor in the installer session and run the smoke test.",
     )
+    add_json_argument(parser)
 
 
 def add_wrap_deploy_arguments(parser: argparse.ArgumentParser) -> None:
@@ -272,6 +352,7 @@ def add_wrap_validate_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--preprocessor-sql", type=Path, default=None, help="Override preprocessor SQL path.")
     parser.add_argument("--check-installed", action="store_true", help="Validate installed database objects too.")
     wrapper_package_tool.add_connection_arguments(parser, required=False)
+    add_json_argument(parser)
 
 
 def add_wrap_regenerate_arguments(parser: argparse.ArgumentParser) -> None:
@@ -279,6 +360,7 @@ def add_wrap_regenerate_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--manifest", type=Path, default=None, help="Override manifest path.")
     parser.add_argument("--output", type=Path, default=None, help="Override preprocessor SQL output.")
     parser.add_argument("--activate-session", action="store_true", help="Append ALTER SESSION to regenerated SQL.")
+    add_json_argument(parser)
 
 
 def add_structured_results_preview_arguments(parser: argparse.ArgumentParser) -> None:
@@ -311,6 +393,7 @@ def add_structured_results_package_arguments(parser: argparse.ArgumentParser) ->
         default=DEFAULT_ARTIFACT_DIR,
         help="Unified CLI artifact directory. Used as the default package output dir.",
     )
+    add_json_argument(parser)
 
 
 def add_ingest_and_wrap_arguments(parser: argparse.ArgumentParser) -> None:
@@ -477,9 +560,39 @@ def command_ingest(args: argparse.Namespace) -> None:
         command.extend(["--exasol-temp-dir", str(args.exasol_temp_dir.resolve())])
     if args.exasol_cleanup:
         command.append("--exasol-cleanup")
-    subprocess.run(command, cwd=ROOT, check=True)
-    if manifest_output is not None:
+    capture_logs = bool(args.json) or bool(getattr(args, "_force_stderr_logs", False))
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        check=True,
+        capture_output=capture_logs,
+        text=capture_logs,
+    )
+    if capture_logs:
+        if completed.stdout:
+            print(completed.stdout, end="", file=sys.stderr)
+        if completed.stderr:
+            print(completed.stderr, end="", file=sys.stderr)
+    if manifest_output is not None and not args.json and not getattr(args, "_suppress_human_output", False):
         print(f"Unified CLI wrote source manifest: {manifest_output}")
+    if args.json:
+        summary: dict[str, object] = {
+            "command": "ingest",
+            "input": str(input_path),
+            "artifactDir": str(artifact_dir),
+            "artifactFiles": {
+                "sourceManifest": str(manifest_output) if manifest_output is not None else None,
+                "outputDir": str(output_dir) if output_dir is not None else None,
+            },
+        }
+        if args.exasol is not None:
+            parsed_exasol = _parse_exasol_url(args.exasol)
+            summary["exasol"] = {
+                "dsn": str(parsed_exasol["dsn"]),
+                "sourceSchema": str(parsed_exasol.get("schema") or ""),
+                "sourceSchemaEnsured": bool(parsed_exasol.get("schema")),
+            }
+        _emit_json_summary(summary)
 
 
 def _derive_phase5_workflow_config(args: argparse.Namespace) -> dict[str, object]:
@@ -510,14 +623,16 @@ def _derive_phase5_workflow_config(args: argparse.Namespace) -> dict[str, object
 
 
 def command_wrap_deploy(args: argparse.Namespace) -> None:
-    wrapper_package_tool.command_install(args)
-    if not args.skip_validate_installed:
-        validate_args = _copy_namespace(
-            args,
-            check_installed=True,
-            manifest=args.manifest,
-        )
-        wrapper_package_tool.command_validate(validate_args)
+    with _stdout_to_stderr(bool(getattr(args, "json", False))):
+        wrapper_package_tool.command_install(args)
+        if not args.skip_validate_installed:
+            validate_args = _copy_namespace(
+                args,
+                check_installed=True,
+                manifest=args.manifest,
+                json=False,
+            )
+            wrapper_package_tool.command_validate(validate_args)
 
 
 def command_ingest_and_wrap(args: argparse.Namespace) -> None:
@@ -537,60 +652,83 @@ def command_ingest_and_wrap(args: argparse.Namespace) -> None:
         output_dir=_resolved(args.output_dir),
         exasol=str(workflow["exasolUrl"]),
         source_schema=str(workflow["sourceSchema"]),
+        json=False,
+        _suppress_human_output=True,
+        _force_stderr_logs=bool(args.json),
     )
-    command_ingest(ingest_args)
+    with _stdout_to_stderr(bool(args.json)):
+        command_ingest(ingest_args)
 
-    generate_args = argparse.Namespace(
-        dsn=str(workflow["dsn"]),
-        user=str(workflow["user"]),
-        password=str(workflow["password"]),
-        source_schema=str(workflow["sourceSchema"]),
-        source_manifest=None,
-        wrapper_schema=str(workflow["wrapperSchema"]),
-        helper_schema=str(workflow["helperSchema"]),
-        preprocessor_schema=str(workflow["preprocessorSchema"]),
-        preprocessor_script=str(workflow["preprocessorScript"]),
-        output_dir=run_artifact_dir,
-        package_name=str(workflow["packageName"]),
-        function_names=None,
-        variant_typeof_function_names=None,
-        variant_varchar_function_names=None,
-        variant_decimal_function_names=None,
-        variant_boolean_function_names=None,
-        blocked_helper_names=None,
-        blocked_helper_message="This helper is not available on the wrapper surface yet.",
-        activate_session=False,
-        artifact_dir=run_artifact_dir,
-        no_auto_source_manifest=False,
-    )
-    wrapper_package_tool.command_generate(_resolve_wrap_generation_args(generate_args))
+        generate_args = argparse.Namespace(
+            dsn=str(workflow["dsn"]),
+            user=str(workflow["user"]),
+            password=str(workflow["password"]),
+            source_schema=str(workflow["sourceSchema"]),
+            source_manifest=None,
+            wrapper_schema=str(workflow["wrapperSchema"]),
+            helper_schema=str(workflow["helperSchema"]),
+            preprocessor_schema=str(workflow["preprocessorSchema"]),
+            preprocessor_script=str(workflow["preprocessorScript"]),
+            output_dir=run_artifact_dir,
+            package_name=str(workflow["packageName"]),
+            function_names=None,
+            variant_typeof_function_names=None,
+            variant_varchar_function_names=None,
+            variant_decimal_function_names=None,
+            variant_boolean_function_names=None,
+            blocked_helper_names=None,
+            blocked_helper_message="This helper is not available on the wrapper surface yet.",
+            activate_session=False,
+            artifact_dir=run_artifact_dir,
+            no_auto_source_manifest=False,
+        )
+        resolved_generate_args = _resolve_wrap_generation_args(generate_args)
+        wrapper_package_tool.command_generate(resolved_generate_args)
+
+        package_config_path = run_artifact_dir / f"{workflow['packageName']}_package.json"
+        deploy_args = argparse.Namespace(
+            dsn=str(workflow["dsn"]),
+            user=str(workflow["user"]),
+            password=str(workflow["password"]),
+            package_config=package_config_path,
+            views_sql=None,
+            preprocessor_sql=None,
+            skip_views=False,
+            skip_source_family=False,
+            skip_preprocessor=False,
+            activate_session=args.activate_session,
+            manifest=None,
+            skip_validate_installed=args.skip_validate_installed,
+            json=False,
+        )
+        command_wrap_deploy(deploy_args)
 
     package_config_path = run_artifact_dir / f"{workflow['packageName']}_package.json"
-    deploy_args = argparse.Namespace(
-        dsn=str(workflow["dsn"]),
-        user=str(workflow["user"]),
-        password=str(workflow["password"]),
-        package_config=package_config_path,
-        views_sql=None,
-        preprocessor_sql=None,
-        skip_views=False,
-        skip_source_family=False,
-        skip_preprocessor=False,
-        activate_session=args.activate_session,
-        manifest=None,
-        skip_validate_installed=args.skip_validate_installed,
-    )
-    command_wrap_deploy(deploy_args)
 
-    print("Unified CLI completed ingest-and-wrap workflow.")
-    print(f"Workflow name: {workflow['workflowName']}")
-    print(f"Run artifact directory: {run_artifact_dir}")
-    print(f"Package config: {package_config_path}")
-    print(
-        "Schemas: "
-        f"{workflow['sourceSchema']} -> {workflow['wrapperSchema']} / {workflow['helperSchema']} "
-        f"with {workflow['preprocessorSchema']}.{workflow['preprocessorScript']}"
-    )
+    if args.json:
+        summary = {
+            "command": "ingest-and-wrap",
+            "workflowName": workflow["workflowName"],
+            "runArtifactDir": str(run_artifact_dir),
+            "input": str(args.input.resolve()),
+            "exasol": {
+                "dsn": str(workflow["dsn"]),
+                "sourceSchema": str(workflow["sourceSchema"]),
+            },
+            "wrapper": _build_wrapper_summary_from_config_path(package_config_path),
+            "validatedInstalled": not args.skip_validate_installed,
+        }
+        _emit_json_summary(summary)
+    else:
+        print("Unified CLI completed ingest-and-wrap workflow.")
+        print(f"Workflow name: {workflow['workflowName']}")
+        print(f"Run artifact directory: {run_artifact_dir}")
+        print(f"Package config: {package_config_path}")
+        print(
+            "Schemas: "
+            f"{workflow['sourceSchema']} -> {workflow['wrapperSchema']} / {workflow['helperSchema']} "
+            f"with {workflow['preprocessorSchema']}.{workflow['preprocessorScript']}"
+        )
 
 
 def _resolve_wrap_generation_args(args: argparse.Namespace) -> argparse.Namespace:
@@ -604,7 +742,10 @@ def _resolve_wrap_generation_args(args: argparse.Namespace) -> argparse.Namespac
     detected = _find_single_source_manifest(artifact_dir)
     if detected is not None:
         args.source_manifest = detected
-        print(f"Unified CLI using source manifest: {detected}")
+        print(
+            f"Unified CLI using source manifest: {detected}",
+            file=sys.stderr if getattr(args, "json", False) else sys.stdout,
+        )
     else:
         _warn_multiple_source_manifests(artifact_dir)
     return args
@@ -612,15 +753,70 @@ def _resolve_wrap_generation_args(args: argparse.Namespace) -> argparse.Namespac
 
 def command_wrap(args: argparse.Namespace) -> None:
     if args.wrap_command == "generate":
-        wrapper_package_tool.command_generate(_resolve_wrap_generation_args(args))
+        resolved_args = _resolve_wrap_generation_args(args)
+        with _stdout_to_stderr(bool(args.json)):
+            wrapper_package_tool.command_generate(resolved_args)
+        if args.json:
+            package_paths = wrapper_package_tool.build_package_paths(Path(resolved_args.output_dir), resolved_args.package_name)
+            _emit_json_summary(
+                {
+                    "command": "wrap generate",
+                    "wrapper": _build_wrapper_summary_from_config_path(package_paths["packageConfig"]),
+                }
+            )
     elif args.wrap_command == "install":
-        wrapper_package_tool.command_install(args)
+        with _stdout_to_stderr(bool(args.json)):
+            wrapper_package_tool.command_install(args)
+        if args.json:
+            summary = {
+                "command": "wrap install",
+                "wrapper": _build_wrapper_summary_from_config_path(args.package_config.resolve()),
+                "activateSession": bool(args.activate_session),
+                "activationPersistsAfterCommand": False,
+                "installedSourceFamily": not args.skip_source_family,
+                "installedViews": not args.skip_views,
+                "installedPreprocessor": not args.skip_preprocessor,
+            }
+            _emit_json_summary(summary)
     elif args.wrap_command == "deploy":
         command_wrap_deploy(args)
+        if args.json:
+            summary = {
+                "command": "wrap deploy",
+                "wrapper": _build_wrapper_summary_from_config_path(args.package_config.resolve()),
+                "activateSession": bool(args.activate_session),
+                "activationPersistsAfterCommand": False,
+                "validatedInstalled": not args.skip_validate_installed,
+            }
+            _emit_json_summary(summary)
     elif args.wrap_command == "validate":
-        wrapper_package_tool.command_validate(args)
+        with _stdout_to_stderr(bool(args.json)):
+            wrapper_package_tool.command_validate(args)
+        if args.json:
+            _emit_json_summary(
+                {
+                    "command": "wrap validate",
+                    "wrapper": _build_wrapper_summary_from_config_path(args.package_config.resolve()),
+                    "checkedInstalled": bool(args.check_installed),
+                }
+            )
     elif args.wrap_command == "regenerate-preprocessor":
-        wrapper_package_tool.command_regenerate_preprocessor(args)
+        with _stdout_to_stderr(bool(args.json)):
+            wrapper_package_tool.command_regenerate_preprocessor(args)
+        if args.json:
+            config_path = args.package_config.resolve()
+            config = wrapper_package_tool.load_package_config(config_path)
+            output_path = (
+                args.output
+                or wrapper_package_tool.resolve_configured_path(config_path, config["generatedFiles"]["preprocessorSql"])
+            ).resolve()
+            _emit_json_summary(
+                {
+                    "command": "wrap regenerate-preprocessor",
+                    "output": str(output_path),
+                    "wrapper": _build_wrapper_summary_from_config_path(config_path),
+                }
+            )
     else:  # pragma: no cover - defensive
         raise SystemExit(f"Unknown wrap command: {args.wrap_command}")
 
@@ -631,13 +827,31 @@ def command_structured_results(args: argparse.Namespace) -> None:
     elif args.structured_command == "package":
         args.output_dir = _artifact_dir_override(Path(args.output_dir), args.artifact_dir)
         args.source_manifest = None
-        wrapper_package_tool.command_generate_result_family_package(args)
+        with _stdout_to_stderr(bool(args.json)):
+            wrapper_package_tool.command_generate_result_family_package(args)
+        if args.json:
+            package_paths = wrapper_package_tool.build_package_paths(Path(args.output_dir), args.package_name)
+            _emit_json_summary(
+                {
+                    "command": "structured-results package",
+                    "wrapper": _build_wrapper_summary_from_config_path(package_paths["packageConfig"]),
+                }
+            )
     else:  # pragma: no cover - defensive
         raise SystemExit(f"Unknown structured-results command: {args.structured_command}")
 
 
 def command_validate(args: argparse.Namespace) -> None:
-    wrapper_package_tool.command_validate(args)
+    with _stdout_to_stderr(bool(args.json)):
+        wrapper_package_tool.command_validate(args)
+    if args.json:
+        _emit_json_summary(
+            {
+                "command": "validate",
+                "wrapper": _build_wrapper_summary_from_config_path(args.package_config.resolve()),
+                "checkedInstalled": bool(args.check_installed),
+            }
+        )
 
 
 def main() -> None:

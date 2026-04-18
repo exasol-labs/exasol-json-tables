@@ -63,6 +63,8 @@ Use the installed CLI for workflow-level tasks:
 - `exasol-json-tables ingest`
 - `exasol-json-tables ingest-and-wrap`
 
+For agented or automated workflows, prefer `--json` on these commands so stdout stays machine-readable. The summary includes artifact paths, schema names, package config paths, activation SQL, and wrapper-scope warnings.
+
 ### Rust crate
 
 Use Cargo when the task is about ingest implementation itself:
@@ -150,6 +152,7 @@ If you changed naming, manifests, or artifact-dir behavior, run both integration
 ## Guidance For Agents
 
 - Prefer manifest-driven downstream flows when a manifest exists.
+- Prefer `--json` on workflow commands instead of scraping human log text.
 - Preserve compatibility of the source table-family contract unless the task explicitly allows a breaking change.
 - Be explicit about whether a change affects:
   - raw source schema

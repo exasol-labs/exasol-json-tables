@@ -132,6 +132,31 @@ Use them when:
 
 For normal user-facing workflows, prefer the installed `exasol-json-tables` command.
 
+## Machine-Readable CLI Mode
+
+For automation, CI, and autonomous agents, the main workflow commands support `--json`.
+
+That mode keeps stdout machine-readable and moves human-oriented progress logs to stderr. The JSON summary includes the key values an agent typically needs next, such as:
+
+- source, wrapper, helper, and preprocessor names
+- package config and generated artifact paths
+- activation SQL
+- smoke-test SQL
+- warnings about session activation and wrapper-only syntax
+
+Example:
+
+```bash
+exasol-json-tables ingest-and-wrap \
+  --input ./data.json \
+  --name customer_events \
+  --artifact-dir ./dist/exasol-json-tables \
+  --exasol-temp-dir /tmp/exasol-json-tables \
+  --json
+```
+
+`structured-results preview-json` already returns JSON rows, so it does not need a separate summary envelope unless you add one in a higher-level wrapper.
+
 ## Next Reading
 
 - Workflow overview: [README.md](../README.md)

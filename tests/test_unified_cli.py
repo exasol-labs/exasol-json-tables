@@ -40,6 +40,17 @@ def cleanup_package_schemas(con, package_config: dict[str, object]) -> None:
         con.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
 
+def cleanup_named_workflow_schemas(con, workflow_name: str) -> None:
+    token = workflow_name.upper()
+    for schema in [
+        f"EJT_{token}_PP",
+        f"EJT_{token}_VIEW_INTERNAL",
+        f"EJT_{token}_VIEW",
+        f"EJT_{token}_SRC",
+    ]:
+        con.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
 def test_unified_cli_ingest_wrap_validate_with_manifest_handoff() -> None:
     fixture_path = ROOT / "crates" / "json_tables_ingest" / "tests" / "fixtures" / "nested.json"
     with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_") as tmpdir:
@@ -487,11 +498,92 @@ def test_unified_cli_ingest_and_wrap_with_lowercase_root_name() -> None:
                     con.close()
 
 
+def test_unified_cli_ingest_and_wrap_json_summary() -> None:
+    fixture_path = ROOT / "crates" / "json_tables_ingest" / "tests" / "fixtures" / "nested.json"
+    with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_json_") as tmpdir:
+        tmp = Path(tmpdir)
+        artifact_root = tmp / "artifacts"
+        staging_dir = tmp / "staging"
+        input_path = tmp / "NESTED.json"
+        shutil.copyfile(fixture_path, input_path)
+
+        workflow_name = "json_summary"
+        package_config: Optional[dict[str, object]] = None
+
+        try:
+            con = connect()
+            try:
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "ingest-and-wrap",
+                    "--input",
+                    str(input_path),
+                    "--name",
+                    workflow_name,
+                    "--artifact-dir",
+                    str(artifact_root),
+                    "--exasol-temp-dir",
+                    str(staging_dir),
+                    "--exasol-cleanup",
+                    "--json",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            payload = json.loads(result.stdout)
+            assert payload["command"] == "ingest-and-wrap"
+            assert payload["workflowName"] == workflow_name
+            assert payload["validatedInstalled"] is True
+            wrapper = payload["wrapper"]
+            assert wrapper["preprocessor"]["activationRequired"] is True
+            assert "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT" in wrapper["preprocessor"]["activationSql"]
+            assert "smokeTestSql" in wrapper
+            assert len(wrapper["warnings"]) >= 2
+            assert any("session-scoped" in warning for warning in wrapper["warnings"])
+            assert any("wrapper schemas only" in warning for warning in wrapper["warnings"])
+
+            package_config_path = Path(wrapper["packageConfig"])
+            package_config = json.loads(package_config_path.read_text())
+
+            con = connect()
+            try:
+                con.execute(wrapper["preprocessor"]["activationSql"].rstrip(";"))
+                rows = con.execute(
+                    f'''
+                    SELECT
+                      CAST("id" AS VARCHAR(20)),
+                      CAST("child.a" AS VARCHAR(20))
+                    FROM "{package_config["wrapperSchema"]}"."NESTED"
+                    ORDER BY 1
+                    '''
+                ).fetchall()
+            finally:
+                con.close()
+
+            assert rows == [("1", "10"), ("2", "20"), ("3", None)]
+        finally:
+            if package_config is not None:
+                con = connect()
+                try:
+                    cleanup_package_schemas(con, package_config)
+                finally:
+                    con.close()
+
+
 if __name__ == "__main__":
     test_unified_cli_ingest_wrap_validate_with_manifest_handoff()
     test_unified_cli_structured_results_preview_json()
     test_unified_cli_wrap_deploy_chains_install_and_validate()
     test_unified_cli_ingest_and_wrap_with_derived_defaults()
     test_unified_cli_ingest_and_wrap_with_lowercase_root_name()
+    test_unified_cli_ingest_and_wrap_json_summary()
     print("-- unified cli regression --")
     print("verified ingest/wrap/validate orchestration, wrap deploy, ingest-and-wrap defaults, and structured-results preview-json")

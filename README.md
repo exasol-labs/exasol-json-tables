@@ -161,6 +161,8 @@ If you want more control, the same flow is also available as separate commands:
 - `exasol-json-tables validate`
 - `exasol-json-tables structured-results ...`
 
+For automation and autonomous agents, the major workflow commands also support `--json`. In that mode they emit a machine-readable summary on stdout with the important outputs, such as package paths, schema names, activation SQL, smoke-test SQL, and wrapper-scope warnings. `structured-results preview-json` already returns JSON rows directly.
+
 ## Further Reading
 
 - Installation: [docs/installation.md](docs/installation.md)

@@ -91,6 +91,8 @@ exasol-json-tables structured-results preview-json \
   --table-kind local_temporary
 ```
 
+This command already returns JSON rows directly. Do not expect a separate summary envelope unless a higher-level wrapper adds one.
+
 ### Durable package
 
 Use when the result should become a reusable installed surface:
@@ -113,6 +115,8 @@ Then install it with:
 exasol-json-tables wrap install \
   --package-config ./dist/json_result_package.json
 ```
+
+For agented packaging flows, prefer `--json` on `structured-results package` and the follow-up wrapper lifecycle commands.
 
 ## Important Guidance
 
@@ -171,6 +175,7 @@ If the task touches the unified CLI path too, also run:
   - optionally wrapping it for SQL
   - exporting it back to nested JSON-like rows
 - If a user wants Mongo-like nested outputs, structured results are usually the correct answer.
+- `structured-results preview-json` already emits JSON rows; use `--json` on the packaging / wrapper lifecycle commands around it.
 - Be explicit about whether the result family is:
   - durable
   - session-local
