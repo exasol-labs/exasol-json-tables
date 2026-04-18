@@ -17,7 +17,7 @@ from .generate_preprocessor_sql import validate_identifier
 from .wrapper_schema_support import ROOT, connect_for_generation, quote_identifier
 
 
-DEFAULT_ARTIFACT_DIR = ROOT / "dist" / "exasol_json_tables"
+DEFAULT_ARTIFACT_DIR = ROOT / "dist" / "exasol-json-tables"
 DEFAULT_SCHEMA_PREFIX = "EJT"
 IDENTIFIER_TOKEN_RE = re.compile(r"[^A-Za-z0-9]+")
 

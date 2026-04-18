@@ -57,12 +57,14 @@ The wrapper package generator produces four main artifacts:
 
 The ingest layer can also emit a separate source-manifest JSON artifact that wrapper generation can consume directly.
 
-## Checked-In Examples
+## Default Generated Wrapper Artifacts
 
-- [examples/json_wrapper_views.sql](../examples/json_wrapper_views.sql)
-- [examples/json_wrapper_manifest.json](../examples/json_wrapper_manifest.json)
-- [examples/json_wrapper_preprocessor.sql](../examples/json_wrapper_preprocessor.sql)
-- [examples/json_wrapper_package.json](../examples/json_wrapper_package.json)
+These files are generated on demand and are not checked into git:
+
+- `dist/exasol-json-tables/json_wrapper_views.sql`
+- `dist/exasol-json-tables/json_wrapper_manifest.json`
+- `dist/exasol-json-tables/json_wrapper_preprocessor.sql`
+- `dist/exasol-json-tables/json_wrapper_package.json`
 
 ## Supported Product Surface Vs Internal Surface
 

@@ -10,7 +10,7 @@ from .generate_preprocessor_sql import render_sql, validate_identifier
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_OUTPUT = ROOT / "examples" / "json_wrapper_preprocessor.sql"
+DEFAULT_OUTPUT = ROOT / "dist" / "exasol-json-tables" / "json_wrapper_preprocessor.sql"
 DEFAULT_EXPLICIT_NULL_FUNCTION_NAMES = ["JSON_IS_EXPLICIT_NULL", "JNULL"]
 DEFAULT_VARIANT_TYPEOF_FUNCTION_NAMES = ["JSON_TYPEOF"]
 DEFAULT_VARIANT_VARCHAR_FUNCTION_NAMES = ["JSON_AS_VARCHAR"]

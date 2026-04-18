@@ -16,8 +16,8 @@ from .wrapper_schema_support import (
 )
 
 
-DEFAULT_OUTPUT = ROOT / "examples" / "json_wrapper_views.sql"
-DEFAULT_MANIFEST_OUTPUT = ROOT / "examples" / "json_wrapper_manifest.json"
+DEFAULT_OUTPUT = ROOT / "dist" / "exasol-json-tables" / "json_wrapper_views.sql"
+DEFAULT_MANIFEST_OUTPUT = ROOT / "dist" / "exasol-json-tables" / "json_wrapper_manifest.json"
 
 
 def parse_args() -> argparse.Namespace:

@@ -27,7 +27,7 @@ from .wrapper_schema_support import ROOT, connect_for_generation, generate_wrapp
 from .wrapper_schema_support import generate_wrapper_artifacts_from_source_manifest
 
 
-DEFAULT_PACKAGE_DIR = ROOT / "examples"
+DEFAULT_PACKAGE_DIR = ROOT / "dist" / "exasol-json-tables"
 DEFAULT_PACKAGE_NAME = "json_wrapper"
 
 

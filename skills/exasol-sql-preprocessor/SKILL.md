@@ -50,9 +50,7 @@ If you are working in this repository, also inspect:
 - `tools/generate_wrapper_preprocessor_sql.py`
 - `tools/generate_wrapper_views_sql.py`
 - `tools/wrapper_package_tool.py`
-- `examples/json_wrapper_preprocessor.sql`
-- `examples/json_wrapper_views.sql`
-- `examples/json_wrapper_package.json`
+- regenerate wrapper artifacts under `dist/exasol-json-tables/` when you need concrete generated SQL or package examples
 - `tests/test_wrapper_surface.py`
 - `tests/test_wrapper_errors.py`
 - `tests/test_wrapper_evaluation.py`
