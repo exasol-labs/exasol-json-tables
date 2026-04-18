@@ -221,6 +221,31 @@ def _build_group_config(manifests: list[dict]) -> dict[str, dict[str, dict[str, 
     return config
 
 
+def _build_visible_column_config(manifests: list[dict]) -> dict[str, dict[str, dict[str, bool]]]:
+    config: dict[str, dict[str, dict[str, bool]]] = {}
+    for manifest in manifests:
+        public_schema = validate_identifier("Manifest public schema", manifest["publicSchema"])
+        helper_schema = validate_identifier("Manifest helper schema", manifest["helperSchema"])
+
+        roots_by_table = {str(root["tableName"]).upper(): root for root in manifest["roots"]}
+        public_schema_tables = config.setdefault(public_schema, {})
+        helper_schema_tables = config.setdefault(helper_schema, {})
+
+        for table in manifest["tables"]:
+            table_name = validate_identifier("Manifest table name", table["tableName"])
+            visible_columns: dict[str, bool] = {"_ID": True}
+            for group in table["groups"]:
+                visible_name = group["visibleName"]
+                if visible_name is None:
+                    continue
+                visible_columns[str(visible_name).upper()] = True
+            helper_schema_tables.setdefault(table_name, {}).update(visible_columns)
+            if table.get("isPublicRoot"):
+                public_view_name = validate_identifier("Manifest public view", roots_by_table[table_name]["publicView"])
+                public_schema_tables.setdefault(public_view_name, {}).update(visible_columns)
+    return config
+
+
 def _add_helper_kind(mapping: dict[str, str], function_name: str, helper_kind: str) -> None:
     previous_kind = mapping.get(function_name)
     if previous_kind is not None and previous_kind != helper_kind:
@@ -252,6 +277,7 @@ def generate_wrapper_preprocessor_sql_text(
     if manifests is None:
         raise SystemExit("Wrapper semantic helper generation requires manifest data.")
     group_config = _build_group_config(manifests)
+    visible_column_config = _build_visible_column_config(manifests)
     normalized_function_names = [
         validate_identifier("Function name", value)
         for value in (function_names or DEFAULT_EXPLICIT_NULL_FUNCTION_NAMES)
@@ -300,6 +326,7 @@ def generate_wrapper_preprocessor_sql_text(
         normalized_wrapper_schemas,
         helper_schema_map,
         group_config,
+        visible_column_config,
         True,
         activate_session,
         helper_function_kinds,

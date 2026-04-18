@@ -705,6 +705,11 @@ JOIN_MODE_LUA = """
         if trimmed == "" then
             return nil, "Empty array selector is not allowed."
         end
+        if trimmed == "?" then
+            return {
+                kind = "parameter"
+            }, nil
+        end
         if trimmed == "*" then
             return nil, 'Wildcard selectors are not supported yet. Use JOIN ... IN row."path" for full array traversal.'
         end
@@ -722,24 +727,55 @@ JOIN_MODE_LUA = """
         elseif normalized == "SIZE" then
             return {kind = "size"}, nil
         end
-        return nil, 'Unsupported array selector "' .. trimmed .. '". Supported selectors are numeric indexes, FIRST, LAST, and SIZE.'
+        if string.match(trimmed, "^[%a_][%w_]*$") then
+            return {
+                kind = "field",
+                field_name = trimmed
+            }, nil
+        end
+        return nil,
+                'Unsupported array selector "' .. trimmed .. '". Supported selectors are numeric indexes, FIRST, LAST, SIZE, ?, and direct field names.'
     end
 
     local function serialize_array_selector(selector)
         if selector.kind == "index" then
             return tostring(selector.index)
+        elseif selector.kind == "parameter" then
+            return "?"
+        elseif selector.kind == "field" then
+            return selector.field_name
         end
         return string.upper(selector.kind)
     end
 
-    local function build_array_selector_sql(parent_ref, step, array_column_name)
+    local function build_array_selector_sql(binding, current_table_name, selector_ref, array_ref, step, array_column_name, path)
         array_column_name = array_column_name or (step.name .. "|array")
         if step.selector.kind == "index" then
             return tostring(step.selector.index)
         elseif step.selector.kind == "first" then
             return "0"
         elseif step.selector.kind == "last" then
-            return "(" .. parent_ref .. "." .. encode_quoted_identifier(array_column_name) .. " - 1)"
+            return "(" .. array_ref .. "." .. encode_quoted_identifier(array_column_name) .. " - 1)"
+        elseif step.selector.kind == "parameter" then
+            return "?"
+        elseif step.selector.kind == "field" then
+            local schema_name = binding.helper_schema_name
+                    or helper_schema_name_for_table_reference(binding)
+                    or binding.schema_name
+            local schema_tables = VISIBLE_COLUMNS_BY_SCHEMA_AND_TABLE[normalize_identifier_value(schema_name)]
+            local table_columns = schema_tables and schema_tables[normalize_identifier_value(current_table_name)] or nil
+            local normalized_field_name = normalize_identifier_value(step.selector.field_name)
+            local field_is_visible = table_columns ~= nil and table_columns[normalized_field_name] == true
+            local field_is_iterator_index = normalized_field_name == "_INDEX"
+                    and (binding.kind == "iterator_row" or binding.kind == "iterator_value")
+                    and normalize_identifier_value(current_table_name) == normalize_identifier_value(binding.table_name)
+            if not field_is_visible and not field_is_iterator_index then
+                raise_path_error(
+                    path,
+                    'Array selector "' .. step.selector.field_name .. '" must be ? or a visible field on the current row.'
+                )
+            end
+            return selector_ref .. "." .. encode_quoted_identifier(step.selector.field_name)
         end
         return nil
     end
@@ -1218,7 +1254,15 @@ JOIN_MODE_LUA = """
                     else
                         local existing = join_aliases[prefix_key]
                         local child_table_name = derive_array_child_table_name_for_iterator(current_table_name, step.name)
-                        local selector_sql = build_array_selector_sql(array_source_ref, step, array_column_name)
+                        local selector_sql = build_array_selector_sql(
+                                binding,
+                                current_table_name,
+                                current_ref,
+                                array_source_ref,
+                                step,
+                                array_column_name,
+                                reference.path
+                        )
                         if selector_sql == nil then
                             raise_path_error(reference.path, "Unsupported array selector.")
                         end
@@ -1380,7 +1424,15 @@ JOIN_MODE_LUA = """
                             local existing = join_aliases[prefix_key]
                             local child_table_name = derive_array_child_table_name(current_table_name, step.name)
                             local alias_name = "__jvs_path_" .. tostring(alias_manager.next_alias_id)
-                            local selector_sql = build_array_selector_sql(array_source_ref, step, array_column_name)
+                            local selector_sql = build_array_selector_sql(
+                                    base_table,
+                                    current_table_name,
+                                    current_ref,
+                                    array_source_ref,
+                                    step,
+                                    array_column_name,
+                                    reference.path
+                            )
                             if selector_sql == nil then
                                 raise_path_error(reference.path, "Unsupported array selector.")
                             end
@@ -2957,6 +3009,7 @@ def render_sql(
     allowed_schemas: list[str],
     helper_schema_map: dict[str, str],
     wrapper_group_config: dict[str, dict[str, dict[str, object]]] | None,
+    wrapper_visible_column_config: dict[str, dict[str, dict[str, bool]]] | None,
     rewrite_path_identifiers: bool,
     activate_session: bool,
     helper_function_kinds: dict[str, str] | None = None,
@@ -2983,6 +3036,7 @@ def render_sql(
         else "(none)"
     )
     wrapper_group_config_lua = render_lua_string_table(wrapper_group_config or {}, 4)
+    wrapper_visible_columns_lua = render_lua_string_table(wrapper_visible_column_config or {}, 4)
     has_variant_helpers = any(kind != "explicit_null" for kind in helper_function_kinds.values())
     if wrapper_group_config:
         helper_mode = "wrapper semantic helpers" if has_variant_helpers else "wrapper explicit-null joins"
@@ -3027,6 +3081,7 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
     local EXAMPLE_ALLOWED_SCHEMA = {example_allowed_schema!r}
     local HELPER_SCHEMA_BY_ALLOWED_SCHEMA = {helper_schema_map_lua}
     local GROUP_CONFIG_BY_SCHEMA_AND_TABLE = {wrapper_group_config_lua}
+    local VISIBLE_COLUMNS_BY_SCHEMA_AND_TABLE = {wrapper_visible_columns_lua}
 
     local function raise_function_error(function_name, message)
         error("JVS-FUNCTION-ERROR: " .. function_name .. ": " .. message, 0)
@@ -3210,6 +3265,7 @@ def main() -> None:
         args.blocked_function_message or "This helper is not available in this build.",
         allowed_schemas,
         helper_schema_map,
+        None,
         None,
         args.rewrite_path_identifiers,
         args.activate_session,

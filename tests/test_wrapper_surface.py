@@ -3,6 +3,7 @@
 import subprocess
 
 import _bootstrap  # noqa: F401
+from pyexasol.statement import ExaStatement
 
 from nano_support import ROOT, connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
 
@@ -208,6 +209,45 @@ def main() -> None:
     """)
     assert_equal(array_rows, [("1", "red", "blue", "2", "second", "m2"), ("2", "green", "green", "1", "only", "m3"), ("3", "NULL", "NULL", "NULL", "NULL", "NULL")], "array syntax")
 
+    dynamic_index_rows = fetch_all("""
+        SELECT
+          CAST("id" AS VARCHAR(10)) AS doc_id,
+          COALESCE("tags[id]", 'NULL') AS tag_by_id,
+          COALESCE("items[id].value", 'NULL') AS item_by_id
+        FROM JSON_VIEW.SAMPLE
+        ORDER BY "id"
+    """)
+    assert_equal(
+        dynamic_index_rows,
+        [("1", "blue", "second"), ("2", "NULL", "NULL"), ("3", "NULL", "NULL")],
+        "field-driven array selector syntax",
+    )
+
+    prepared_selector_con = connect()
+    try:
+        install_wrapper_preprocessor(prepared_selector_con, [PUBLIC_WRAPPER_SCHEMA], [HELPER_WRAPPER_SCHEMA])
+        prepared_stmt = ExaStatement(
+            prepared_selector_con,
+            """
+            SELECT
+              CAST("id" AS VARCHAR(10)) AS doc_id,
+              COALESCE("tags[?]", 'NULL') AS tag_by_param
+            FROM JSON_VIEW.SAMPLE
+            ORDER BY "id"
+            """,
+            prepare=True,
+        )
+        prepared_stmt.execute_prepared([(1,)])
+        prepared_selector_rows = prepared_stmt.fetchall()
+    finally:
+        prepared_selector_con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")
+        prepared_selector_con.close()
+    assert_equal(
+        prepared_selector_rows,
+        [("1", "blue"), ("2", "NULL"), ("3", "NULL")],
+        "parameterized array selector syntax",
+    )
+
     rowset_rows = fetch_all("""
         SELECT
           CAST(s."id" AS VARCHAR(10)),
@@ -280,6 +320,22 @@ def main() -> None:
         iterator_path_rows,
         [("1", "0", "nested-a", "11", "TRUE", "na-2"), ("1", "1", "nested-b", "12", "FALSE", "nb-1"), ("2", "0", "NULL", "NULL", "NULL", "NULL")],
         "iterator path syntax",
+    )
+
+    iterator_dynamic_index_rows = fetch_all("""
+        SELECT
+          CAST(s."id" AS VARCHAR(10)) AS doc_id,
+          CAST(item._index AS VARCHAR(10)) AS item_index,
+          COALESCE(CAST(item."nested.pick" AS VARCHAR(10)), 'NULL') AS nested_pick,
+          COALESCE(item."nested.items[pick].value", 'NULL') AS nested_pick_value
+        FROM JSON_VIEW.SAMPLE s
+        JOIN item IN s."items"
+        ORDER BY s."id", item._index
+    """)
+    assert_equal(
+        iterator_dynamic_index_rows,
+        [("1", "0", "1", "na-2"), ("1", "1", "0", "nb-1"), ("2", "0", "NULL", "NULL")],
+        "iterator field-driven array selector syntax",
     )
 
     deep_path_rows = fetch_all(f"""

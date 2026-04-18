@@ -61,7 +61,7 @@ def main() -> None:
         assert_query_error(
             con,
             'SELECT "tags[NOPE]" FROM JSON_VIEW.SAMPLE',
-            ["JVS-PATH-ERROR", 'Unsupported array selector "NOPE"'],
+            ["JVS-PATH-ERROR", 'Array selector "NOPE" must be ? or a visible field on the current row'],
             "unsupported selector error",
         )
         assert_query_error(
@@ -81,6 +81,12 @@ def main() -> None:
             'SELECT "tags[1:3]" FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", "Array slices are not supported yet", "_index"],
             "array slice error",
+        )
+        assert_query_error(
+            con,
+            'SELECT "tags[id + 1]" FROM JSON_VIEW.SAMPLE',
+            ["JVS-PATH-ERROR", 'Unsupported array selector "id + 1"', "direct field names"],
+            "complex expression selector error",
         )
         assert_query_error(
             con,

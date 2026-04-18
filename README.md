@@ -92,7 +92,7 @@ Supported helper functions:
 Supported syntax sugar:
 
 - dotted paths such as `"child.value"` or `"meta.info.note"`
-- bracket access such as `"tags[0]"`, `"tags[FIRST]"`, `"tags[LAST]"`, `"tags[SIZE]"`
+- bracket access such as `"tags[0]"`, `"tags[FIRST]"`, `"tags[LAST]"`, `"tags[SIZE]"`, `"tags[id]"`, or `"tags[?]"`
 - mixed deep access such as `"meta.items[LAST].value"`
 - array rowset syntax such as `JOIN item IN s."items"` and `JOIN VALUE tag IN s."tags"`
 - iterator-row path and bracket access such as `item."nested.note"` and `entry."extras[LAST]"`
@@ -243,7 +243,8 @@ SELECT
   "tags[FIRST]",
   "tags[LAST]",
   "tags[SIZE]",
-  "items[LAST].value"
+  "items[LAST].value",
+  "tags[id]" AS tag_selected_by_id
 FROM JSON_VIEW.SAMPLE
 ORDER BY "id";
 ```
@@ -325,6 +326,7 @@ JOIN item IN s."items";
 - In joined queries, qualify root-document helper arguments with the root alias, for example `JSON_IS_EXPLICIT_NULL(s."note")`.
 - `VALUE` iterators support plain SQL on the scalar value, but JSON helper/path syntax is intentionally not supported on them.
 - Path/helper syntax does not start from derived-table roots. Move the JSON expression into the inner `SELECT` or query the wrapper view directly.
+- Dynamic bracket selectors support `?` and direct field names on the current row, for example `"tags[id]"` or `item."nested.items[pick].value"`. Arbitrary SQL expressions such as `"tags[id + 1]"` are still intentionally rejected.
 - Use `JSON_TYPEOF(...)` and `JSON_AS_*` for JSON-aware variant semantics. Built-in `TYPEOF(...)` and plain `CAST(...)` reflect the wrapper view’s SQL types, not the original per-row JSON type contract.
 
 ## Testing
