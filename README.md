@@ -8,24 +8,18 @@ It gives you one workflow for:
 - querying that data with JSON-friendly SQL instead of raw helper tables
 - reshaping SQL results back into nested, JSON-like output when you need it
 
-The point is simple: JSON data is useful because it is flexible and nested, but most relational workflows strip that structure away and leave you to rebuild it by hand. Exasol JSON Tables keeps the data relational enough for SQL and analytics, while preserving the parts that make JSON practical in the first place.
+The usual Exasol pattern for JSON is to store the document as a string and then use built-in JSON functions whenever you need to extract a field, filter on a nested value, or reshape part of the payload. That works, but it gets heavy once the data is deeply nested, reused across many queries, or needs array-aware analytics. Exasol JSON Tables is an alternative workflow: ingest JSON into a stable relational contract once, then query and reshape it through a JSON-friendly SQL surface instead of repeatedly pulling values back out of strings.
 
 ## Why Use It
 
-Without this, JSON workflows in Exasol usually mean some combination of:
-
-- awkward helper columns like explicit-null flags and object references
-- manually joining child tables for nested objects and arrays
-- losing the distinction between missing values and explicit JSON `null`
-- rebuilding nested outputs in application code after the query
-
-Exasol JSON Tables gives you a cleaner surface:
+Exasol JSON Tables gives you a clean JSON native interface:
 
 - query nested fields with path syntax like `"meta.info.note"`
 - index and expand arrays with syntax like `"tags[LAST]"` and `JOIN item IN s."items"`
 - inspect variants with `JSON_TYPEOF(...)` and `JSON_AS_*`
 - keep missing vs explicit `null` semantics intact
 - materialize structured results back into a reusable nested contract
+- JSON document size no longer bound by string size limits
 
 It is especially useful if you want to:
 
