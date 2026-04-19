@@ -74,6 +74,25 @@ FROM JSON_VIEW.SAMPLE
 ORDER BY "id";
 ```
 
+When a variant contains a non-scalar branch:
+
+- if `JSON_TYPEOF(expr) = 'OBJECT'`, traverse it with normal dotted paths such as `expr."note"` or `"flex.note"`
+- if `JSON_TYPEOF(expr) = 'ARRAY'`, use bracket access or rowset expansion such as `"flex[LAST].value"` or `JOIN item IN row."flex"`
+- `JSON_AS_VARCHAR(...)`, `JSON_AS_DECIMAL(...)`, and `JSON_AS_BOOLEAN(...)` are scalar extractors; object and array branches return `NULL` from those helpers until you navigate to a scalar child
+
+Example:
+
+```sql
+SELECT
+  "doc_id",
+  JSON_TYPEOF("flex") AS flex_type,
+  "flex.note" AS flex_object_note,
+  "flex[LAST].value" AS flex_array_last_value,
+  JSON_AS_VARCHAR("flex") AS flex_scalar_text
+FROM JSON_VIEW.DOCS
+ORDER BY "doc_id";
+```
+
 Important: built-in `TYPEOF(...)` and plain SQL `CAST(...)` on wrapper views reflect the projected SQL type of the view column, not the original per-row JSON type contract.
 
 ### Nested Paths
