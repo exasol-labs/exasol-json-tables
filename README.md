@@ -19,7 +19,7 @@ Exasol JSON Tables gives you a clean JSON native interface:
 - inspect variants with `JSON_TYPEOF(...)` and `JSON_AS_*`
 - keep missing vs explicit `null` semantics intact
 - materialize structured results back into a reusable nested contract
-- JSON document size no longer bound by string size limits
+- JSON document size is no longer bound by string size limits
 
 It is especially useful if you want to:
 
