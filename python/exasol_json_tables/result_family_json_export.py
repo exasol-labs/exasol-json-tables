@@ -228,13 +228,13 @@ def export_root_family_to_json(
             row_list.sort(key=lambda item: item["_pos"])
         rows_by_parent[table_name] = parent_rows
 
-    relationships_by_parent: dict[str, list[Any]] = {}
-    relationship_by_parent_segment: dict[tuple[str, str], Any] = {}
+    relationship_by_parent_segment_kind: dict[tuple[str, str, str], Any] = {}
     for relationship in resolved_family_description.relationships:
         if root_by_table[relationship.parent_table] != resolved_root_table:
             continue
-        relationships_by_parent.setdefault(relationship.parent_table, []).append(relationship)
-        relationship_by_parent_segment[(relationship.parent_table, relationship.segment_name)] = relationship
+        relationship_by_parent_segment_kind[
+            (relationship.parent_table, relationship.segment_name, relationship.relation_kind)
+        ] = relationship
 
     def scalar_group_value(group, row: dict[str, Any]) -> Any:
         if group.primary is not None:
@@ -249,53 +249,56 @@ def export_root_family_to_json(
             return None
         return MISSING
 
+    def group_value(table_name: str, group, row: dict[str, Any]) -> Any:
+        object_relation = relationship_by_parent_segment_kind.get((table_name, group.base_name, "object"))
+        if object_relation is not None:
+            child_id = row.get(f"{group.base_name}|object")
+            if child_id is not None:
+                child_row = rows_by_id[object_relation.child_table].get(normalize_scalar(child_id))
+                if child_row is None:
+                    raise AssertionError(
+                        f"Missing child row {object_relation.child_table}.{child_id} "
+                        f"for {table_name}.{group.base_name}"
+                    )
+                return build_object(object_relation.child_table, child_row)
+
+        array_relation = relationship_by_parent_segment_kind.get((table_name, group.base_name, "array"))
+        if array_relation is not None:
+            array_marker = row.get(f"{group.base_name}|array")
+            if array_marker is not None:
+                return build_array_elements(
+                    array_relation.child_table,
+                    normalize_scalar(row["_id"]),
+                )
+
+        return scalar_group_value(group, row)
+
     def build_array_elements(table_name: str, parent_id: Any) -> list[Any]:
         table_rows = rows_by_parent.get(table_name, {}).get(parent_id, [])
         model = table_models[table_name]
-        table_relationships = relationships_by_parent.get(table_name, [])
-        if set(model.groups) == {"_value"} and not table_relationships:
+        if "_parent" in {column.name for column in model.columns} and "_value" in model.groups:
             value_group = model.groups["_value"]
+            has_object_groups = any(group.base_name != "_value" for group in model.groups.values())
             elements: list[Any] = []
             for row in table_rows:
-                value = scalar_group_value(value_group, row)
-                elements.append(None if value is MISSING else value)
+                object_value = build_object(table_name, row, include_value_group=False) if has_object_groups else {}
+                value = group_value(table_name, value_group, row)
+                if has_object_groups and (object_value or value is MISSING):
+                    elements.append(object_value)
+                else:
+                    elements.append(None if value is MISSING else value)
             return elements
         return [build_object(table_name, row) for row in table_rows]
 
-    def build_object(table_name: str, row: dict[str, Any]) -> dict[str, Any]:
+    def build_object(table_name: str, row: dict[str, Any], *, include_value_group: bool = True) -> dict[str, Any]:
         model = table_models[table_name]
         document: dict[str, Any] = {}
         for group in sorted(model.groups.values(), key=lambda item: item.base_name):
-            relation = relationship_by_parent_segment.get((table_name, group.base_name))
-            if relation is not None and relation.relation_kind == "object":
-                child_id = row.get(f"{group.base_name}|object")
-                if child_id is not None:
-                    child_row = rows_by_id[relation.child_table].get(normalize_scalar(child_id))
-                    if child_row is None:
-                        raise AssertionError(
-                            f"Missing child row {relation.child_table}.{child_id} "
-                            f"for {table_name}.{group.base_name}"
-                        )
-                    document[group.base_name] = build_object(relation.child_table, child_row)
-                    continue
-                if group.null_mask is not None and row.get(group.null_mask.name) is True:
-                    document[group.base_name] = None
-                    continue
-            elif relation is not None and relation.relation_kind == "array":
-                array_marker = row.get(f"{group.base_name}|array")
-                if array_marker is not None:
-                    document[group.base_name] = build_array_elements(
-                        relation.child_table,
-                        normalize_scalar(row["_id"]),
-                    )
-                    continue
-                if group.null_mask is not None and row.get(group.null_mask.name) is True:
-                    document[group.base_name] = None
-                    continue
-
-            scalar_value = scalar_group_value(group, row)
-            if scalar_value is not MISSING:
-                document[group.base_name] = scalar_value
+            if not include_value_group and group.base_name == "_value":
+                continue
+            value = group_value(table_name, group, row)
+            if value is not MISSING:
+                document[group.base_name] = value
 
         return document
 

@@ -168,7 +168,13 @@ def _scalar_value_json_expr(quote_string_udf: str, column: ColumnMeta, expr: str
     return f"{quote_string_udf}(CAST({expr} AS VARCHAR(2000000)))"
 
 
-def _scalar_group_fragment_expr(quote_string_udf: str, group: Group, base_alias: str) -> tuple[str, str] | None:
+def _scalar_group_fragment_expr(
+    quote_string_udf: str,
+    group: Group,
+    base_alias: str,
+    *,
+    include_null_mask: bool = True,
+) -> tuple[str, str] | None:
     value_branches: list[tuple[str, str]] = []
     if group.primary is not None:
         expr = f'{base_alias}.{quote_identifier(group.primary.name)}'
@@ -177,7 +183,7 @@ def _scalar_group_fragment_expr(quote_string_udf: str, group: Group, base_alias:
         expr = f'{base_alias}.{quote_identifier(alternate.name)}'
         value_branches.append((f"{expr} IS NOT NULL", _scalar_value_json_expr(quote_string_udf, alternate, expr)))
 
-    if not value_branches and group.null_mask is None:
+    if not value_branches and (group.null_mask is None or not include_null_mask):
         return None
 
     fragments: list[str] = []
@@ -187,16 +193,48 @@ def _scalar_group_fragment_expr(quote_string_udf: str, group: Group, base_alias:
     for condition, rendered in value_branches:
         fragments.append(f"WHEN {condition} THEN {property_prefix} || {rendered}")
         presence_terms.append(condition)
-    if group.null_mask is not None:
+    if include_null_mask and group.null_mask is not None:
         null_mask_expr = f'{base_alias}.{quote_identifier(group.null_mask.name)}'
         fragments.append(f"WHEN {null_mask_expr} IS TRUE THEN {property_null}")
         presence_terms.append(f"{null_mask_expr} IS TRUE")
 
+    if not fragments or not presence_terms:
+        return None
+
     return ("CASE " + " ".join(fragments) + " END", " OR ".join(presence_terms))
 
 
-def _scalar_array_table(model: TableModel, child_relationships: list[Any]) -> bool:
-    return set(model.groups) == {"_value"} and not child_relationships
+def _value_group_json_expr(
+    quote_string_udf: str,
+    group: Group,
+    base_alias: str,
+    *,
+    object_alias: str | None = None,
+    array_alias: str | None = None,
+) -> str | None:
+    branches: list[tuple[str, str]] = []
+    if group.primary is not None:
+        expr = f'{base_alias}.{quote_identifier(group.primary.name)}'
+        branches.append((f"{expr} IS NOT NULL", _scalar_value_json_expr(quote_string_udf, group.primary, expr)))
+    for alternate in sorted(group.alternates, key=lambda column: column.ordinal):
+        expr = f'{base_alias}.{quote_identifier(alternate.name)}'
+        branches.append((f"{expr} IS NOT NULL", _scalar_value_json_expr(quote_string_udf, alternate, expr)))
+    if group.object_member is not None:
+        marker_expr = f'{base_alias}.{quote_identifier(group.object_member.name)}'
+        if object_alias is None:
+            raise AssertionError(f"Value group {group.base_name} is missing an object export alias")
+        branches.append((f"{marker_expr} IS NOT NULL", f"{object_alias}.j"))
+    if group.array_member is not None:
+        marker_expr = f'{base_alias}.{quote_identifier(group.array_member.name)}'
+        if array_alias is None:
+            raise AssertionError(f"Value group {group.base_name} is missing an array export alias")
+        branches.append((f"{marker_expr} IS NOT NULL", f"COALESCE({array_alias}.j, '[]')"))
+    if group.null_mask is not None:
+        null_mask_expr = f'{base_alias}.{quote_identifier(group.null_mask.name)}'
+        branches.append((f"{null_mask_expr} IS TRUE", "'null'"))
+    if not branches:
+        return None
+    return "CASE " + " ".join(f"WHEN {condition} THEN {rendered}" for condition, rendered in branches) + " END"
 
 
 def _structural_key_columns(model: TableModel) -> list[str]:
@@ -226,12 +264,14 @@ def _build_root_export_select_sql(
 ) -> str:
     udf_names = helper_names(udf_schema)
     relationships_by_parent: dict[str, list[Any]] = {}
-    relationship_by_parent_segment: dict[tuple[str, str], Any] = {}
+    relationship_by_parent_segment_kind: dict[tuple[str, str, str], Any] = {}
     for relationship in relationships:
         if root_by_table[relationship.parent_table] != root_table:
             continue
         relationships_by_parent.setdefault(relationship.parent_table, []).append(relationship)
-        relationship_by_parent_segment[(relationship.parent_table, relationship.segment_name)] = relationship
+        relationship_by_parent_segment_kind[
+            (relationship.parent_table, relationship.segment_name, relationship.relation_kind)
+        ] = relationship
 
     visited: set[str] = set()
     postorder: list[str] = []
@@ -262,36 +302,206 @@ def _build_root_export_select_sql(
         if not key_columns:
             raise AssertionError(f"Table {table_name} has no structural key columns")
 
-        if _scalar_array_table(model, child_relationships):
+        if has_parent and "_value" in model.groups:
             group = model.groups["_value"]
-            value_column = group.primary or (group.alternates[0] if group.alternates else None)
+            non_value_groups = [item for item in sorted(model.groups.values(), key=lambda entry: entry.base_name) if item.base_name != "_value"]
             key_select_sql = ",\n      ".join(
                 f'base.{quote_identifier(column_name)} AS {quote_identifier(column_name)}'
                 for column_name in key_columns
             )
-            if value_column is None:
-                if group.null_mask is None:
-                    raise AssertionError(f"Scalar array table {table_name} has no value column")
-                json_expr = "'null'"
-            else:
-                value_expr = _scalar_value_json_expr(
-                    udf_names.json_quote_string,
-                    value_column,
-                    f'base.{quote_identifier(value_column.name)}',
+            object_relation = relationship_by_parent_segment_kind.get((table_name, "_value", "object"))
+            array_relation = relationship_by_parent_segment_kind.get((table_name, "_value", "array"))
+            join_lines: list[str] = []
+            object_alias: str | None = None
+            array_alias: str | None = None
+            if object_relation is not None:
+                object_alias = "child_value_obj"
+                marker_expr = f'base.{quote_identifier(group.object_member.name)}'
+                join_lines.append(
+                    f"LEFT JOIN {row_ctes[object_relation.child_table]} {object_alias}\n"
+                    f'      ON {object_alias}."_id" = {marker_expr}'
                 )
-                json_expr = f"""CASE
-        WHEN base.{quote_identifier(value_column.name)} IS NULL THEN 'null'
-        ELSE {value_expr}
-      END"""
-            ctes.append(
-                f"""
+            if array_relation is not None:
+                if "_id" not in key_columns:
+                    raise AssertionError(f"Value array table {table_name} is missing _id for nested array export")
+                array_alias = "child_value_arr"
+                join_lines.append(
+                    f"LEFT JOIN {array_ctes[array_relation.child_table]} {array_alias}\n"
+                    f'      ON {array_alias}.parent_id = base."_id"'
+                )
+            json_expr = _value_group_json_expr(
+                udf_names.json_quote_string,
+                group,
+                "base",
+                object_alias=object_alias,
+                array_alias=array_alias,
+            )
+            if not non_value_groups:
+                if json_expr is None:
+                    raise AssertionError(f"Value array table {table_name} has no serializable value branches")
+                joins_sql = ""
+                if join_lines:
+                    joins_sql = "\n    " + "\n    ".join(join_lines)
+                ctes.append(
+                    f"""
 {row_cte} AS (
     SELECT
       {key_select_sql},
       {json_expr} AS j
+    FROM {source_qtable} base{joins_sql}
+)""".strip()
+                )
+            else:
+                object_fragment_cte = _cte_name("fragments", table_name)
+                object_row_cte = _cte_name("objectjson", table_name)
+                fragment_selects: list[str] = []
+                fragment_key_sql = ",\n      ".join(
+                    f'base.{quote_identifier(column_name)} AS {quote_identifier(column_name)}'
+                    for column_name in key_columns
+                )
+                group_ord = 0
+                for value_group in non_value_groups:
+                    object_child_relation = relationship_by_parent_segment_kind.get(
+                        (table_name, value_group.base_name, "object")
+                    )
+                    array_child_relation = relationship_by_parent_segment_kind.get(
+                        (table_name, value_group.base_name, "array")
+                    )
+                    group_ord += 10
+                    if value_group.null_mask is not None:
+                        null_mask_expr = f'base.{quote_identifier(value_group.null_mask.name)}'
+                        fragment_selects.append(
+                            f"""
+    SELECT
+      {fragment_key_sql},
+      {group_ord} AS ord,
+      {sql_literal(value_group.base_name)} AS frag_key,
+      {sql_literal(f'"{value_group.base_name}":null')} AS frag
+    FROM {source_qtable} base
+    WHERE {null_mask_expr} IS TRUE""".strip()
+                        )
+                    if object_child_relation is not None:
+                        if "_id" not in key_columns:
+                            raise AssertionError(
+                                f"Object relation parent {table_name} is missing _id for {value_group.base_name}"
+                            )
+                        child_cte = row_ctes[object_child_relation.child_table]
+                        marker_expr = f'base.{quote_identifier(value_group.base_name + "|object")}'
+                        fragment_selects.append(
+                            f"""
+    SELECT
+      {fragment_key_sql},
+      {group_ord} AS ord,
+      {sql_literal(value_group.base_name)} AS frag_key,
+      {sql_literal(f'"{value_group.base_name}":')} || child.j AS frag
+    FROM {source_qtable} base
+    JOIN {child_cte} child
+      ON child."_id" = {marker_expr}
+    WHERE {marker_expr} IS NOT NULL""".strip()
+                        )
+                    if array_child_relation is not None:
+                        if "_id" not in key_columns:
+                            raise AssertionError(
+                                f"Array relation parent {table_name} is missing _id for {value_group.base_name}"
+                            )
+                        child_array_cte = array_ctes[array_child_relation.child_table]
+                        marker_expr = f'base.{quote_identifier(value_group.base_name + "|array")}'
+                        fragment_selects.append(
+                            f"""
+    SELECT
+      {fragment_key_sql},
+      {group_ord} AS ord,
+      {sql_literal(value_group.base_name)} AS frag_key,
+      {sql_literal(f'"{value_group.base_name}":')} || COALESCE(child_arr.j, '[]') AS frag
+    FROM {source_qtable} base
+    LEFT JOIN {child_array_cte} child_arr
+      ON child_arr.parent_id = base."_id"
+    WHERE {marker_expr} IS NOT NULL""".strip()
+                        )
+                    fragment_expr = _scalar_group_fragment_expr(
+                        udf_names.json_quote_string,
+                        value_group,
+                        "base",
+                        include_null_mask=False,
+                    )
+                    if fragment_expr is not None:
+                        rendered, predicate = fragment_expr
+                        fragment_selects.append(
+                            f"""
+    SELECT
+      {fragment_key_sql},
+      {group_ord} AS ord,
+      {sql_literal(value_group.base_name)} AS frag_key,
+      {rendered} AS frag
+    FROM {source_qtable} base
+    WHERE {predicate}""".strip()
+                        )
+
+                if fragment_selects:
+                    key_select_columns = [
+                        f'base.{quote_identifier(column_name)} AS {quote_identifier(column_name)}'
+                        for column_name in key_columns
+                    ]
+                    group_by_columns = [f'base.{quote_identifier(column_name)}' for column_name in key_columns]
+                    join_predicates = [
+                        f'frag.{quote_identifier(column_name)} = base.{quote_identifier(column_name)}'
+                        for column_name in key_columns
+                    ]
+                    object_select_columns = list(key_select_columns)
+                    object_select_columns.append(
+                        f"{udf_names.json_object_from_fragments}(frag.ord, frag.frag) AS j"
+                    )
+                    fragment_union_sql = "\n".join(
+                        ["    " + fragment_selects[0]]
+                        + ["    UNION ALL\n    " + item for item in fragment_selects[1:]]
+                    )
+                    ctes.append(
+                        f"""
+{object_fragment_cte} AS (
+{fragment_union_sql}
+),
+{object_row_cte} AS (
+    SELECT
+      {", ".join(object_select_columns)}
+    FROM {source_qtable} base
+    LEFT JOIN {object_fragment_cte} frag
+      ON {" AND ".join(join_predicates)}
+    GROUP BY {", ".join(group_by_columns)}
+)""".strip()
+                    )
+                else:
+                    ctes.append(
+                        f"""
+{object_row_cte} AS (
+    SELECT
+      {key_select_sql},
+      '{{}}' AS j
     FROM {source_qtable} base
 )""".strip()
-            )
+                    )
+
+                join_predicates = [
+                    f'obj_json.{quote_identifier(column_name)} = base.{quote_identifier(column_name)}'
+                    for column_name in key_columns
+                ]
+                final_json_expr = "obj_json.j"
+                if json_expr is not None:
+                    final_json_expr = (
+                        f"CASE WHEN obj_json.j <> '{{}}' THEN obj_json.j "
+                        f"ELSE COALESCE({json_expr}, obj_json.j) END"
+                    )
+                ctes.append(
+                    f"""
+{row_cte} AS (
+    SELECT
+      {key_select_sql},
+      {final_json_expr} AS j
+    FROM {source_qtable} base
+    LEFT JOIN {object_row_cte} obj_json
+      ON {" AND ".join(join_predicates)}{''.join(f'''
+    {line}''' for line in join_lines)}
+)""".strip()
+                )
         else:
             fragment_cte = _cte_name("fragments", table_name)
             fragment_ctes[table_name] = fragment_cte
@@ -302,19 +512,13 @@ def _build_root_export_select_sql(
             )
             group_ord = 0
             for group in sorted(model.groups.values(), key=lambda item: item.base_name):
-                relation = relationship_by_parent_segment.get((table_name, group.base_name))
+                object_relation = relationship_by_parent_segment_kind.get((table_name, group.base_name, "object"))
+                array_relation = relationship_by_parent_segment_kind.get((table_name, group.base_name, "array"))
                 group_ord += 10
-                if relation is not None and relation.relation_kind == "object":
-                    if "_id" not in key_columns:
-                        raise AssertionError(
-                            f"Object relation parent {table_name} is missing _id for {group.base_name}"
-                        )
-                    child_cte = row_ctes[relation.child_table]
-                    marker_expr = f'base.{quote_identifier(group.base_name + "|object")}'
-                    if group.null_mask is not None:
-                        null_mask_expr = f'base.{quote_identifier(group.null_mask.name)}'
-                        fragment_selects.append(
-                            f"""
+                if group.null_mask is not None:
+                    null_mask_expr = f'base.{quote_identifier(group.null_mask.name)}'
+                    fragment_selects.append(
+                        f"""
     SELECT
       {fragment_key_sql},
       {group_ord} AS ord,
@@ -322,7 +526,14 @@ def _build_root_export_select_sql(
       {sql_literal(f'"{group.base_name}":null')} AS frag
     FROM {source_qtable} base
     WHERE {null_mask_expr} IS TRUE""".strip()
+                    )
+                if object_relation is not None:
+                    if "_id" not in key_columns:
+                        raise AssertionError(
+                            f"Object relation parent {table_name} is missing _id for {group.base_name}"
                         )
+                    child_cte = row_ctes[object_relation.child_table]
+                    marker_expr = f'base.{quote_identifier(group.base_name + "|object")}'
                     fragment_selects.append(
                         f"""
     SELECT
@@ -335,27 +546,14 @@ def _build_root_export_select_sql(
       ON child."_id" = {marker_expr}
     WHERE {marker_expr} IS NOT NULL""".strip()
                     )
-                    continue
 
-                if relation is not None and relation.relation_kind == "array":
+                if array_relation is not None:
                     if "_id" not in key_columns:
                         raise AssertionError(
                             f"Array relation parent {table_name} is missing _id for {group.base_name}"
                         )
-                    child_array_cte = array_ctes[relation.child_table]
+                    child_array_cte = array_ctes[array_relation.child_table]
                     marker_expr = f'base.{quote_identifier(group.base_name + "|array")}'
-                    if group.null_mask is not None:
-                        null_mask_expr = f'base.{quote_identifier(group.null_mask.name)}'
-                        fragment_selects.append(
-                            f"""
-    SELECT
-      {fragment_key_sql},
-      {group_ord} AS ord,
-      {sql_literal(group.base_name)} AS frag_key,
-      {sql_literal(f'"{group.base_name}":null')} AS frag
-    FROM {source_qtable} base
-    WHERE {null_mask_expr} IS TRUE""".strip()
-                        )
                     fragment_selects.append(
                         f"""
     SELECT
@@ -368,9 +566,13 @@ def _build_root_export_select_sql(
       ON child_arr.parent_id = base."_id"
     WHERE {marker_expr} IS NOT NULL""".strip()
                     )
-                    continue
 
-                fragment_expr = _scalar_group_fragment_expr(udf_names.json_quote_string, group, "base")
+                fragment_expr = _scalar_group_fragment_expr(
+                    udf_names.json_quote_string,
+                    group,
+                    "base",
+                    include_null_mask=False,
+                )
                 if fragment_expr is None:
                     continue
                 rendered, predicate = fragment_expr

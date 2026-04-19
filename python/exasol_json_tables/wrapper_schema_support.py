@@ -114,12 +114,18 @@ def encode_path_component(name: str) -> str:
     return "".join(out)
 
 
+def physical_segment_name(name: str) -> str:
+    if name == "_value":
+        return "value"
+    return name
+
+
 def derive_child_table_name(parent_table_name: str, segment_name: str) -> str:
-    return f"{parent_table_name}_{encode_path_component(segment_name)}"
+    return f"{parent_table_name}_{encode_path_component(physical_segment_name(segment_name))}"
 
 
 def derive_array_child_table_name(parent_table_name: str, segment_name: str) -> str:
-    return f"{parent_table_name}_{encode_path_component(segment_name)}_arr"
+    return f"{parent_table_name}_{encode_path_component(physical_segment_name(segment_name))}_arr"
 
 
 def fetch_source_columns(con, source_schema: str) -> dict[str, list[ColumnMeta]]:

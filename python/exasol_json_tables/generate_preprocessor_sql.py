@@ -687,10 +687,16 @@ JOIN_MODE_LUA = """
     end
 
     local function derive_child_table_name(parent_table_name, segment)
+        if segment == "_value" then
+            segment = "value"
+        end
         return parent_table_name .. "_" .. encode_path_component(segment)
     end
 
     local function derive_array_child_table_name(parent_table_name, segment)
+        if segment == "_value" then
+            segment = "value"
+        end
         return parent_table_name .. "_" .. encode_path_component(segment) .. "_arr"
     end
 
