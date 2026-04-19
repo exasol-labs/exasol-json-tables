@@ -118,58 +118,118 @@ Important semantics:
 
 ## Quickstart Example
 
-For a durable structured result, the easiest starting point is usually `structured_shape`.
+This is the end-to-end generated-package path:
 
-Example:
+1. quickstart a wrapped JSON surface
+2. model a nested structured result on top of that wrapper
+3. package and deploy the result
+4. finish with `TO_JSON(*)`
+
+Start with the normal one-shot wrapper workflow:
+
+```bash
+exasol-json-tables ingest-and-wrap \
+  --input ./sample.json \
+  --name quickstart_sample \
+  --wrapper-schema JSON_VIEW_SAMPLE \
+  --helper-schema JSON_VIEW_SAMPLE_INTERNAL \
+  --preprocessor-schema JVS_SAMPLE_PP \
+  --preprocessor-script JSON_SAMPLE_PREPROCESSOR \
+  --package-name quickstart_sample_wrapper \
+  --artifact-dir ./dist/exasol-json-tables \
+  --exasol-temp-dir /tmp/exasol-json-tables
+```
+
+Then author a `structured_shape` config over that generated wrapper surface:
 
 ```json
 {
   "kind": "structured_shape",
-  "rootTable": "DOC_REPORT",
+  "rootTable": "SAMPLE_REPORT",
   "root": {
-    "fromSql": "FROM JSON_VIEW.SAMPLE",
-    "idSql": "\"id\"",
+    "fromSql": "FROM \"JSON_VIEW_SAMPLE\".\"sample\" s",
+    "idSql": "s.\"id\"",
     "fields": [
-      {"name": "doc_id", "sql": "\"id\""},
-      {"name": "items", "kind": "array_ref", "sql": "CASE WHEN \"items[SIZE]\" IS NULL THEN 0 ELSE \"items[SIZE]\" END"}
+      {"name": "sample_id", "sql": "s.\"id\""},
+      {"name": "name", "sql": "JSON_AS_VARCHAR(s.\"name\")"},
+      {
+        "name": "note_state",
+        "sql": "CASE WHEN JSON_IS_EXPLICIT_NULL(s.\"note\") THEN 'explicit-null' WHEN s.\"note\" IS NULL THEN 'missing' ELSE 'value' END"
+      },
+      {"name": "summary", "kind": "object_ref", "sql": "s.\"id\""},
+      {
+        "name": "tags",
+        "kind": "array_ref",
+        "sql": "CASE WHEN s.\"tags[SIZE]\" IS NULL THEN 0 ELSE s.\"tags[SIZE]\" END"
+      }
+    ],
+    "objects": [
+      {
+        "name": "summary",
+        "fromSql": "FROM \"JSON_VIEW_SAMPLE\".\"sample\" s",
+        "idSql": "s.\"id\"",
+        "fields": [
+          {"name": "team", "sql": "s.\"meta.team\""},
+          {"name": "last_tag", "sql": "s.\"tags[LAST]\""}
+        ]
+      }
     ],
     "arrays": [
       {
-        "name": "items",
-        "fromSql": "FROM JSON_VIEW.SAMPLE s JOIN item IN s.\"items\"",
-        "rowIdSql": "CAST((s.\"id\" * 100) + item._index + 1 AS DECIMAL(18,0))",
+        "name": "tags",
+        "fromSql": "FROM \"JSON_VIEW_SAMPLE\".\"sample\" s JOIN VALUE tag IN s.\"tags\"",
         "parentIdSql": "s.\"id\"",
-        "positionSql": "item._index",
-        "fields": [
-          {"name": "label", "sql": "item.label"},
-          {"name": "value", "sql": "item.value"}
-        ]
+        "positionSql": "tag._index",
+        "valueSql": "tag"
       }
     ]
   }
 }
 ```
 
-After installation and activation, the structured result behaves like any other wrapped JSON document surface:
+Package the result:
+
+```bash
+exasol-json-tables structured-results package \
+  --source-schema JVS_SAMPLE_REPORT_SRC \
+  --wrapper-schema JSON_VIEW_SAMPLE_REPORT \
+  --helper-schema JSON_VIEW_SAMPLE_REPORT_INTERNAL \
+  --preprocessor-schema JVS_SAMPLE_REPORT_PP \
+  --preprocessor-script JSON_SAMPLE_REPORT_PREPROCESSOR \
+  --output-dir ./dist/exasol-json-tables \
+  --package-name sample_report \
+  --result-family-config ./dist/exasol-json-tables/sample_report_shape.json
+```
+
+Deploy the generated result package through the normal wrapper lifecycle:
+
+```bash
+exasol-json-tables wrap deploy \
+  --package-config ./dist/exasol-json-tables/sample_report_package.json
+```
+
+After activation, the wrapped result behaves like any other JSON-document surface:
 
 ```sql
-ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_RESULT_PP.JSON_RESULT_PREPROCESSOR;
+ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_SAMPLE_REPORT_PP.JSON_SAMPLE_REPORT_PREPROCESSOR;
 
 SELECT
-  CAST("doc_id" AS VARCHAR(10)),
-  COALESCE("items[FIRST].label", 'NULL'),
-  COALESCE("items[LAST].value", 'NULL')
-FROM JSON_VIEW_RESULT.DOC_REPORT
-ORDER BY "doc_id";
+  CAST("sample_id" AS VARCHAR(10)),
+  COALESCE("summary.team", 'NULL'),
+  COALESCE("tags[LAST]", 'NULL')
+FROM JSON_VIEW_SAMPLE_REPORT.SAMPLE_REPORT
+ORDER BY "sample_id";
 ```
 
 And when you want the final document payload:
 
 ```sql
 SELECT TO_JSON(*) AS doc_json
-FROM JSON_VIEW_RESULT.DOC_REPORT
+FROM JSON_VIEW_SAMPLE_REPORT.SAMPLE_REPORT
 ORDER BY "_id";
 ```
+
+For the complete runnable regression behind this example, see [tests/test_quickstart_structured_result_flow.py](../tests/test_quickstart_structured_result_flow.py).
 
 ## Structured Results From Regular Tables
 

@@ -262,6 +262,20 @@ Verifies:
 - one-shot `preview-json` materialize-and-preview workflows
 - durable packaging from the same higher-level shape config
 
+### Quickstart To Structured Result
+
+```bash
+python3 tests/test_quickstart_structured_result_flow.py
+```
+
+Verifies:
+
+- the one-shot `ingest-and-wrap` quickstart on a real JSON fixture
+- helper and rowset queries on the generated wrapper package path
+- modeling a nested `structured_shape` result over that generated wrapper
+- packaging and deploying the nested result through the normal generated-package lifecycle
+- final recursive JSON emission through `TO_JSON(*)` on the wrapped result
+
 ### Durable Result-Family Package
 
 ```bash

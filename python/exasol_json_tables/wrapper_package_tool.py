@@ -732,6 +732,169 @@ def print_activation_reminder(config: dict[str, Any], smoke_test_sql: str) -> No
     print(smoke_test_sql)
 
 
+def visible_group_names(table: dict[str, Any]) -> list[str]:
+    return [
+        group["visibleName"]
+        for group in table.get("groups", [])
+        if group.get("visibleName") not in {None, "_id"}
+    ]
+
+
+def group_has_scalar_member(group: dict[str, Any]) -> bool:
+    return any(
+        not member["name"].endswith("|object") and not member["name"].endswith("|array")
+        for member in group.get("members", [])
+    )
+
+
+def build_installed_helper_probe(config: dict[str, Any], manifest: dict[str, Any]) -> tuple[str, str] | None:
+    helper_profile = config.get("helperProfile", {})
+    variant_varchar_helpers = helper_profile.get("variantVarcharFunctionNames") or []
+    explicit_null_helpers = helper_profile.get("explicitNullFunctionNames") or []
+    variant_typeof_helpers = helper_profile.get("variantTypeofFunctionNames") or []
+    wrapper_schema = config["wrapperSchema"]
+    table_lookup = {table["tableName"]: table for table in manifest["tables"]}
+
+    for root in sorted(manifest["roots"], key=lambda root: root["publicView"]):
+        root_table = table_lookup[root["tableName"]]
+
+        scalar_groups = [
+            group for group in root_table.get("groups", [])
+            if group.get("visibleName") not in {None, "_id"} and group_has_scalar_member(group)
+        ]
+        if variant_varchar_helpers and scalar_groups:
+            group_name = choose_preferred_scalar_name([group["visibleName"] for group in scalar_groups])
+            if group_name is not None:
+                helper_name = variant_varchar_helpers[0]
+                return (
+                    "qualified-helper",
+                    (
+                        f'SELECT COALESCE({helper_name}(s.{encode_quoted_identifier(group_name)}), \'NULL\') '
+                        f'FROM {encode_quoted_identifier(wrapper_schema)}.{encode_quoted_identifier(root["publicView"])} s '
+                        "LIMIT 1"
+                    ),
+                )
+
+        null_mask_groups = [
+            group for group in root_table.get("groups", [])
+            if group.get("visibleName") not in {None, "_id"} and group.get("nullMaskName") is not None
+        ]
+        if explicit_null_helpers and null_mask_groups:
+            group_name = choose_preferred_scalar_name([group["visibleName"] for group in null_mask_groups])
+            if group_name is None:
+                group_name = sorted(group["visibleName"] for group in null_mask_groups)[0]
+            helper_name = explicit_null_helpers[0]
+            return (
+                "qualified-helper",
+                (
+                    f"SELECT CASE WHEN {helper_name}(s.{encode_quoted_identifier(group_name)}) THEN '1' ELSE '0' END "
+                    f'FROM {encode_quoted_identifier(wrapper_schema)}.{encode_quoted_identifier(root["publicView"])} s '
+                    "LIMIT 1"
+                ),
+            )
+
+        visible_groups = visible_group_names(root_table)
+        if variant_typeof_helpers and visible_groups:
+            group_name = choose_preferred_scalar_name(visible_groups) or sorted(visible_groups)[0]
+            helper_name = variant_typeof_helpers[0]
+            return (
+                "qualified-helper",
+                (
+                    f"SELECT COALESCE({helper_name}(s.{encode_quoted_identifier(group_name)}), 'MISSING') "
+                    f'FROM {encode_quoted_identifier(wrapper_schema)}.{encode_quoted_identifier(root["publicView"])} s '
+                    "LIMIT 1"
+                ),
+            )
+
+    return None
+
+
+def build_installed_to_json_probe(config: dict[str, Any], manifest: dict[str, Any]) -> tuple[str, str] | None:
+    to_json_helpers = config.get("helperProfile", {}).get("toJsonFunctionNames") or []
+    if not to_json_helpers:
+        return None
+    root = min(manifest["roots"], key=lambda item: item["publicView"])
+    return (
+        "TO_JSON(*)",
+        (
+            f'SELECT {to_json_helpers[0]}(*) '
+            f'FROM {encode_quoted_identifier(config["wrapperSchema"])}.{encode_quoted_identifier(root["publicView"])} '
+            "LIMIT 1"
+        ),
+    )
+
+
+def build_installed_rowset_probe(config: dict[str, Any], manifest: dict[str, Any]) -> tuple[str, str] | None:
+    wrapper_schema = config["wrapperSchema"]
+    table_lookup = {table["tableName"]: table for table in manifest["tables"]}
+    relationship_lookup: dict[str, list[dict[str, Any]]] = {}
+    for root in manifest["roots"]:
+        for relationship in root.get("relationships", []):
+            relationship_lookup.setdefault(relationship["parentTable"], []).append(relationship)
+
+    candidates: list[tuple[tuple[int, int, str, str], str]] = []
+
+    def classify_array_child(table_name: str) -> str | None:
+        child_table = table_lookup.get(table_name)
+        if child_table is None:
+            return None
+        group_names = {group["baseName"] for group in child_table.get("groups", [])}
+        child_relationships = relationship_lookup.get(table_name, [])
+        if "_value" not in group_names:
+            return "object"
+        if group_names == {"_value"} and not child_relationships:
+            return "value"
+        return None
+
+    def collect_array_paths(table_name: str, prefix: list[str]) -> list[tuple[list[str], str]]:
+        out: list[tuple[list[str], str]] = []
+        for relationship in relationship_lookup.get(table_name, []):
+            segment = relationship["segmentName"]
+            if relationship["relationKind"] == "array":
+                out.append((prefix + [segment], relationship["childTable"]))
+            elif relationship["relationKind"] == "object":
+                out.extend(collect_array_paths(relationship["childTable"], prefix + [segment]))
+        return out
+
+    for root in sorted(manifest["roots"], key=lambda item: item["publicView"]):
+        for path_segments, child_table in collect_array_paths(root["tableName"], []):
+            array_kind = classify_array_child(child_table)
+            if array_kind is None:
+                continue
+            path_text = ".".join(path_segments)
+            join_prefix = "JOIN VALUE" if array_kind == "value" else "JOIN"
+            query = (
+                f"SELECT COUNT(*) "
+                f'FROM {encode_quoted_identifier(wrapper_schema)}.{encode_quoted_identifier(root["publicView"])} s '
+                f'{join_prefix} probe IN s.{encode_quoted_identifier(path_text)}'
+            )
+            score = (
+                0 if array_kind == "object" else 1,
+                len(path_segments),
+                root["publicView"],
+                path_text,
+            )
+            candidates.append((score, query))
+
+    if not candidates:
+        return None
+    return ("rowset", min(candidates, key=lambda item: item[0])[1])
+
+
+def build_installed_query_probes(config: dict[str, Any], manifest: dict[str, Any]) -> list[tuple[str, str]]:
+    probes: list[tuple[str, str]] = []
+    rowset_probe = build_installed_rowset_probe(config, manifest)
+    if rowset_probe is not None:
+        probes.append(rowset_probe)
+    helper_probe = build_installed_helper_probe(config, manifest)
+    if helper_probe is not None:
+        probes.append(helper_probe)
+    to_json_probe = build_installed_to_json_probe(config, manifest)
+    if to_json_probe is not None:
+        probes.append(to_json_probe)
+    return probes
+
+
 def validate_package_files(config_path: Path, config: dict[str, Any], manifest_path: Path, views_sql_path: Path, preprocessor_sql_path: Path) -> None:
     if not views_sql_path.exists():
         raise SystemExit(f"Wrapper views SQL file does not exist: {views_sql_path}")
@@ -755,7 +918,7 @@ def validate_package_files(config_path: Path, config: dict[str, Any], manifest_p
         load_result_family_manifest_and_validate(config, result_family_manifest_path)
 
 
-def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, Any]) -> None:
+def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, Any]) -> tuple[str, ...]:
     wrapper_schema = config["wrapperSchema"]
     helper_schema = config["helperSchema"]
     roots = sorted(root["publicView"] for root in manifest["roots"])
@@ -832,6 +995,26 @@ def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, 
     missing_helper_scripts = sorted(expected_helper_scripts - helper_script_names)
     if missing_helper_scripts:
         raise SystemExit(f"Installed helper schema is missing expected JSON export scripts: {missing_helper_scripts}")
+
+    executed_probe_labels: list[str] = []
+    query_probes = build_installed_query_probes(config, manifest)
+    if query_probes:
+        con.execute(build_activation_sql(config, include_semicolon=False))
+        try:
+            for label, query in query_probes:
+                rows = con.execute(query).fetchall()
+                if label == "TO_JSON(*)":
+                    for row in rows:
+                        if row[0] is None:
+                            raise SystemExit("Installed TO_JSON(*) validation query returned NULL.")
+                        json.loads(row[0])
+                executed_probe_labels.append(label)
+        finally:
+            try:
+                con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")
+            except Exception:
+                pass
+    return tuple(executed_probe_labels)
 
 
 def validate_installed_result_family(con, config: dict[str, Any], result_family_manifest: dict[str, Any]) -> None:
@@ -1024,9 +1207,11 @@ def command_validate(args: argparse.Namespace) -> None:
         try:
             if result_family_manifest is not None:
                 validate_installed_result_family(con, config, result_family_manifest)
-            validate_installed_package(con, config, manifest)
+            executed_probe_labels = validate_installed_package(con, config, manifest)
         finally:
             con.close()
+    else:
+        executed_probe_labels = ()
 
     print(f"Validated {config_path}")
     if args.check_installed:
@@ -1034,6 +1219,8 @@ def command_validate(args: argparse.Namespace) -> None:
             "Validated installed package for "
             f'{config["wrapperSchema"]}/{config["helperSchema"]}/{config["preprocessor"]["schema"]}.{config["preprocessor"]["script"]}'
         )
+        if executed_probe_labels:
+            print("Validated installed query probes: " + ", ".join(executed_probe_labels))
         print_activation_reminder(config, build_smoke_test_query(config, manifest))
 
 
