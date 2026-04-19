@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 import shutil
 import subprocess
 import tempfile
@@ -11,6 +12,8 @@ from typing import Optional
 
 import _bootstrap  # noqa: F401
 
+from exasol_json_tables import cli as cli_module
+from exasol_json_tables import wrapper_schema_support
 from nano_support import ROOT, connect
 
 
@@ -904,6 +907,120 @@ def test_unified_cli_json_failure_envelope() -> None:
     assert payload["errors"][0]["repro"]["argv"][0] == "validate"
 
 
+def test_unified_cli_error_repro_redacts_password() -> None:
+    missing_package_config = ROOT / "dist" / "does_not_exist_package.json"
+    result = subprocess.run(
+        [
+            "python3",
+            str(CLI),
+            "validate",
+            "--package-config",
+            str(missing_package_config),
+            "--password",
+            "mysecret",
+            "--json",
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    payload = json.loads(result.stdout)
+    argv = payload["errors"][0]["repro"]["argv"]
+    assert argv[0] == "validate"
+    assert "--password" in argv
+    assert "mysecret" not in argv
+    assert "***" in argv
+
+
+def test_unified_cli_ingest_json_artifacts_are_structured() -> None:
+    fixture_path = ROOT / "crates" / "json_tables_ingest" / "tests" / "fixtures" / "sample.json"
+    with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_ingest_json_") as tmpdir:
+        tmp = Path(tmpdir)
+        artifact_dir = tmp / "artifacts"
+        input_path = tmp / "sample.json"
+        shutil.copyfile(fixture_path, input_path)
+
+        result = subprocess.run(
+            [
+                "python3",
+                str(CLI),
+                "ingest",
+                "--input",
+                str(input_path),
+                "--artifact-dir",
+                str(artifact_dir),
+                "--json",
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "ok"
+        assert payload["command"] == "ingest"
+        artifacts = payload["artifacts"]
+        assert Path(artifacts["sourceManifest"]).name.endswith(".source_manifest.json")
+        assert Path(artifacts["outputDir"]).exists()
+        assert artifacts["parquetFiles"]
+        assert all(path.endswith(".parquet") for path in artifacts["parquetFiles"])
+
+
+def test_wrapper_generation_connection_ssl_options() -> None:
+    captured: list[dict[str, object]] = []
+    original_connect = wrapper_schema_support.pyexasol.connect
+    try:
+        def fake_connect(**kwargs):
+            captured.append(kwargs)
+            class DummyConnection:
+                pass
+            return DummyConnection()
+
+        wrapper_schema_support.pyexasol.connect = fake_connect
+        wrapper_schema_support.connect_for_generation("dsn", "user", "password")
+        wrapper_schema_support.connect_for_generation(
+            "dsn",
+            "user",
+            "password",
+            validate_certificate=True,
+        )
+    finally:
+        wrapper_schema_support.pyexasol.connect = original_connect
+
+    assert captured[0]["websocket_sslopt"]["cert_reqs"] == ssl.CERT_NONE
+    assert "websocket_sslopt" not in captured[1]
+
+
+def test_unified_cli_schema_ensure_propagates_certificate_validation() -> None:
+    calls: list[bool] = []
+
+    class DummyConnection:
+        def __init__(self) -> None:
+            self.executed: list[str] = []
+
+        def execute(self, sql: str):
+            self.executed.append(sql)
+
+        def close(self) -> None:
+            pass
+
+    original_connect = cli_module.connect_for_generation
+    try:
+        def fake_connect_for_generation(dsn, user, password, schema="SYS", validate_certificate=False):
+            calls.append(bool(validate_certificate))
+            return DummyConnection()
+
+        cli_module.connect_for_generation = fake_connect_for_generation
+        cli_module._ensure_schema_exists("dsn", "user", "password", "A_SCHEMA", validate_server_certificate=False)
+        cli_module._ensure_schema_exists("dsn", "user", "password", "B_SCHEMA", validate_server_certificate=True)
+    finally:
+        cli_module.connect_for_generation = original_connect
+
+    assert calls == [False, True]
+
+
 if __name__ == "__main__":
     test_unified_cli_ingest_wrap_validate_with_manifest_handoff()
     test_unified_cli_structured_results_preview_json()
@@ -913,5 +1030,9 @@ if __name__ == "__main__":
     test_unified_cli_ingest_and_wrap_json_summary()
     test_unified_cli_validate_and_describe_json_surfaces()
     test_unified_cli_json_failure_envelope()
+    test_unified_cli_error_repro_redacts_password()
+    test_unified_cli_ingest_json_artifacts_are_structured()
+    test_wrapper_generation_connection_ssl_options()
+    test_unified_cli_schema_ensure_propagates_certificate_validation()
     print("-- unified cli regression --")
     print("verified ingest/wrap/validate orchestration, wrap deploy, ingest-and-wrap defaults, and structured-results preview-json")

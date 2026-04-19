@@ -86,6 +86,8 @@ SELECT TO_JSON(*) AS doc_json
 FROM JSON_VIEW.CUSTOMER_EVENTS;
 ```
 
+If you want to continue from that generated wrapper into a nested modeled result and finish with `TO_JSON(*)` again on the wrapped result family, see the end-to-end example in [structured-results.md](structured-results.md#quickstart-example).
+
 If your environment already uses another SQL preprocessor, remember that Exasol only allows one active `SQL_PREPROCESSOR_SCRIPT` per session. Activating the JSON Tables preprocessor will replace the currently active one for that session.
 
 In that case, use a small master preprocessor script as the single active entrypoint. Keep the real rewrite logic in helper functions or helper scripts, have the master script call the existing preprocessor logic and the JSON Tables preprocessor logic in the required order, and activate the master script instead of trying to enable multiple preprocessors separately.
@@ -147,12 +149,13 @@ For normal user-facing workflows, prefer the installed `exasol-json-tables` comm
 
 For automation, CI, and autonomous agents, the main workflow commands support `--json`.
 
-That mode keeps stdout machine-readable and moves human-oriented progress logs to stderr. The JSON summary includes the key values an agent typically needs next, such as:
+That mode keeps stdout machine-readable and moves human-oriented progress logs to stderr. The JSON summary uses a stable success/failure envelope and includes the key values an agent typically needs next, such as:
 
 - source, wrapper, helper, and preprocessor names
 - package config and generated artifact paths
 - activation SQL
 - smoke-test SQL
+- installed validation capability probes
 - warnings about session activation and wrapper-only syntax
 
 Example:
@@ -167,6 +170,8 @@ exasol-json-tables ingest-and-wrap \
 ```
 
 `structured-results preview-json` already returns JSON rows, so it does not need a separate summary envelope unless you add one in a higher-level wrapper. Treat that command as preview/validation. The primary durable final-output path is `TO_JSON(...)` on the installed wrapper or result wrapper.
+
+For package and installed-wrapper discovery, use `exasol-json-tables describe package --json` or `exasol-json-tables describe wrapper --json`. For a full automation-oriented walkthrough, see [automation.md](automation.md).
 
 ## Next Reading
 

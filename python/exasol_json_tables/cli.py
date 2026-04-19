@@ -80,6 +80,25 @@ def _emit_json_summary(payload: dict[str, object]) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def _redacted_argv(argv: list[str]) -> list[str]:
+    redacted: list[str] = []
+    hide_next = False
+    for token in argv:
+        if hide_next:
+            redacted.append("***")
+            hide_next = False
+            continue
+        if token == "--password":
+            redacted.append(token)
+            hide_next = True
+            continue
+        if token.startswith("--password="):
+            redacted.append("--password=***")
+            continue
+        redacted.append(token)
+    return redacted
+
+
 def _wrapper_agent_warnings() -> list[str]:
     return [
         "Wrapper JSON syntax is session-scoped: activate the preprocessor in each SQL session before using path, bracket, iterator, or helper syntax.",
@@ -448,7 +467,7 @@ def _resolve_ingest_connection(args: argparse.Namespace, source_schema: str) -> 
                 password=str(parsed["password"]),
                 schema=resolved_schema,
                 tls=args.tls,
-                validate_server_certificate=args.validate_server_certificate,
+                validate_server_certificate=bool(getattr(args, "validate_server_certificate", False)),
                 extra_query=dict(parsed["query"]),
             ),
         }
@@ -464,13 +483,25 @@ def _resolve_ingest_connection(args: argparse.Namespace, source_schema: str) -> 
             password=args.password,
             schema=resolved_schema,
             tls=args.tls,
-            validate_server_certificate=args.validate_server_certificate,
+            validate_server_certificate=bool(getattr(args, "validate_server_certificate", False)),
         ),
     }
 
 
-def _ensure_schema_exists(dsn: str, user: str, password: str, schema: str) -> None:
-    con = connect_for_generation(dsn, user, password)
+def _ensure_schema_exists(
+    dsn: str,
+    user: str,
+    password: str,
+    schema: str,
+    *,
+    validate_server_certificate: bool = False,
+) -> None:
+    con = connect_for_generation(
+        dsn,
+        user,
+        password,
+        validate_certificate=validate_server_certificate,
+    )
     try:
         con.execute(f"CREATE SCHEMA IF NOT EXISTS {quote_identifier(schema)}")
     finally:
@@ -506,6 +537,24 @@ def add_ingest_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--exasol", default=None, help="Exasol connection URL.")
     parser.add_argument("--exasol-temp-dir", type=Path, default=None, help="Exasol staging directory.")
     parser.add_argument("--exasol-cleanup", action="store_true", help="Clean up staged Parquet files after upload.")
+    parser.add_argument(
+        "--tls",
+        action="store_true",
+        default=True,
+        help="Use TLS when constructing an Exasol ingest URL. Enabled by default.",
+    )
+    parser.add_argument(
+        "--no-tls",
+        dest="tls",
+        action="store_false",
+        help="Disable TLS when constructing an Exasol ingest URL.",
+    )
+    parser.add_argument(
+        "--validate-server-certificate",
+        action="store_true",
+        default=False,
+        help="Validate the server certificate when constructing an Exasol ingest URL. Default: disabled.",
+    )
     parser.add_argument(
         "--cargo-manifest-path",
         type=Path,
@@ -635,24 +684,6 @@ def add_ingest_and_wrap_arguments(parser: argparse.ArgumentParser) -> None:
         help="Directory for this workflow run's generated artifacts. Default: <artifact-dir>/<derived-name>.",
     )
     parser.add_argument(
-        "--tls",
-        action="store_true",
-        default=True,
-        help="Use TLS when constructing an Exasol ingest URL. Enabled by default.",
-    )
-    parser.add_argument(
-        "--no-tls",
-        dest="tls",
-        action="store_false",
-        help="Disable TLS when constructing an Exasol ingest URL.",
-    )
-    parser.add_argument(
-        "--validate-server-certificate",
-        action="store_true",
-        default=False,
-        help="Validate the server certificate when constructing an Exasol ingest URL. Default: disabled.",
-    )
-    parser.add_argument(
         "--activate-session",
         action="store_true",
         help="Activate the installed preprocessor in the deploy session and run the smoke test.",
@@ -764,6 +795,7 @@ def command_ingest(args: argparse.Namespace) -> None:
                 user=ingest_user,
                 password=ingest_password,
                 schema=str(ingest_schema),
+                validate_server_certificate=bool(getattr(args, "validate_server_certificate", False)),
             )
 
     command = [
@@ -805,10 +837,18 @@ def command_ingest(args: argparse.Namespace) -> None:
     if manifest_output is not None and not args.json and not getattr(args, "_suppress_human_output", False):
         print(f"Unified CLI wrote source manifest: {manifest_output}")
     if args.json:
+        parquet_files: list[str] = []
+        if output_dir is not None and output_dir.exists():
+            parquet_files = [str(path.resolve()) for path in sorted(output_dir.glob("*.parquet"))]
         summary: dict[str, object] = _json_success_payload(
             "ingest",
             input=str(input_path),
             artifactDir=str(artifact_dir),
+            artifacts={
+                "sourceManifest": str(manifest_output) if manifest_output is not None else None,
+                "outputDir": str(output_dir) if output_dir is not None else None,
+                "parquetFiles": parquet_files,
+            },
             artifactFiles={
                 "sourceManifest": str(manifest_output) if manifest_output is not None else None,
                 "outputDir": str(output_dir) if output_dir is not None else None,
@@ -1172,7 +1212,12 @@ def command_describe(args: argparse.Namespace) -> None:
             print(f'Helper schema: {description["helperSchema"]}')
             print(f'Roots: {", ".join(root["publicView"] for root in description["roots"])}')
     elif args.describe_command == "wrapper":
-        con = connect_for_generation(args.dsn, args.user, args.password)
+        con = connect_for_generation(
+            args.dsn,
+            args.user,
+            args.password,
+            validate_certificate=bool(getattr(args, "validate_server_certificate", False)),
+        )
         try:
             manifest = load_installed_wrapper_manifest(con, args.helper_schema)
         finally:
@@ -1233,7 +1278,7 @@ def main() -> None:
                     code="ARGPARSE-ERROR",
                     message="Invalid CLI arguments.",
                     hint="Run the command with --help to inspect the expected arguments.",
-                    repro={"argv": sys.argv[1:]},
+                    repro={"argv": _redacted_argv(sys.argv[1:])},
                 )
             )
         raise
@@ -1262,7 +1307,7 @@ def main() -> None:
                     code=_error_code_for_message(message, exc),
                     message=message,
                     hint="Run the same command without --json to inspect the human-oriented logs on stderr.",
-                    repro={"argv": sys.argv[1:]},
+                    repro={"argv": _redacted_argv(sys.argv[1:])},
                 )
             )
             raise SystemExit(1) from None
@@ -1275,7 +1320,7 @@ def main() -> None:
                     code=_error_code_for_message(str(exc), exc),
                     message=str(exc),
                     hint="Run the same command without --json to inspect the human-oriented logs on stderr.",
-                    repro={"argv": sys.argv[1:]},
+                    repro={"argv": _redacted_argv(sys.argv[1:])},
                     likely_fix="Inspect the package paths, connection arguments, or validation inputs referenced by the error.",
                 )
             )

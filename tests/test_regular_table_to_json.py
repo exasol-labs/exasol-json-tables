@@ -14,6 +14,7 @@ WRAPPER_SCHEMA = "JSON_VIEW"
 HELPER_SCHEMA = "JSON_VIEW_INTERNAL"
 PREPROCESSOR_SCHEMA = "JVS_REGULAR_TO_JSON_PP"
 PREPROCESSOR_SCRIPT = "JSON_REGULAR_TO_JSON_PREPROCESSOR"
+REGULAR_TABLE = "REGULAR_ROWS"
 
 
 def assert_equal(actual, expected, label: str) -> None:
@@ -55,59 +56,28 @@ def main() -> None:
             schema_name=PREPROCESSOR_SCHEMA,
             script_name=PREPROCESSOR_SCRIPT,
         )
+        con.execute(
+            f'''
+            CREATE OR REPLACE TABLE {SOURCE_SCHEMA}.{REGULAR_TABLE} (
+              "id" DECIMAL(18,0),
+              "name" VARCHAR(100),
+              "active" BOOLEAN
+            )
+            '''
+        )
+        con.execute(
+            f"""
+            INSERT INTO {SOURCE_SCHEMA}.{REGULAR_TABLE} VALUES
+              (1, 'alpha', TRUE),
+              (2, 'beta', FALSE),
+              (3, 'gamma', NULL)
+            """
+        )
 
         expected_full_rows = [
-            {
-                "_id": 1,
-                "child|n": False,
-                "child|object": 1,
-                "id": 1,
-                "items|array": 2,
-                "meta|object": 10,
-                "name": "alpha",
-                "note": "x",
-                "note|n": False,
-                "shape|array": None,
-                "shape|object": 10,
-                "tags|array": 2,
-                "value": 42,
-                "value|n": False,
-                "value|string": None,
-            },
-            {
-                "_id": 2,
-                "child|n": False,
-                "child|object": None,
-                "id": 2,
-                "items|array": 1,
-                "meta|object": 20,
-                "name": "beta",
-                "note": None,
-                "note|n": True,
-                "shape|array": 3,
-                "shape|object": None,
-                "tags|array": 1,
-                "value": None,
-                "value|n": False,
-                "value|string": "43",
-            },
-            {
-                "_id": 3,
-                "child|n": True,
-                "child|object": None,
-                "id": 3,
-                "items|array": None,
-                "meta|object": None,
-                "name": "gamma",
-                "note": None,
-                "note|n": False,
-                "shape|array": None,
-                "shape|object": None,
-                "tags|array": None,
-                "value": None,
-                "value|n": True,
-                "value|string": None,
-            },
+            {"active": True, "id": 1, "name": "alpha"},
+            {"active": False, "id": 2, "name": "beta"},
+            {"active": None, "id": 3, "name": "gamma"},
         ]
         expected_subset_rows = [
             {"id": 1, "name": "alpha"},
@@ -117,39 +87,39 @@ def main() -> None:
 
         full_rows = fetch_json_rows(
             con,
-            f'SELECT TO_JSON(*) FROM {SOURCE_SCHEMA}.SAMPLE ORDER BY "_id"',
+            f'SELECT TO_JSON(*) FROM {SOURCE_SCHEMA}.{REGULAR_TABLE} ORDER BY "id"',
         )
         con.execute(f"OPEN SCHEMA {SOURCE_SCHEMA}")
         unqualified_full_rows = fetch_json_rows(
             con,
-            'SELECT TO_JSON(*) FROM SAMPLE ORDER BY "_id"',
+            f'SELECT TO_JSON(*) FROM {REGULAR_TABLE} ORDER BY "id"',
         )
         alias_star_rows = fetch_json_rows(
             con,
-            f'SELECT TO_JSON(s.*) FROM {SOURCE_SCHEMA}.SAMPLE s ORDER BY s."_id"',
+            f'SELECT TO_JSON(s.*) FROM {SOURCE_SCHEMA}.{REGULAR_TABLE} s ORDER BY s."id"',
         )
         subset_rows = fetch_json_rows(
             con,
-            f'SELECT TO_JSON("id", "name") FROM {SOURCE_SCHEMA}.SAMPLE ORDER BY "_id"',
+            f'SELECT TO_JSON("id", "name") FROM {SOURCE_SCHEMA}.{REGULAR_TABLE} ORDER BY "id"',
         )
         joined_subset_rows = fetch_json_rows(
             con,
             f'''
             SELECT TO_JSON(s."id", s."name")
-            FROM {SOURCE_SCHEMA}.SAMPLE s
-            JOIN {SOURCE_SCHEMA}.SAMPLE peer
-              ON s."_id" = peer."_id"
-            ORDER BY s."_id"
+            FROM {SOURCE_SCHEMA}.{REGULAR_TABLE} s
+            JOIN {SOURCE_SCHEMA}.{REGULAR_TABLE} peer
+              ON s."id" = peer."id"
+            ORDER BY s."id"
             ''',
         )
         joined_star_rows = fetch_json_rows(
             con,
             f'''
             SELECT TO_JSON(s.*)
-            FROM {SOURCE_SCHEMA}.SAMPLE s
-            JOIN {SOURCE_SCHEMA}.SAMPLE peer
-              ON s."_id" = peer."_id"
-            ORDER BY s."_id"
+            FROM {SOURCE_SCHEMA}.{REGULAR_TABLE} s
+            JOIN {SOURCE_SCHEMA}.{REGULAR_TABLE} peer
+              ON s."id" = peer."id"
+            ORDER BY s."id"
             ''',
         )
 
@@ -164,10 +134,10 @@ def main() -> None:
             con,
             f'''
             SELECT TO_JSON(*)
-            FROM {SOURCE_SCHEMA}.SAMPLE s
-            JOIN {SOURCE_SCHEMA}.SAMPLE peer
-              ON s."_id" = peer."_id"
-            ORDER BY s."_id"
+            FROM {SOURCE_SCHEMA}.{REGULAR_TABLE} s
+            JOIN {SOURCE_SCHEMA}.{REGULAR_TABLE} peer
+              ON s."id" = peer."id"
+            ORDER BY s."id"
             ''',
         )
         derived_source_error = fetch_error_text(
@@ -176,10 +146,18 @@ def main() -> None:
             SELECT TO_JSON(*)
             FROM (
               SELECT *
-              FROM {SOURCE_SCHEMA}.SAMPLE
+              FROM {SOURCE_SCHEMA}.{REGULAR_TABLE}
             ) s
-            ORDER BY "_id"
+            ORDER BY "id"
             ''',
+        )
+        raw_source_star_error = fetch_error_text(
+            con,
+            f'SELECT TO_JSON(*) FROM {SOURCE_SCHEMA}.SAMPLE ORDER BY "_id"',
+        )
+        raw_source_alias_star_error = fetch_error_text(
+            con,
+            f'SELECT TO_JSON(s.*) FROM {SOURCE_SCHEMA}.SAMPLE s ORDER BY s."_id"',
         )
 
         assert_contains(
@@ -191,6 +169,16 @@ def main() -> None:
             derived_source_error,
             "TO_JSON does not resolve through derived-table aliases yet.",
             "derived-source regular-table TO_JSON error",
+        )
+        assert_contains(
+            raw_source_star_error,
+            "TO_JSON(*) on source-family tables would expose internal contract columns.",
+            "raw source plain-star error",
+        )
+        assert_contains(
+            raw_source_alias_star_error,
+            "TO_JSON(*) on source-family tables would expose internal contract columns.",
+            "raw source alias-star error",
         )
     finally:
         try:

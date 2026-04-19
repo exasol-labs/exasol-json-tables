@@ -1129,7 +1129,12 @@ def build_validation_report(args: argparse.Namespace) -> tuple[dict[str, Any], d
         }
 
     if args.check_installed:
-        con = connect_for_generation(args.dsn, args.user, args.password)
+        con = connect_for_generation(
+            args.dsn,
+            args.user,
+            args.password,
+            validate_certificate=bool(getattr(args, "validate_server_certificate", False)),
+        )
         try:
             if result_family_manifest is not None:
                 validate_installed_result_family(con, config, result_family_manifest)
@@ -1167,7 +1172,12 @@ def command_generate(args: argparse.Namespace) -> None:
             helper_schema=config["helperSchema"],
         )
     else:
-        con = connect_for_generation(args.dsn, args.user, args.password)
+        con = connect_for_generation(
+            args.dsn,
+            args.user,
+            args.password,
+            validate_certificate=bool(getattr(args, "validate_server_certificate", False)),
+        )
         try:
             artifacts = generate_wrapper_artifacts(
                 con,
@@ -1197,7 +1207,12 @@ def command_generate_result_family_package(args: argparse.Namespace) -> None:
     result_family_spec = load_result_family_spec(args.result_family_config.resolve())
     config = package_config_for_result_family(args, paths, result_family_spec=result_family_spec)
 
-    con = connect_for_generation(args.dsn, args.user, args.password)
+    con = connect_for_generation(
+        args.dsn,
+        args.user,
+        args.password,
+        validate_certificate=bool(getattr(args, "validate_server_certificate", False)),
+    )
     try:
         materialized_family = materialize_result_family(
             con,
@@ -1260,7 +1275,12 @@ def command_install(args: argparse.Namespace) -> None:
     smoke_test_sql = build_smoke_test_query(config, manifest)
     smoke_test_rows = None
 
-    con = connect_for_generation(args.dsn, args.user, args.password)
+    con = connect_for_generation(
+        args.dsn,
+        args.user,
+        args.password,
+        validate_certificate=bool(getattr(args, "validate_server_certificate", False)),
+    )
     try:
         if result_family_spec is not None and not args.skip_source_family:
             materialize_result_family(

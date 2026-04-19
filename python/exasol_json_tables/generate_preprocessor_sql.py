@@ -135,7 +135,8 @@ COMMON_LUA = """
         SELECT = true, WHERE = true, WHEN = true, THEN = true, ELSE = true,
         ON = true, AND = true, OR = true, NOT = true, BY = true, HAVING = true,
         QUALIFY = true, CONNECT = true, START = true, USING = true, IN = true,
-        EXISTS = true, IS = true, CASE = true, BETWEEN = true, LIKE = true
+        EXISTS = true, IS = true, CASE = true, BETWEEN = true, LIKE = true,
+        DISTINCT = true, ALL = true
     }
     local EXPRESSION_START_TOKENS = {
         [","] = true, ["("] = true, ["="] = true, [">"] = true, ["<"] = true,
@@ -567,6 +568,63 @@ COMMON_LUA = """
         return nil
     end
 
+    local function path_token_is_inside_to_json_call(tokens, token_index)
+        local depth = 0
+        local index = token_index - 1
+        while index >= 1 do
+            local token = tokens[index]
+            if token.type == "punct" and token.text == ")" then
+                depth = depth + 1
+            elseif token.type == "punct" and token.text == "(" then
+                if depth == 0 then
+                    local function_token = previous_significant_path_token(tokens, index - 1)
+                    return function_token ~= nil
+                            and HELPER_KIND_BY_NAME[normalize_path_token(function_token)] == "to_json"
+                end
+                depth = depth - 1
+            end
+            index = index - 1
+        end
+        return false
+    end
+
+    local function path_token_clause_and_depth(tokens, target_index)
+        local depth = 0
+        local clause = nil
+        local index = 1
+        while index <= target_index do
+            local token = tokens[index]
+            if token.type == "punct" and token.text == "(" then
+                depth = depth + 1
+            elseif token.type == "punct" and token.text == ")" then
+                depth = depth - 1
+            elseif depth == 0 then
+                local normalized = normalize_path_token(token)
+                if QUERY_START_KEYWORDS[normalized] == true then
+                    clause = normalized
+                elseif CLAUSE_KEYWORDS[normalized] == true or normalized == "FROM" or normalized == "JOIN"
+                        or normalized == "LEFT" or normalized == "RIGHT" or normalized == "FULL"
+                        or normalized == "INNER" or normalized == "CROSS" then
+                    clause = normalized
+                end
+            end
+            index = index + 1
+        end
+        return clause, depth
+    end
+
+    local function path_reference_auto_alias_sql(tokens, start_index, end_index, display_name)
+        local clause, depth = path_token_clause_and_depth(tokens, start_index)
+        if clause ~= "SELECT" or depth ~= 0 then
+            return ""
+        end
+        local next_token = next_significant_path_token(tokens, end_index + 1)
+        if next_token ~= nil and not is_clause_boundary_path_token(next_token) then
+            return ""
+        end
+        return " AS " .. encode_quoted_identifier(display_name)
+    end
+
     local function read_identifier_parts_from_path_tokens(tokens, index)
         local token, token_index = next_significant_path_token(tokens, index)
         if token == nil then
@@ -720,6 +778,11 @@ JOIN_MODE_LUA = """
                 kind = "parameter"
             }, nil
         end
+        if string.upper(trimmed) == "PARAM" then
+            return {
+                kind = "parameter"
+            }, nil
+        end
         if trimmed == "*" then
             return nil, 'Wildcard selectors are not supported yet. Use JOIN ... IN row."path" for full array traversal.'
         end
@@ -744,7 +807,7 @@ JOIN_MODE_LUA = """
             }, nil
         end
         return nil,
-                'Unsupported array selector "' .. trimmed .. '". Supported selectors are numeric indexes, FIRST, LAST, SIZE, ?, and direct field names.'
+                'Unsupported array selector "' .. trimmed .. '". Supported selectors are numeric indexes, FIRST, LAST, SIZE, ?, PARAM, and direct field names.'
     end
 
     local function serialize_array_selector(selector)
@@ -776,13 +839,25 @@ JOIN_MODE_LUA = """
             local table_columns = schema_tables and schema_tables[normalize_identifier_value(current_table_name)] or nil
             local normalized_field_name = normalize_identifier_value(step.selector.field_name)
             local field_is_visible = table_columns ~= nil and table_columns[normalized_field_name] == true
+            local field_is_object_reference = table_columns ~= nil
+                    and table_columns[normalized_field_name .. "|OBJECT"] == true
+            local field_is_array_reference = table_columns ~= nil
+                    and table_columns[normalized_field_name .. "|ARRAY"] == true
             local field_is_iterator_index = normalized_field_name == "_INDEX"
                     and (binding.kind == "iterator_row" or binding.kind == "iterator_value")
                     and normalize_identifier_value(current_table_name) == normalize_identifier_value(binding.table_name)
             if not field_is_visible and not field_is_iterator_index then
+                if field_is_object_reference or field_is_array_reference then
+                    raise_path_error(
+                        path,
+                        'Array selector "' .. step.selector.field_name
+                                .. '" resolves to a nested object/array reference, not a scalar selector column. '
+                                .. 'Use a scalar column such as [id] or traverse the nested branch explicitly.'
+                    )
+                end
                 raise_path_error(
                     path,
-                    'Array selector "' .. step.selector.field_name .. '" must be ? or a visible field on the current row.'
+                    'Array selector "' .. step.selector.field_name .. '" must be ?, PARAM, or a visible field on the current row.'
                 )
             end
             return selector_ref .. "." .. encode_quoted_identifier(step.selector.field_name)
@@ -811,6 +886,18 @@ JOIN_MODE_LUA = """
             return group_config
         end
         return table_groups[normalize_identifier_value(visible_name .. "|array")]
+    end
+
+    local function table_has_visible_column(binding, table_name, column_name)
+        if binding == nil or table_name == nil or column_name == nil then
+            return false
+        end
+        local schema_name = binding.helper_schema_name
+                or helper_schema_name_for_table_reference(binding)
+                or binding.schema_name
+        local schema_tables = VISIBLE_COLUMNS_BY_SCHEMA_AND_TABLE[normalize_identifier_value(schema_name)]
+        local table_columns = schema_tables and schema_tables[normalize_identifier_value(table_name)] or nil
+        return table_columns ~= nil and table_columns[normalize_identifier_value(column_name)] == true
     end
 
     local function ensure_property_step_can_navigate(path, binding, current_table_name, step_name)
@@ -1042,13 +1129,17 @@ JOIN_MODE_LUA = """
         local path_references = {}
         local index = 1
         while index <= #tokens do
-            local identifier = read_path_identifier(tokens, index)
+            local identifier = nil
+            if not path_token_is_inside_to_json_call(tokens, index) then
+                identifier = read_path_identifier(tokens, index)
+            end
             if identifier == nil then
                 index = index + 1
             else
                 path_references[#path_references + 1] = {
                     token_index = index,
-                    path = identifier
+                    path = identifier,
+                    display_name = identifier,
                 }
                 index = index + 1
             end
@@ -1068,13 +1159,16 @@ JOIN_MODE_LUA = """
                     member_token, member_index = next_significant_path_token(tokens, dot_index + 1)
                 end
                 if member_token ~= nil and member_token.type == "quoted_identifier"
+                        and not path_token_is_inside_to_json_call(tokens, member_index)
                         and (string.find(member_token.identifier, "[", 1, true) ~= nil
                                 or string.find(member_token.identifier, ".", 1, true) ~= nil) then
+                    local root_name = token.type == "quoted_identifier" and token.identifier or token.text
                     references[#references + 1] = {
                         token_index = index,
                         end_index = member_index,
-                        root_name = token.type == "quoted_identifier" and token.identifier or token.text,
-                        path = member_token.identifier
+                        root_name = root_name,
+                        path = member_token.identifier,
+                        display_name = root_name .. "." .. member_token.identifier,
                     }
                     index = member_index + 1
                 else
@@ -1301,6 +1395,13 @@ JOIN_MODE_LUA = """
                         current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
                         current_table_name = existing.table_name
                         if is_last then
+                            if not table_has_visible_column(binding, current_table_name, "_value") then
+                                raise_path_error(
+                                    reference.path,
+                                    'Bracket access on object-array elements requires a trailing property, '
+                                            .. 'for example "items[LAST].value", or a nested JOIN ... IN.'
+                                )
+                            end
                             replacement = current_ref .. "." .. encode_quoted_identifier("_value")
                         end
                     end
@@ -1314,6 +1415,12 @@ JOIN_MODE_LUA = """
             replacements[reference.token_index] = {
                 end_index = reference.end_index,
                 replacement_sql = replacement
+                        .. path_reference_auto_alias_sql(
+                                tokens,
+                                reference.token_index,
+                                reference.end_index,
+                                reference.display_name
+                        )
             }
         end
 
@@ -1466,6 +1573,13 @@ JOIN_MODE_LUA = """
                             current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
                             current_table_name = existing.table_name
                             if is_last then
+                                if not table_has_visible_column(base_table, current_table_name, "_value") then
+                                    raise_path_error(
+                                        reference.path,
+                                        'Bracket access on object-array elements requires a trailing property, '
+                                                .. 'for example "items[LAST].value", or a nested JOIN ... IN.'
+                                    )
+                                end
                                 replacement = current_ref .. "." .. encode_quoted_identifier("_value")
                             end
                         end
@@ -1477,6 +1591,12 @@ JOIN_MODE_LUA = """
                 replacements[reference.token_index] = {
                     end_index = reference.token_index,
                     replacement_sql = replacement
+                            .. path_reference_auto_alias_sql(
+                                    original_tokens,
+                                    reference.token_index,
+                                    reference.token_index,
+                                    reference.display_name
+                            )
                 }
             end
 
@@ -2672,6 +2792,32 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
         return ranges, nil
     end
 
+    local function trim_sql_argument_text(value)
+        return string.gsub(string.gsub(value, "^%s+", ""), "%s+$", "")
+    end
+
+    local function raw_argument_text(tokens, start_index, end_index)
+        local parts = {}
+        for index = start_index, end_index do
+            parts[#parts + 1] = tokens[index]
+        end
+        return trim_sql_argument_text(table.concat(parts))
+    end
+
+    local function to_json_invalid_argument_message(tokens, start_index, end_index)
+        local raw = raw_argument_text(tokens, start_index, end_index)
+        if raw == "" then
+            return nil
+        end
+        if string.sub(raw, 1, 1) == '"' and string.sub(raw, -1, -1) == '"' then
+            local decoded = decode_quoted_identifier(raw)
+            if string.find(decoded, ".", 1, true) ~= nil or string.find(decoded, "[", 1, true) ~= nil then
+                return 'TO_JSON subset arguments must be visible top-level properties. Nested paths such as "meta.info.note" and bracket expressions such as "tags[SIZE]" are not supported.'
+            end
+        end
+        return nil
+    end
+
     local function collect_helper_table_reference_lookup(tokens)
         local lookup = {}
         for _, table_reference in ipairs(collect_top_level_table_references(tokens)) do
@@ -2861,6 +3007,21 @@ ORDER BY COLUMN_ORDINAL_POSITION
             names[#names + 1] = column_name
         end
         return names
+    end
+
+    local function regular_to_json_star_exposes_contract_columns(column_names)
+        local saw_structural = false
+        local saw_contract_marker = false
+        for _, column_name in ipairs(column_names or {}) do
+            local normalized = normalize_identifier_value(column_name)
+            if normalized == "_ID" or normalized == "_PARENT" or normalized == "_POS" then
+                saw_structural = true
+            end
+            if string.find(column_name, "|", 1, true) ~= nil then
+                saw_contract_marker = true
+            end
+        end
+        return saw_structural and saw_contract_marker
     end
 
     local function resolve_regular_to_json_column_name(table_reference, member_name)
@@ -3347,7 +3508,7 @@ ORDER BY COLUMN_ORDINAL_POSITION
         if string.find(member_name, ".", 1, true) ~= nil or string.find(member_name, "[", 1, true) ~= nil then
             raise_function_error(
                 function_name,
-                'TO_JSON subset arguments must be visible top-level properties. Nested paths such as "meta.info.note" are not supported.'
+                'TO_JSON subset arguments must be visible top-level properties. Nested paths such as "meta.info.note" and bracket expressions such as "tags[SIZE]" are not supported.'
             )
         end
 
@@ -3404,7 +3565,7 @@ ORDER BY COLUMN_ORDINAL_POSITION
             if string.sub(normalized_alias_name, 1, 6) == "__JVS_" then
                 raise_function_error(
                     function_name,
-                    'TO_JSON subset arguments must be visible top-level properties. Nested paths such as "meta.info.note" are not supported.'
+                    'TO_JSON subset arguments must be visible top-level properties. Nested paths such as "meta.info.note" and bracket expressions such as "tags[SIZE]" are not supported.'
                 )
             end
             if table_reference.kind == "derived_source" then
@@ -3459,6 +3620,12 @@ ORDER BY COLUMN_ORDINAL_POSITION
         )
         if root_config == nil then
             local column_names = collect_regular_to_json_display_names(target_table_reference)
+            if regular_to_json_star_exposes_contract_columns(column_names) then
+                raise_function_error(
+                    function_name,
+                    "TO_JSON(*) on source-family tables would expose internal contract columns. Query the wrapper view instead."
+                )
+            end
             return build_regular_to_json_object_call(target_table_reference, column_names)
         end
         local export_ref = build_to_json_projection_join(
@@ -3510,6 +3677,16 @@ ORDER BY COLUMN_ORDINAL_POSITION
                 argument_range.start_index,
                 argument_range.end_index
             )
+            if identifier_parts == nil then
+                local invalid_argument_message = to_json_invalid_argument_message(
+                    tokens,
+                    argument_range.start_index,
+                    argument_range.end_index
+                )
+                if invalid_argument_message ~= nil then
+                    raise_function_error(function_name, invalid_argument_message)
+                end
+            end
             local table_reference, root_config, member_name = resolve_to_json_table_reference(
                 function_name,
                 original_sqltext,

@@ -89,7 +89,7 @@ The preprocessor is not optional sugar from a product perspective. It is part of
 ### Syntax
 
 - dotted paths: `"meta.info.note"`
-- bracket access: `"items[0]"`, `"items[FIRST]"`, `"items[LAST]"`, `"items[SIZE]"`, `"items[id]"`, `"items[?]"`
+- bracket access: `"items[0]"`, `"items[FIRST]"`, `"items[LAST]"`, `"items[SIZE]"`, `"items[id]"`, `"items[?]"`, `"items[PARAM]"`
 - mixed deep access: `"meta.items[LAST].value"`
 - rowset expansion: `JOIN item IN s."items"`
 - scalar-array expansion: `JOIN VALUE tag IN s."tags"`
@@ -124,8 +124,10 @@ The preprocessor is not optional sugar from a product perspective. It is part of
 - on wrapper roots, `TO_JSON("field1", "field2")` recursively serializes only the selected top-level branches
 - in joined wrapper queries, require qualified top-level subset arguments such as `TO_JSON(s."id", s."meta")`
 - on ordinary tables or ordinary views, `TO_JSON` is a flat row serializer
+- on contract-encoded source-family tables, `TO_JSON(*)` is intentionally rejected; use the wrapper root instead
 - in joined ordinary-table queries, prefer `TO_JSON(alias.*)` or qualified columns such as `TO_JSON(s."id", s."name")`
 - derived-table sources are still unsupported
+- nested paths or bracket expressions inside `TO_JSON(...)` subset arguments are unsupported
 
 ## First Things To Verify In A Bug
 

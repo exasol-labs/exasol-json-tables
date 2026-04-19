@@ -40,7 +40,7 @@ Without that activation, the wrapper views still exist, but the extra JSON synta
 ### Syntax Sugar
 
 - dotted paths such as `"child.value"` or `"meta.info.note"`
-- bracket access such as `"tags[0]"`, `"tags[FIRST]"`, `"tags[LAST]"`, `"tags[SIZE]"`, `"tags[id]"`, or `"tags[?]"`
+- bracket access such as `"tags[0]"`, `"tags[FIRST]"`, `"tags[LAST]"`, `"tags[SIZE]"`, `"tags[id]"`, `"tags[?]"`, or prepared-statement-safe `"tags[PARAM]"`
 - mixed deep access such as `"meta.items[LAST].value"`
 - array rowset syntax such as `JOIN item IN s."items"` and `JOIN VALUE tag IN s."tags"`
 - iterator-row path and bracket access such as `item."nested.note"` and `entry."extras[LAST]"`
@@ -71,8 +71,8 @@ For ordinary tables or ordinary views, `TO_JSON` is also available, but it is a 
 
 ```sql
 SELECT TO_JSON(*) AS row_json
-FROM JVS_SRC.SAMPLE
-ORDER BY "_id";
+FROM ANALYTICS_ROWS
+ORDER BY "id";
 ```
 
 Important boundaries:
@@ -80,8 +80,10 @@ Important boundaries:
 - on wrapped roots, `TO_JSON(*)` recursively serializes the full document row
 - on wrapped roots, `TO_JSON("field1", "field2")` recursively serializes only the selected top-level branches
 - in joined wrapper queries, use qualified top-level properties such as `TO_JSON(s."id", s."meta")`; joined `TO_JSON(*)` is not supported
+- on ordinary tables and ordinary views, `TO_JSON(*)` and `TO_JSON(alias.*)` are flat serializers
+- on contract-encoded source-family tables, `TO_JSON(*)` is intentionally rejected; use the wrapper root instead
 - in joined ordinary-table queries, use `TO_JSON(alias.*)` or qualified columns such as `TO_JSON(s."id", s."name")`
-- nested paths such as `TO_JSON("meta.info.note")` and derived-table sources are not supported yet
+- nested paths such as `TO_JSON("meta.info.note")`, bracket expressions such as `TO_JSON("tags[SIZE]")`, and derived-table sources are not supported yet
 
 ### Missing vs Explicit `null`
 

@@ -171,11 +171,12 @@ If you want more control, the same flow is also available as separate commands:
 - `exasol-json-tables validate`
 - `exasol-json-tables structured-results ...`
 
-For automation and autonomous agents, the major workflow commands also support `--json`. In that mode they emit a machine-readable summary on stdout with the important outputs, such as package paths, schema names, activation SQL, smoke-test SQL, and wrapper-scope warnings. `structured-results preview-json` is the fast one-shot preview path; the primary durable final-output path is `TO_JSON(...)` on the installed wrapper or result wrapper.
+For automation and autonomous agents, the major workflow commands also support `--json`. In that mode they emit a machine-readable summary on stdout with a stable success or failure envelope plus the important outputs, such as package paths, schema names, activation SQL, smoke-test SQL, validation probes, and wrapper-scope warnings. There is also a `describe` command for package- and wrapper-surface discovery. `structured-results preview-json` is the fast one-shot preview path; the primary durable final-output path is `TO_JSON(...)` on the installed wrapper or result wrapper.
 
 ## Further Reading
 
 - Installation: [docs/installation.md](docs/installation.md)
+- Automation: [docs/automation.md](docs/automation.md)
 - Ingest guide: [docs/ingest.md](docs/ingest.md)
 - Query surface reference: [docs/query-surface.md](docs/query-surface.md)
 - Structured results: [docs/structured-results.md](docs/structured-results.md)

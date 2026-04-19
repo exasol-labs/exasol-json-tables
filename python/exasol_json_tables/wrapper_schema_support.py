@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
+import ssl
 from typing import Any, Iterable
 
 import pyexasol
@@ -73,8 +74,12 @@ def connect_for_generation(
     user: str,
     password: str,
     schema: str = "SYS",
+    validate_certificate: bool = False,
 ):
-    return pyexasol.connect(dsn=dsn, user=user, password=password, schema=schema)
+    options: dict[str, Any] = {}
+    if not validate_certificate:
+        options["websocket_sslopt"] = {"cert_reqs": ssl.CERT_NONE}
+    return pyexasol.connect(dsn=dsn, user=user, password=password, schema=schema, **options)
 
 
 def quote_identifier(identifier: str) -> str:

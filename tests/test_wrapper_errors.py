@@ -61,7 +61,7 @@ def main() -> None:
         assert_query_error(
             con,
             'SELECT "tags[NOPE]" FROM JSON_VIEW.SAMPLE',
-            ["JVS-PATH-ERROR", 'Array selector "NOPE" must be ? or a visible field on the current row'],
+            ["JVS-PATH-ERROR", 'Array selector "NOPE" must be ?, PARAM, or a visible field on the current row'],
             "unsupported selector error",
         )
         assert_query_error(

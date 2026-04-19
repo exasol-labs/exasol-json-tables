@@ -247,7 +247,7 @@ def main() -> None:
         )
         assert_contains(
             path_argument_error,
-            'Nested paths such as "meta.info.note" are not supported.',
+            'Nested paths such as "meta.info.note" and bracket expressions such as "tags[SIZE]" are not supported.',
             "nested-path TO_JSON error",
         )
         assert_contains(

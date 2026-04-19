@@ -55,7 +55,12 @@ def parse_args() -> argparse.Namespace:
 def command_preview_json(args: argparse.Namespace) -> None:
     config = json.loads(args.result_family_config.read_text())
     spec = result_family_spec_from_dict(config)
-    con = connect_for_generation(args.dsn, args.user, args.password)
+    con = connect_for_generation(
+        args.dsn,
+        args.user,
+        args.password,
+        validate_certificate=bool(getattr(args, "validate_server_certificate", False)),
+    )
     try:
         materialized = materialize_result_family(
             con,
