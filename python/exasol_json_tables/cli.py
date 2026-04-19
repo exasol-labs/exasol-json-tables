@@ -14,12 +14,18 @@ from urllib.parse import parse_qsl, quote as url_quote, unquote, urlencode, urlp
 from . import structured_result_tool
 from . import wrapper_package_tool
 from .generate_preprocessor_sql import validate_identifier
-from .wrapper_schema_support import ROOT, connect_for_generation, quote_identifier
+from .wrapper_schema_support import (
+    ROOT,
+    connect_for_generation,
+    load_installed_wrapper_manifest,
+    quote_identifier,
+)
 
 
 DEFAULT_ARTIFACT_DIR = ROOT / "dist" / "exasol-json-tables"
 DEFAULT_SCHEMA_PREFIX = "EJT"
 IDENTIFIER_TOKEN_RE = re.compile(r"[^A-Za-z0-9]+")
+JSON_SCHEMA_VERSION = 1
 
 
 def _resolved(path: Path | None) -> Path | None:
@@ -133,12 +139,219 @@ def _build_wrapper_summary_from_config_path(config_path: Path) -> dict[str, obje
     return summary
 
 
+def _build_wrapper_artifacts(summary: dict[str, object]) -> dict[str, object]:
+    artifacts: dict[str, object] = {
+        "packageConfig": summary["packageConfig"],
+        "manifest": summary["generatedFiles"]["manifest"],
+        "viewsSql": summary["generatedFiles"]["viewsSql"],
+        "preprocessorSql": summary["generatedFiles"]["preprocessorSql"],
+    }
+    if "sourceManifest" in summary:
+        artifacts["sourceManifest"] = summary["sourceManifest"]
+    if "resultFamily" in summary:
+        artifacts["resultFamilyConfig"] = summary["resultFamily"]["materializationConfig"]
+        artifacts["resultFamilyManifest"] = summary["resultFamily"]["materializedFamilyManifest"]
+    return artifacts
+
+
+def _build_wrapper_objects(summary: dict[str, object]) -> dict[str, object]:
+    return {
+        "sourceSchema": summary["sourceSchema"],
+        "wrapperSchema": summary["wrapperSchema"],
+        "helperSchema": summary["helperSchema"],
+        "preprocessorSchema": summary["preprocessor"]["schema"],
+        "preprocessorScript": summary["preprocessor"]["script"],
+    }
+
+
+def _build_wrapper_next_actions(summary: dict[str, object]) -> dict[str, object]:
+    next_actions: dict[str, object] = {
+        "activationSql": summary["preprocessor"]["activationSql"],
+        "activationRequired": summary["preprocessor"]["activationRequired"],
+    }
+    if "smokeTestSql" in summary:
+        next_actions["smokeTestSql"] = summary["smokeTestSql"]
+    return next_actions
+
+
+def _json_success_payload(
+    command: str,
+    *,
+    warnings: list[str] | None = None,
+    errors: list[dict[str, object]] | None = None,
+    **payload: object,
+) -> dict[str, object]:
+    envelope: dict[str, object] = {
+        "schemaVersion": JSON_SCHEMA_VERSION,
+        "status": "ok",
+        "command": command,
+        "warnings": warnings or [],
+        "errors": errors or [],
+    }
+    envelope.update(payload)
+    return envelope
+
+
+def _json_error_payload(
+    command: str,
+    *,
+    code: str,
+    message: str,
+    hint: str | None = None,
+    repro: dict[str, object] | None = None,
+    likely_fix: str | None = None,
+) -> dict[str, object]:
+    error: dict[str, object] = {
+        "code": code,
+        "message": message,
+    }
+    if hint is not None:
+        error["hint"] = hint
+    if repro is not None:
+        error["repro"] = repro
+    if likely_fix is not None:
+        error["likelyFix"] = likely_fix
+    return {
+        "schemaVersion": JSON_SCHEMA_VERSION,
+        "status": "error",
+        "command": command,
+        "warnings": [],
+        "errors": [error],
+    }
+
+
+def _command_label(args: argparse.Namespace) -> str:
+    if args.command == "wrap":
+        return f"wrap {args.wrap_command}"
+    if args.command == "structured-results":
+        return f"structured-results {args.structured_command}"
+    if args.command == "describe":
+        return f"describe {args.describe_command}"
+    return str(args.command)
+
+
+def _error_code_for_message(message: str, exc: BaseException | None = None) -> str:
+    if message.startswith("JVS-"):
+        return message.split(":", 1)[0]
+    if isinstance(exc, FileNotFoundError):
+        return "FILE-NOT-FOUND"
+    if isinstance(exc, subprocess.CalledProcessError):
+        return "SUBPROCESS-FAILED"
+    if isinstance(exc, SystemExit):
+        return "COMMAND-FAILED"
+    return "UNEXPECTED-ERROR"
+
+
+def _describe_root_fields(root_table: dict[str, object], root: dict[str, object]) -> dict[str, object]:
+    top_level_fields: list[dict[str, object]] = []
+    scalar_fields: list[str] = []
+    object_fields: list[dict[str, object]] = []
+    array_fields: list[dict[str, object]] = []
+    relationships_by_segment = {
+        relation["segmentName"]: relation
+        for relation in root.get("relationships", [])
+        if relation["parentTable"] == root["tableName"]
+    }
+    for group in root_table.get("groups", []):
+        visible_name = group.get("visibleName")
+        if visible_name in {None, "_id"}:
+            continue
+        field_kind = "scalar"
+        logical_name = str(visible_name)
+        if logical_name.endswith("|object"):
+            field_kind = "object"
+            logical_name = logical_name[: -len("|object")]
+        elif logical_name.endswith("|array"):
+            field_kind = "array"
+            logical_name = logical_name[: -len("|array")]
+        top_level_fields.append({"name": logical_name, "kind": field_kind})
+        if field_kind == "scalar":
+            scalar_fields.append(logical_name)
+    for segment_name, relationship in sorted(relationships_by_segment.items()):
+        entry = {
+            "name": segment_name,
+            "childTable": relationship["childTable"],
+        }
+        if relationship["relationKind"] == "array":
+            array_fields.append(entry)
+        elif relationship["relationKind"] == "object":
+            object_fields.append(entry)
+    return {
+        "topLevelFields": top_level_fields,
+        "scalarFields": scalar_fields,
+        "objectFields": object_fields,
+        "arrayFields": array_fields,
+    }
+
+
+def _describe_wrapper_manifest(
+    manifest: dict[str, object],
+    *,
+    preprocessor: dict[str, object] | None = None,
+) -> dict[str, object]:
+    table_lookup = {table["tableName"]: table for table in manifest["tables"]}
+    roots: list[dict[str, object]] = []
+    for root in sorted(manifest["roots"], key=lambda item: item["publicView"]):
+        root_table = table_lookup[root["tableName"]]
+        root_fields = _describe_root_fields(root_table, root)
+        example_queries: dict[str, object] = {
+            "toJsonAll": (
+                f'SELECT TO_JSON(*) AS doc_json FROM "{manifest["publicSchema"]}"."{root["publicView"]}" '
+                'ORDER BY "_id";'
+            ),
+        }
+        if root_fields["scalarFields"]:
+            scalar_name = root_fields["scalarFields"][0]
+            example_queries["qualifiedHelper"] = (
+                f'SELECT JSON_AS_VARCHAR(s.{quote_identifier(scalar_name)}) AS sample_value '
+                f'FROM "{manifest["publicSchema"]}"."{root["publicView"]}" s ORDER BY "_id" LIMIT 5;'
+            )
+        if root_fields["arrayFields"]:
+            array_name = root_fields["arrayFields"][0]["name"]
+            example_queries["rowset"] = (
+                f'SELECT s."_id", item._index FROM "{manifest["publicSchema"]}"."{root["publicView"]}" s '
+                f'JOIN item IN s.{quote_identifier(array_name)} ORDER BY 1, 2;'
+            )
+        roots.append(
+            {
+                "publicView": root["publicView"],
+                "tableName": root["tableName"],
+                **root_fields,
+                "exampleQueries": example_queries,
+            }
+        )
+    description: dict[str, object] = {
+        "sourceSchema": manifest["sourceSchema"],
+        "wrapperSchema": manifest["publicSchema"],
+        "helperSchema": manifest["helperSchema"],
+        "rootCount": len(roots),
+        "roots": roots,
+    }
+    if preprocessor is not None:
+        description["preprocessor"] = preprocessor
+    return description
+
+
 def add_json_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--json",
         action="store_true",
         help="Emit a machine-readable JSON summary on stdout. Human-oriented progress logs are sent to stderr.",
     )
+
+
+def add_describe_package_arguments(parser: argparse.ArgumentParser) -> None:
+    wrapper_package_tool.add_package_config_argument(parser)
+    add_json_argument(parser)
+
+
+def add_describe_wrapper_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--wrapper-schema", required=True, help="Installed public wrapper schema.")
+    parser.add_argument("--helper-schema", required=True, help="Installed helper schema that owns __JVS_* metadata tables.")
+    parser.add_argument("--preprocessor-schema", default=None, help="Optional preprocessor schema for activation examples.")
+    parser.add_argument("--preprocessor-script", default=None, help="Optional preprocessor script for activation examples.")
+    wrapper_package_tool.add_connection_arguments(parser)
+    add_json_argument(parser)
 
 
 def _normalize_identifier_token(raw: str, *, fallback: str = "DATA", limit: int = 40) -> str:
@@ -504,6 +717,22 @@ def parse_args() -> argparse.Namespace:
     )
     add_structured_results_package_arguments(structured_package)
 
+    describe_parser = subparsers.add_parser(
+        "describe",
+        help="Describe a generated package or an installed wrapper surface for automation and discovery.",
+    )
+    describe_subparsers = describe_parser.add_subparsers(dest="describe_command", required=True)
+    describe_package = describe_subparsers.add_parser(
+        "package",
+        help="Describe a generated wrapper package from its package config and manifest.",
+    )
+    add_describe_package_arguments(describe_package)
+    describe_wrapper = describe_subparsers.add_parser(
+        "wrapper",
+        help="Describe an installed wrapper surface from its helper-schema metadata tables.",
+    )
+    add_describe_wrapper_arguments(describe_wrapper)
+
     validate_parser = subparsers.add_parser(
         "validate",
         help="Convenience alias for wrapper package validation.",
@@ -576,15 +805,15 @@ def command_ingest(args: argparse.Namespace) -> None:
     if manifest_output is not None and not args.json and not getattr(args, "_suppress_human_output", False):
         print(f"Unified CLI wrote source manifest: {manifest_output}")
     if args.json:
-        summary: dict[str, object] = {
-            "command": "ingest",
-            "input": str(input_path),
-            "artifactDir": str(artifact_dir),
-            "artifactFiles": {
+        summary: dict[str, object] = _json_success_payload(
+            "ingest",
+            input=str(input_path),
+            artifactDir=str(artifact_dir),
+            artifactFiles={
                 "sourceManifest": str(manifest_output) if manifest_output is not None else None,
                 "outputDir": str(output_dir) if output_dir is not None else None,
             },
-        }
+        )
         if args.exasol is not None:
             parsed_exasol = _parse_exasol_url(args.exasol)
             summary["exasol"] = {
@@ -622,7 +851,8 @@ def _derive_phase5_workflow_config(args: argparse.Namespace) -> dict[str, object
     }
 
 
-def command_wrap_deploy(args: argparse.Namespace) -> None:
+def command_wrap_deploy(args: argparse.Namespace) -> dict[str, object]:
+    validation_report: dict[str, object] | None = None
     with _stdout_to_stderr(bool(getattr(args, "json", False))):
         wrapper_package_tool.command_install(args)
         if not args.skip_validate_installed:
@@ -632,7 +862,12 @@ def command_wrap_deploy(args: argparse.Namespace) -> None:
                 manifest=args.manifest,
                 json=False,
             )
-            wrapper_package_tool.command_validate(validate_args)
+            config, manifest, validation_report = wrapper_package_tool.build_validation_report(validate_args)
+            wrapper_package_tool.print_validation_report(config, manifest, validation_report)
+    return {
+        "validatedInstalled": not args.skip_validate_installed,
+        "validation": validation_report,
+    }
 
 
 def command_ingest_and_wrap(args: argparse.Namespace) -> None:
@@ -702,23 +937,29 @@ def command_ingest_and_wrap(args: argparse.Namespace) -> None:
             skip_validate_installed=args.skip_validate_installed,
             json=False,
         )
-        command_wrap_deploy(deploy_args)
+        deploy_report = command_wrap_deploy(deploy_args)
 
     package_config_path = run_artifact_dir / f"{workflow['packageName']}_package.json"
 
     if args.json:
-        summary = {
-            "command": "ingest-and-wrap",
-            "workflowName": workflow["workflowName"],
-            "runArtifactDir": str(run_artifact_dir),
-            "input": str(args.input.resolve()),
-            "exasol": {
+        wrapper_summary = _build_wrapper_summary_from_config_path(package_config_path)
+        summary = _json_success_payload(
+            "ingest-and-wrap",
+            warnings=list(wrapper_summary["warnings"]),
+            workflowName=workflow["workflowName"],
+            runArtifactDir=str(run_artifact_dir),
+            input=str(args.input.resolve()),
+            exasol={
                 "dsn": str(workflow["dsn"]),
                 "sourceSchema": str(workflow["sourceSchema"]),
             },
-            "wrapper": _build_wrapper_summary_from_config_path(package_config_path),
-            "validatedInstalled": not args.skip_validate_installed,
-        }
+            artifacts=_build_wrapper_artifacts(wrapper_summary),
+            objects=_build_wrapper_objects(wrapper_summary),
+            nextActions=_build_wrapper_next_actions(wrapper_summary),
+            wrapper=wrapper_summary,
+            validatedInstalled=deploy_report["validatedInstalled"],
+            validation=deploy_report["validation"],
+        )
         _emit_json_summary(summary)
     else:
         print("Unified CLI completed ingest-and-wrap workflow.")
@@ -759,47 +1000,70 @@ def command_wrap(args: argparse.Namespace) -> None:
             wrapper_package_tool.command_generate(resolved_args)
         if args.json:
             package_paths = wrapper_package_tool.build_package_paths(Path(resolved_args.output_dir), resolved_args.package_name)
+            wrapper_summary = _build_wrapper_summary_from_config_path(package_paths["packageConfig"])
             _emit_json_summary(
-                {
-                    "command": "wrap generate",
-                    "wrapper": _build_wrapper_summary_from_config_path(package_paths["packageConfig"]),
-                }
+                _json_success_payload(
+                    "wrap generate",
+                    warnings=list(wrapper_summary["warnings"]),
+                    artifacts=_build_wrapper_artifacts(wrapper_summary),
+                    objects=_build_wrapper_objects(wrapper_summary),
+                    nextActions=_build_wrapper_next_actions(wrapper_summary),
+                    wrapper=wrapper_summary,
+                )
             )
     elif args.wrap_command == "install":
         with _stdout_to_stderr(bool(args.json)):
             wrapper_package_tool.command_install(args)
         if args.json:
-            summary = {
-                "command": "wrap install",
-                "wrapper": _build_wrapper_summary_from_config_path(args.package_config.resolve()),
-                "activateSession": bool(args.activate_session),
-                "activationPersistsAfterCommand": False,
-                "installedSourceFamily": not args.skip_source_family,
-                "installedViews": not args.skip_views,
-                "installedPreprocessor": not args.skip_preprocessor,
-            }
+            wrapper_summary = _build_wrapper_summary_from_config_path(args.package_config.resolve())
+            summary = _json_success_payload(
+                "wrap install",
+                warnings=list(wrapper_summary["warnings"]),
+                artifacts=_build_wrapper_artifacts(wrapper_summary),
+                objects=_build_wrapper_objects(wrapper_summary),
+                nextActions=_build_wrapper_next_actions(wrapper_summary),
+                wrapper=wrapper_summary,
+                activateSession=bool(args.activate_session),
+                activationPersistsAfterCommand=False,
+                installedSourceFamily=not args.skip_source_family,
+                installedViews=not args.skip_views,
+                installedPreprocessor=not args.skip_preprocessor,
+            )
             _emit_json_summary(summary)
     elif args.wrap_command == "deploy":
-        command_wrap_deploy(args)
+        deploy_report = command_wrap_deploy(args)
         if args.json:
-            summary = {
-                "command": "wrap deploy",
-                "wrapper": _build_wrapper_summary_from_config_path(args.package_config.resolve()),
-                "activateSession": bool(args.activate_session),
-                "activationPersistsAfterCommand": False,
-                "validatedInstalled": not args.skip_validate_installed,
-            }
+            wrapper_summary = _build_wrapper_summary_from_config_path(args.package_config.resolve())
+            summary = _json_success_payload(
+                "wrap deploy",
+                warnings=list(wrapper_summary["warnings"]),
+                artifacts=_build_wrapper_artifacts(wrapper_summary),
+                objects=_build_wrapper_objects(wrapper_summary),
+                nextActions=_build_wrapper_next_actions(wrapper_summary),
+                wrapper=wrapper_summary,
+                activateSession=bool(args.activate_session),
+                activationPersistsAfterCommand=False,
+                validatedInstalled=deploy_report["validatedInstalled"],
+                validation=deploy_report["validation"],
+            )
             _emit_json_summary(summary)
     elif args.wrap_command == "validate":
         with _stdout_to_stderr(bool(args.json)):
-            wrapper_package_tool.command_validate(args)
+            config, manifest, validation_report = wrapper_package_tool.build_validation_report(args)
+            wrapper_package_tool.print_validation_report(config, manifest, validation_report)
         if args.json:
+            wrapper_summary = _build_wrapper_summary_from_config_path(args.package_config.resolve())
             _emit_json_summary(
-                {
-                    "command": "wrap validate",
-                    "wrapper": _build_wrapper_summary_from_config_path(args.package_config.resolve()),
-                    "checkedInstalled": bool(args.check_installed),
-                }
+                _json_success_payload(
+                    "wrap validate",
+                    warnings=list(wrapper_summary["warnings"]),
+                    artifacts=_build_wrapper_artifacts(wrapper_summary),
+                    objects=_build_wrapper_objects(wrapper_summary),
+                    nextActions=_build_wrapper_next_actions(wrapper_summary),
+                    wrapper=wrapper_summary,
+                    checkedInstalled=bool(args.check_installed),
+                    validation=validation_report,
+                )
             )
     elif args.wrap_command == "regenerate-preprocessor":
         with _stdout_to_stderr(bool(args.json)):
@@ -811,12 +1075,20 @@ def command_wrap(args: argparse.Namespace) -> None:
                 args.output
                 or wrapper_package_tool.resolve_configured_path(config_path, config["generatedFiles"]["preprocessorSql"])
             ).resolve()
+            wrapper_summary = _build_wrapper_summary_from_config_path(config_path)
             _emit_json_summary(
-                {
-                    "command": "wrap regenerate-preprocessor",
-                    "output": str(output_path),
-                    "wrapper": _build_wrapper_summary_from_config_path(config_path),
-                }
+                _json_success_payload(
+                    "wrap regenerate-preprocessor",
+                    warnings=list(wrapper_summary["warnings"]),
+                    artifacts={
+                        **_build_wrapper_artifacts(wrapper_summary),
+                        "output": str(output_path),
+                    },
+                    objects=_build_wrapper_objects(wrapper_summary),
+                    nextActions=_build_wrapper_next_actions(wrapper_summary),
+                    output=str(output_path),
+                    wrapper=wrapper_summary,
+                )
             )
     else:  # pragma: no cover - defensive
         raise SystemExit(f"Unknown wrap command: {args.wrap_command}")
@@ -832,11 +1104,16 @@ def command_structured_results(args: argparse.Namespace) -> None:
             wrapper_package_tool.command_generate_result_family_package(args)
         if args.json:
             package_paths = wrapper_package_tool.build_package_paths(Path(args.output_dir), args.package_name)
+            wrapper_summary = _build_wrapper_summary_from_config_path(package_paths["packageConfig"])
             _emit_json_summary(
-                {
-                    "command": "structured-results package",
-                    "wrapper": _build_wrapper_summary_from_config_path(package_paths["packageConfig"]),
-                }
+                _json_success_payload(
+                    "structured-results package",
+                    warnings=list(wrapper_summary["warnings"]),
+                    artifacts=_build_wrapper_artifacts(wrapper_summary),
+                    objects=_build_wrapper_objects(wrapper_summary),
+                    nextActions=_build_wrapper_next_actions(wrapper_summary),
+                    wrapper=wrapper_summary,
+                )
             )
     else:  # pragma: no cover - defensive
         raise SystemExit(f"Unknown structured-results command: {args.structured_command}")
@@ -844,31 +1121,166 @@ def command_structured_results(args: argparse.Namespace) -> None:
 
 def command_validate(args: argparse.Namespace) -> None:
     with _stdout_to_stderr(bool(args.json)):
-        wrapper_package_tool.command_validate(args)
+        config, manifest, validation_report = wrapper_package_tool.build_validation_report(args)
+        wrapper_package_tool.print_validation_report(config, manifest, validation_report)
     if args.json:
+        wrapper_summary = _build_wrapper_summary_from_config_path(args.package_config.resolve())
         _emit_json_summary(
-            {
-                "command": "validate",
-                "wrapper": _build_wrapper_summary_from_config_path(args.package_config.resolve()),
-                "checkedInstalled": bool(args.check_installed),
-            }
+            _json_success_payload(
+                "validate",
+                warnings=list(wrapper_summary["warnings"]),
+                artifacts=_build_wrapper_artifacts(wrapper_summary),
+                objects=_build_wrapper_objects(wrapper_summary),
+                nextActions=_build_wrapper_next_actions(wrapper_summary),
+                wrapper=wrapper_summary,
+                checkedInstalled=bool(args.check_installed),
+                validation=validation_report,
+            )
         )
 
 
-def main() -> None:
-    args = parse_args()
-    if args.command == "ingest":
-        command_ingest(args)
-    elif args.command == "ingest-and-wrap":
-        command_ingest_and_wrap(args)
-    elif args.command == "wrap":
-        command_wrap(args)
-    elif args.command == "structured-results":
-        command_structured_results(args)
-    elif args.command == "validate":
-        command_validate(args)
+def command_describe(args: argparse.Namespace) -> None:
+    if args.describe_command == "package":
+        config_path = args.package_config.resolve()
+        config = wrapper_package_tool.load_package_config(config_path)
+        manifest_path = wrapper_package_tool.resolve_configured_path(config_path, config["generatedFiles"]["manifest"]).resolve()
+        manifest = wrapper_package_tool.load_manifest_and_validate(config, manifest_path)
+        wrapper_summary = _build_wrapper_summary_from_config_path(config_path)
+        description = _describe_wrapper_manifest(
+            manifest,
+            preprocessor={
+                "schema": config["preprocessor"]["schema"],
+                "script": config["preprocessor"]["script"],
+                "activationSql": wrapper_package_tool.build_activation_sql(config, include_semicolon=True),
+            },
+        )
+        if args.json:
+            _emit_json_summary(
+                _json_success_payload(
+                    "describe package",
+                    warnings=list(wrapper_summary["warnings"]),
+                    artifacts=_build_wrapper_artifacts(wrapper_summary),
+                    objects=_build_wrapper_objects(wrapper_summary),
+                    nextActions=_build_wrapper_next_actions(wrapper_summary),
+                    wrapper=wrapper_summary,
+                    description=description,
+                )
+            )
+        else:
+            print(f"Package config: {config_path}")
+            print(f'Wrapper schema: {description["wrapperSchema"]}')
+            print(f'Helper schema: {description["helperSchema"]}')
+            print(f'Roots: {", ".join(root["publicView"] for root in description["roots"])}')
+    elif args.describe_command == "wrapper":
+        con = connect_for_generation(args.dsn, args.user, args.password)
+        try:
+            manifest = load_installed_wrapper_manifest(con, args.helper_schema)
+        finally:
+            con.close()
+        expected_wrapper_schema = validate_identifier("Wrapper schema", args.wrapper_schema)
+        if str(manifest["publicSchema"]).upper() != expected_wrapper_schema:
+            raise SystemExit(
+                f'Helper schema {args.helper_schema} describes wrapper schema {manifest["publicSchema"]}, '
+                f"not {expected_wrapper_schema}."
+            )
+        preprocessor = None
+        warnings: list[str] = []
+        if args.preprocessor_schema and args.preprocessor_script:
+            preprocessor = {
+                "schema": validate_identifier("Preprocessor schema", args.preprocessor_schema),
+                "script": validate_identifier("Preprocessor script", args.preprocessor_script),
+                "activationSql": (
+                    "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = "
+                    f'{quote_identifier(validate_identifier("Preprocessor schema", args.preprocessor_schema))}.'
+                    f'{quote_identifier(validate_identifier("Preprocessor script", args.preprocessor_script))};'
+                ),
+            }
+        else:
+            warnings.append(
+                "Preprocessor schema/script not supplied, so the describe output cannot include activation SQL."
+            )
+        description = _describe_wrapper_manifest(manifest, preprocessor=preprocessor)
+        if args.json:
+            _emit_json_summary(
+                _json_success_payload(
+                    "describe wrapper",
+                    warnings=warnings,
+                    objects={
+                        "wrapperSchema": manifest["publicSchema"],
+                        "helperSchema": manifest["helperSchema"],
+                        "sourceSchema": manifest["sourceSchema"],
+                    },
+                    description=description,
+                )
+            )
+        else:
+            print(f'Wrapper schema: {description["wrapperSchema"]}')
+            print(f'Helper schema: {description["helperSchema"]}')
+            print(f'Roots: {", ".join(root["publicView"] for root in description["roots"])}')
     else:  # pragma: no cover - defensive
-        raise SystemExit(f"Unknown command: {args.command}")
+        raise SystemExit(f"Unknown describe command: {args.describe_command}")
+
+
+def main() -> None:
+    wants_json = "--json" in sys.argv[1:]
+    try:
+        args = parse_args()
+    except SystemExit as exc:
+        if wants_json and exc.code not in (0, None):
+            _emit_json_summary(
+                _json_error_payload(
+                    "parse",
+                    code="ARGPARSE-ERROR",
+                    message="Invalid CLI arguments.",
+                    hint="Run the command with --help to inspect the expected arguments.",
+                    repro={"argv": sys.argv[1:]},
+                )
+            )
+        raise
+
+    try:
+        if args.command == "ingest":
+            command_ingest(args)
+        elif args.command == "ingest-and-wrap":
+            command_ingest_and_wrap(args)
+        elif args.command == "wrap":
+            command_wrap(args)
+        elif args.command == "structured-results":
+            command_structured_results(args)
+        elif args.command == "describe":
+            command_describe(args)
+        elif args.command == "validate":
+            command_validate(args)
+        else:  # pragma: no cover - defensive
+            raise SystemExit(f"Unknown command: {args.command}")
+    except SystemExit as exc:
+        if wants_json and exc.code not in (0, None):
+            message = str(exc.code) if isinstance(exc.code, str) else "Command failed."
+            _emit_json_summary(
+                _json_error_payload(
+                    _command_label(args),
+                    code=_error_code_for_message(message, exc),
+                    message=message,
+                    hint="Run the same command without --json to inspect the human-oriented logs on stderr.",
+                    repro={"argv": sys.argv[1:]},
+                )
+            )
+            raise SystemExit(1) from None
+        raise
+    except Exception as exc:
+        if wants_json:
+            _emit_json_summary(
+                _json_error_payload(
+                    _command_label(args),
+                    code=_error_code_for_message(str(exc), exc),
+                    message=str(exc),
+                    hint="Run the same command without --json to inspect the human-oriented logs on stderr.",
+                    repro={"argv": sys.argv[1:]},
+                    likely_fix="Inspect the package paths, connection arguments, or validation inputs referenced by the error.",
+                )
+            )
+            raise SystemExit(1) from None
+        raise
 
 
 if __name__ == "__main__":

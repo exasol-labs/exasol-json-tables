@@ -121,7 +121,7 @@ exasol-json-tables wrap install \
   --package-config ./dist/json_result_package.json
 ```
 
-For agented packaging flows, prefer `--json` on `structured-results package` and the follow-up wrapper lifecycle commands.
+For agented packaging flows, prefer `--json` on `structured-results package` and the follow-up wrapper lifecycle commands. Use `describe package --json` after packaging when you need a machine-readable description of the installed result surface.
 
 After install, the default final-output path is SQL:
 

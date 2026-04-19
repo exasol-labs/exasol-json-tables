@@ -692,9 +692,15 @@ def test_unified_cli_ingest_and_wrap_json_summary() -> None:
                 text=True,
             )
             payload = json.loads(result.stdout)
+            assert payload["schemaVersion"] == 1
+            assert payload["status"] == "ok"
             assert payload["command"] == "ingest-and-wrap"
+            assert payload["errors"] == []
             assert payload["workflowName"] == workflow_name
             assert payload["validatedInstalled"] is True
+            assert "nextActions" in payload
+            assert "artifacts" in payload
+            assert "objects" in payload
             wrapper = payload["wrapper"]
             assert wrapper["preprocessor"]["activationRequired"] is True
             assert "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT" in wrapper["preprocessor"]["activationSql"]
@@ -702,6 +708,18 @@ def test_unified_cli_ingest_and_wrap_json_summary() -> None:
             assert len(wrapper["warnings"]) >= 2
             assert any("session-scoped" in warning for warning in wrapper["warnings"])
             assert any("wrapper schemas only" in warning for warning in wrapper["warnings"])
+            assert payload["nextActions"]["activationSql"] == wrapper["preprocessor"]["activationSql"]
+            assert payload["nextActions"]["smokeTestSql"] == wrapper["smokeTestSql"]
+            assert payload["artifacts"]["packageConfig"] == wrapper["packageConfig"]
+            assert payload["objects"]["wrapperSchema"] == wrapper["wrapperSchema"]
+
+            validation = payload["validation"]
+            assert validation["checkedInstalled"] is True
+            installed = validation["installed"]
+            assert installed["capabilities"]["qualifiedHelper"] == {"supported": True, "ok": True}
+            assert installed["capabilities"]["toJson"] == {"supported": True, "ok": True}
+            assert len(installed["probes"]) >= 2
+            assert all("sql" in probe for probe in installed["probes"])
 
             package_config_path = Path(wrapper["packageConfig"])
             package_config = json.loads(package_config_path.read_text())
@@ -732,6 +750,160 @@ def test_unified_cli_ingest_and_wrap_json_summary() -> None:
                 con.close()
 
 
+def test_unified_cli_validate_and_describe_json_surfaces() -> None:
+    fixture_path = ROOT / "crates" / "json_tables_ingest" / "tests" / "fixtures" / "nested.json"
+    with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_describe_") as tmpdir:
+        tmp = Path(tmpdir)
+        artifact_root = tmp / "artifacts"
+        staging_dir = tmp / "staging"
+        input_path = tmp / "NESTED.json"
+        shutil.copyfile(fixture_path, input_path)
+
+        workflow_name = "describe_json"
+        package_config: Optional[dict[str, object]] = None
+
+        try:
+            con = connect()
+            try:
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
+            ingest_wrap = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "ingest-and-wrap",
+                    "--input",
+                    str(input_path),
+                    "--name",
+                    workflow_name,
+                    "--artifact-dir",
+                    str(artifact_root),
+                    "--exasol-temp-dir",
+                    str(staging_dir),
+                    "--exasol-cleanup",
+                    "--json",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            wrap_payload = json.loads(ingest_wrap.stdout)
+            package_config_path = Path(wrap_payload["wrapper"]["packageConfig"])
+            package_config = json.loads(package_config_path.read_text())
+
+            validate_result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "validate",
+                    "--package-config",
+                    str(package_config_path),
+                    "--check-installed",
+                    "--json",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            validate_payload = json.loads(validate_result.stdout)
+            assert validate_payload["status"] == "ok"
+            assert validate_payload["command"] == "validate"
+            assert validate_payload["checkedInstalled"] is True
+            assert validate_payload["validation"]["installed"]["capabilities"]["qualifiedHelper"]["ok"] is True
+            assert validate_payload["validation"]["installed"]["capabilities"]["toJson"]["ok"] is True
+
+            describe_package_result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "describe",
+                    "package",
+                    "--package-config",
+                    str(package_config_path),
+                    "--json",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            describe_package_payload = json.loads(describe_package_result.stdout)
+            assert describe_package_payload["status"] == "ok"
+            assert describe_package_payload["command"] == "describe package"
+            assert describe_package_payload["description"]["wrapperSchema"] == package_config["wrapperSchema"]
+            assert describe_package_payload["description"]["rootCount"] == 1
+            root_description = describe_package_payload["description"]["roots"][0]
+            assert root_description["publicView"] == "NESTED"
+            assert "toJsonAll" in root_description["exampleQueries"]
+            assert "qualifiedHelper" in root_description["exampleQueries"]
+
+            describe_wrapper_result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "describe",
+                    "wrapper",
+                    "--wrapper-schema",
+                    str(package_config["wrapperSchema"]),
+                    "--helper-schema",
+                    str(package_config["helperSchema"]),
+                    "--preprocessor-schema",
+                    str(package_config["preprocessor"]["schema"]),
+                    "--preprocessor-script",
+                    str(package_config["preprocessor"]["script"]),
+                    "--json",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            describe_wrapper_payload = json.loads(describe_wrapper_result.stdout)
+            assert describe_wrapper_payload["status"] == "ok"
+            assert describe_wrapper_payload["command"] == "describe wrapper"
+            assert describe_wrapper_payload["description"]["wrapperSchema"] == package_config["wrapperSchema"]
+            assert (
+                describe_wrapper_payload["description"]["preprocessor"]["activationSql"]
+                == wrap_payload["wrapper"]["preprocessor"]["activationSql"]
+            )
+        finally:
+            con = connect()
+            try:
+                if package_config is not None:
+                    cleanup_package_schemas(con, package_config)
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
+
+def test_unified_cli_json_failure_envelope() -> None:
+    missing_package_config = ROOT / "dist" / "does_not_exist_package.json"
+    result = subprocess.run(
+        [
+            "python3",
+            str(CLI),
+            "validate",
+            "--package-config",
+            str(missing_package_config),
+            "--json",
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["command"] == "validate"
+    assert payload["errors"][0]["code"] == "FILE-NOT-FOUND"
+    assert payload["errors"][0]["repro"]["argv"][0] == "validate"
+
+
 if __name__ == "__main__":
     test_unified_cli_ingest_wrap_validate_with_manifest_handoff()
     test_unified_cli_structured_results_preview_json()
@@ -739,5 +911,7 @@ if __name__ == "__main__":
     test_unified_cli_ingest_and_wrap_with_derived_defaults()
     test_unified_cli_ingest_and_wrap_with_lowercase_root_name()
     test_unified_cli_ingest_and_wrap_json_summary()
+    test_unified_cli_validate_and_describe_json_surfaces()
+    test_unified_cli_json_failure_envelope()
     print("-- unified cli regression --")
     print("verified ingest/wrap/validate orchestration, wrap deploy, ingest-and-wrap defaults, and structured-results preview-json")

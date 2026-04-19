@@ -895,6 +895,34 @@ def build_installed_query_probes(config: dict[str, Any], manifest: dict[str, Any
     return probes
 
 
+def capability_status_template() -> dict[str, dict[str, Any]]:
+    return {
+        "rowset": {"supported": False, "ok": None},
+        "qualifiedHelper": {"supported": False, "ok": None},
+        "toJson": {"supported": False, "ok": None},
+    }
+
+
+def capability_key_for_probe(label: str) -> str | None:
+    if label == "rowset":
+        return "rowset"
+    if label == "qualified-helper":
+        return "qualifiedHelper"
+    if label == "TO_JSON(*)":
+        return "toJson"
+    return None
+
+
+def json_safe_scalar(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def json_safe_rows(rows: list[tuple[Any, ...]], *, limit: int = 3) -> list[list[Any]]:
+    return [[json_safe_scalar(value) for value in row] for row in rows[:limit]]
+
+
 def validate_package_files(config_path: Path, config: dict[str, Any], manifest_path: Path, views_sql_path: Path, preprocessor_sql_path: Path) -> None:
     if not views_sql_path.exists():
         raise SystemExit(f"Wrapper views SQL file does not exist: {views_sql_path}")
@@ -918,7 +946,7 @@ def validate_package_files(config_path: Path, config: dict[str, Any], manifest_p
         load_result_family_manifest_and_validate(config, result_family_manifest_path)
 
 
-def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, Any]) -> tuple[str, ...]:
+def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     wrapper_schema = config["wrapperSchema"]
     helper_schema = config["helperSchema"]
     roots = sorted(root["publicView"] for root in manifest["roots"])
@@ -996,8 +1024,13 @@ def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, 
     if missing_helper_scripts:
         raise SystemExit(f"Installed helper schema is missing expected JSON export scripts: {missing_helper_scripts}")
 
-    executed_probe_labels: list[str] = []
+    capabilities = capability_status_template()
+    executed_probes: list[dict[str, Any]] = []
     query_probes = build_installed_query_probes(config, manifest)
+    for label, _query in query_probes:
+        capability_key = capability_key_for_probe(label)
+        if capability_key is not None:
+            capabilities[capability_key]["supported"] = True
     if query_probes:
         con.execute(build_activation_sql(config, include_semicolon=False))
         try:
@@ -1008,13 +1041,34 @@ def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, 
                         if row[0] is None:
                             raise SystemExit("Installed TO_JSON(*) validation query returned NULL.")
                         json.loads(row[0])
-                executed_probe_labels.append(label)
+                executed_probes.append(
+                    {
+                        "name": label,
+                        "ok": True,
+                        "sql": query,
+                        "rowCount": len(rows),
+                        "rowsPreview": json_safe_rows(rows),
+                    }
+                )
+                capability_key = capability_key_for_probe(label)
+                if capability_key is not None:
+                    capabilities[capability_key]["ok"] = True
         finally:
             try:
                 con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")
             except Exception:
                 pass
-    return tuple(executed_probe_labels)
+    return {
+        "wrapperSchema": wrapper_schema,
+        "helperSchema": helper_schema,
+        "preprocessor": {
+            "schema": config["preprocessor"]["schema"],
+            "script": config["preprocessor"]["script"],
+        },
+        "roots": roots,
+        "capabilities": capabilities,
+        "probes": executed_probes,
+    }
 
 
 def validate_installed_result_family(con, config: dict[str, Any], result_family_manifest: dict[str, Any]) -> None:
@@ -1037,6 +1091,68 @@ def validate_installed_result_family(con, config: dict[str, Any], result_family_
     expected_roots = sorted(result_family_manifest["familyDescription"]["rootTables"])
     if expected_roots != sorted(result_family_manifest["familyDescription"]["familyTablesByRoot"]):
         raise SystemExit("Result-family manifest root table metadata is inconsistent.")
+
+
+def build_validation_report(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    config_path = args.package_config.resolve()
+    config = load_package_config(config_path)
+    manifest_path = (args.manifest or resolve_configured_path(config_path, config["generatedFiles"]["manifest"])).resolve()
+    views_sql_path = (args.views_sql or resolve_configured_path(config_path, config["generatedFiles"]["viewsSql"])).resolve()
+    preprocessor_sql_path = (
+        args.preprocessor_sql or resolve_configured_path(config_path, config["generatedFiles"]["preprocessorSql"])
+    ).resolve()
+    validate_package_files(config_path, config, manifest_path, views_sql_path, preprocessor_sql_path)
+    manifest = load_manifest_and_validate(config, manifest_path)
+    result_family_manifest_path = resolve_result_family_manifest_path(config_path, config)
+    result_family_manifest = (
+        load_result_family_manifest_and_validate(config, result_family_manifest_path)
+        if result_family_manifest_path is not None
+        else None
+    )
+
+    report: dict[str, Any] = {
+        "packageConfig": str(config_path),
+        "files": {
+            "manifest": str(manifest_path),
+            "viewsSql": str(views_sql_path),
+            "preprocessorSql": str(preprocessor_sql_path),
+        },
+        "checkedInstalled": bool(args.check_installed),
+        "resultFamily": None,
+        "installed": None,
+    }
+    if result_family_manifest_path is not None and result_family_manifest is not None:
+        report["resultFamily"] = {
+            "kind": config["resultFamily"]["kind"],
+            "manifest": str(result_family_manifest_path),
+            "createdTables": list(result_family_manifest["createdTables"]),
+        }
+
+    if args.check_installed:
+        con = connect_for_generation(args.dsn, args.user, args.password)
+        try:
+            if result_family_manifest is not None:
+                validate_installed_result_family(con, config, result_family_manifest)
+            report["installed"] = validate_installed_package(con, config, manifest)
+        finally:
+            con.close()
+
+    return config, manifest, report
+
+
+def print_validation_report(config: dict[str, Any], manifest: dict[str, Any], report: dict[str, Any]) -> None:
+    print(f'Validated {report["packageConfig"]}')
+    if report["checkedInstalled"]:
+        print(
+            "Validated installed package for "
+            f'{config["wrapperSchema"]}/{config["helperSchema"]}/{config["preprocessor"]["schema"]}.{config["preprocessor"]["script"]}'
+        )
+        installed = report.get("installed")
+        if installed is not None:
+            executed_probe_labels = [probe["name"] for probe in installed["probes"]]
+            if executed_probe_labels:
+                print("Validated installed query probes: " + ", ".join(executed_probe_labels))
+        print_activation_reminder(config, build_smoke_test_query(config, manifest))
 
 
 def command_generate(args: argparse.Namespace) -> None:
@@ -1186,42 +1302,8 @@ def command_install(args: argparse.Namespace) -> None:
 
 
 def command_validate(args: argparse.Namespace) -> None:
-    config_path = args.package_config.resolve()
-    config = load_package_config(config_path)
-    manifest_path = (args.manifest or resolve_configured_path(config_path, config["generatedFiles"]["manifest"])).resolve()
-    views_sql_path = (args.views_sql or resolve_configured_path(config_path, config["generatedFiles"]["viewsSql"])).resolve()
-    preprocessor_sql_path = (
-        args.preprocessor_sql or resolve_configured_path(config_path, config["generatedFiles"]["preprocessorSql"])
-    ).resolve()
-    validate_package_files(config_path, config, manifest_path, views_sql_path, preprocessor_sql_path)
-    manifest = load_manifest_and_validate(config, manifest_path)
-    result_family_manifest_path = resolve_result_family_manifest_path(config_path, config)
-    result_family_manifest = (
-        load_result_family_manifest_and_validate(config, result_family_manifest_path)
-        if result_family_manifest_path is not None
-        else None
-    )
-
-    if args.check_installed:
-        con = connect_for_generation(args.dsn, args.user, args.password)
-        try:
-            if result_family_manifest is not None:
-                validate_installed_result_family(con, config, result_family_manifest)
-            executed_probe_labels = validate_installed_package(con, config, manifest)
-        finally:
-            con.close()
-    else:
-        executed_probe_labels = ()
-
-    print(f"Validated {config_path}")
-    if args.check_installed:
-        print(
-            "Validated installed package for "
-            f'{config["wrapperSchema"]}/{config["helperSchema"]}/{config["preprocessor"]["schema"]}.{config["preprocessor"]["script"]}'
-        )
-        if executed_probe_labels:
-            print("Validated installed query probes: " + ", ".join(executed_probe_labels))
-        print_activation_reminder(config, build_smoke_test_query(config, manifest))
+    config, manifest, report = build_validation_report(args)
+    print_validation_report(config, manifest, report)
 
 
 def main() -> None:

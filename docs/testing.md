@@ -60,6 +60,8 @@ Verifies:
 - unified `ingest` -> `wrap generate` manifest handoff
 - unified `wrap install`, `wrap deploy`, and top-level `validate`
 - one-shot `ingest-and-wrap` with derived default names and per-run artifact layout
+- machine-readable `--json` summaries, validation reports, and failure envelopes
+- package and installed-wrapper discovery through `describe ... --json`
 - unified `structured-results preview-json`
 
 ## Ingest Manifest Integration
