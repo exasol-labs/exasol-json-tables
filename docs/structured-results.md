@@ -34,14 +34,51 @@ Use structured results when:
 
 If you only need a flat analytical result, plain SQL tables or views are usually enough.
 
-## Two Authoring Levels
+## Config-First Authoring
 
-There are two ways to describe a structured result:
+The primary structured-results authoring story is:
+
+1. write a JSON config
+2. validate the shape rules
+3. package or preview it
+4. use `TO_JSON(...)` on the wrapped result when you want final output
+
+There are still two config shapes:
 
 - `structured_shape`
   This is the higher-level, recommended starting point for common nested outputs.
 - `synthesized_family`
   This is the lower-level format when you want exact control over the generated table family.
+
+In practice, start with `structured_shape` unless you already know you need exact table-by-table control.
+
+## Common Validation Rules
+
+Structured results are easiest to author once the contract rules are explicit:
+
+- `fromSql` is a `FROM` / `JOIN` clause fragment, not a full `SELECT`
+- every nested object needs a matching parent field with `kind: "object_ref"`
+- every nested array needs a matching parent field with `kind: "array_ref"`
+- object arrays need `rowIdSql`
+- scalar arrays use `valueSql` and must not also define nested fields, objects, or arrays
+- if you want lowercase JSON property names from authored SQL aliases, quote those aliases explicitly
+
+If you are building configs or specs programmatically, validate before materialization:
+
+```python
+import json
+from pathlib import Path
+
+from exasol_json_tables.result_family_materializer import (
+    result_family_spec_from_dict,
+    validate_result_family_spec,
+)
+
+spec = result_family_spec_from_dict(json.loads(Path("result_family.json").read_text()))
+validate_result_family_spec(spec)
+```
+
+For the runnable regression behind this config-first workflow, see [tests/test_structured_result_ergonomics.py](../tests/test_structured_result_ergonomics.py).
 
 ## Two Main Workflows
 
@@ -300,7 +337,7 @@ ORDER BY "_id";
 Two secondary paths still matter:
 
 - `structured-results preview-json` for one-shot shape validation without a durable install
-- the Python exporter for programmatic export and oracle-style regression checks
+- the Python exporter for compatibility, automation, and oracle-style regression checks
 
 If you need that programmatic path, use the export helper directly:
 
@@ -319,6 +356,8 @@ The same export path works for:
 - family-preserving subsets
 - durable synthesized result families
 - in-session wrapped local-temporary result families
+
+Treat that Python exporter path as secondary tooling. The supported primary final-output path remains wrapped SQL plus `TO_JSON(...)`.
 
 ## Choosing Between Durable And Session-Local
 

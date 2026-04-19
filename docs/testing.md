@@ -174,6 +174,18 @@ Verifies:
 - UDF interoperability on the wrapper surface
 - additive source-DDL refresh through package regeneration, install, and validation
 
+## Access Modes
+
+```bash
+python3 tests/test_access_modes.py
+```
+
+Verifies:
+
+- connection-bootstrap activation on a fresh session
+- authoring a published view from a wrapper query
+- querying that published view later without any preprocessor activation
+
 ## Local Benchmark Harnesses
 
 Some larger exploratory studies are intentionally kept out of the tracked `tests/` suite.
@@ -261,6 +273,7 @@ python3 tests/test_structured_result_ergonomics.py
 Verifies:
 
 - authoring structured results with the higher-level `structured_shape` config
+- validating config-first structured-result specs before materialization
 - one-shot `preview-json` materialize-and-preview workflows
 - durable packaging from the same higher-level shape config
 

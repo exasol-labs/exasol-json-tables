@@ -92,6 +92,97 @@ If your environment already uses another SQL preprocessor, remember that Exasol 
 
 In that case, use a small master preprocessor script as the single active entrypoint. Keep the real rewrite logic in helper functions or helper scripts, have the master script call the existing preprocessor logic and the JSON Tables preprocessor logic in the required order, and activate the master script instead of trying to enable multiple preprocessors separately.
 
+## Access Modes
+
+Treat wrapper access as an operating mode, not just a SQL snippet.
+
+### Manual Session Activation
+
+Use this when you are exploring interactively and want the full wrapper surface in the current SQL session:
+
+```sql
+ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSOR;
+```
+
+This is the lowest-level authoring mode. It is also the right fallback when you are working directly in a SQL worksheet and do not control connection startup behavior.
+
+### Connection Bootstrap
+
+For applications, CI jobs, agents, and managed SQL clients, the recommended pattern is to run the activation SQL immediately after opening a connection or when checking one out from a pool.
+
+Typical pattern:
+
+1. open a connection
+2. execute the package activation SQL once
+3. run wrapper queries on that connection
+4. return the connection to the pool
+
+Use the activation SQL emitted by:
+
+- `wrap install`
+- `wrap deploy`
+- `validate --json`
+- `describe package --json`
+
+The regression behind this pattern is [tests/test_access_modes.py](../tests/test_access_modes.py).
+
+### Published Views And Materialized Tables
+
+When a wrapped family becomes part of a stable downstream workflow, the better long-lived pattern is:
+
+1. use the wrapper with the preprocessor active while authoring
+2. publish ordinary views or tables from those wrapper queries
+3. let downstream consumers query the published objects without any preprocessor
+
+Example published view:
+
+```sql
+CREATE VIEW ANALYTICS.SAMPLE_PUBLISHED AS
+SELECT
+  CAST("id" AS VARCHAR(10)) AS doc_id,
+  COALESCE("meta.info.note", 'NULL') AS deep_note,
+  TO_JSON("id", "meta", "tags") AS doc_json
+FROM JSON_VIEW.SAMPLE;
+```
+
+After the view is created, other sessions can query `ANALYTICS.SAMPLE_PUBLISHED` without activating the JSON Tables preprocessor.
+
+Use a published view when:
+
+- you want a permanent read surface
+- you want downstream analysts or services to avoid session activation entirely
+- you want source-data changes to remain visible immediately through the published object
+
+Use a published table when:
+
+- you want a stable snapshot
+- you want to hand off a precomputed result
+- you are comfortable rebuilding or refreshing it when the source changes
+
+The regression behind the published-view pattern is also [tests/test_access_modes.py](../tests/test_access_modes.py).
+
+## Application Read/Write Pattern
+
+Wrapper views are a read surface. They are not the write path.
+
+The supported application pattern is:
+
+- write documents into the source schema
+- read through the wrapper schema when you want JSON-friendly SQL
+- publish ordinary views or tables when downstream consumers should not need wrapper activation
+
+Important behavior:
+
+- wrapper views reflect new source rows immediately
+- published views created from wrapper queries also reflect new source rows immediately
+- published tables created with `CREATE TABLE AS SELECT` are snapshots and need explicit refresh
+
+So the practical rule is:
+
+- source schema for writes
+- wrapper or published view for reads
+- published table only when you want a materialized snapshot
+
 ## Connection Models
 
 There are two common ways to run the workflow.

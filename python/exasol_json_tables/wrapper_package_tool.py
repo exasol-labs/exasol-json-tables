@@ -33,6 +33,7 @@ from .result_family_materializer import (
     ResultFamilyMaterializationSpec,
     result_family_spec_from_dict,
     result_family_spec_to_dict,
+    validate_result_family_spec,
 )
 from .wrapper_schema_support import ROOT, connect_for_generation, generate_wrapper_artifacts
 from .wrapper_schema_support import generate_wrapper_artifacts_from_source_manifest
@@ -422,7 +423,9 @@ def package_config_for_result_family(
 
 
 def load_result_family_spec(path: Path):
-    return result_family_spec_from_dict(json.loads(path.read_text()))
+    spec = result_family_spec_from_dict(json.loads(path.read_text()))
+    validate_result_family_spec(spec)
+    return spec
 
 
 def load_manifest_and_validate(config: dict[str, Any], manifest_path: Path) -> dict[str, Any]:

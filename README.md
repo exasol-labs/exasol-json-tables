@@ -162,6 +162,34 @@ SELECT TO_JSON(*) AS doc_json
 FROM JSON_VIEW.CUSTOMER_EVENTS;
 ```
 
+## Access Modes
+
+There are three supported ways to work with the wrapper surface:
+
+### 1. Manual Session Activation
+
+This is the lowest-level authoring mode:
+
+```sql
+ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSOR;
+```
+
+Use it when you are exploring interactively in a SQL client and want full wrapper syntax on that session.
+
+### 2. Connection Bootstrap
+
+For applications, CI, and managed SQL clients, the normal pattern is to run the same activation SQL immediately after opening a connection or when checking one out from a pool.
+
+That keeps wrapper syntax available without asking each user or request handler to remember the activation step manually.
+
+### 3. Published Permanent Surfaces
+
+When a wrapped family becomes part of a long-lived downstream workflow, use the wrapper as the authoring surface and publish ordinary views or tables from it.
+
+That lets downstream consumers query the published objects without any preprocessor activation at all.
+
+For the practical details, see [docs/installation.md](docs/installation.md#access-modes).
+
 If you want more control, the same flow is also available as separate commands:
 
 - `exasol-json-tables ingest`

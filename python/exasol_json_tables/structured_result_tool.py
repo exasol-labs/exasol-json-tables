@@ -7,7 +7,11 @@ import json
 from pathlib import Path
 
 from .result_family_json_export import export_root_family_to_json
-from .result_family_materializer import materialize_result_family, result_family_spec_from_dict
+from .result_family_materializer import (
+    materialize_result_family,
+    result_family_spec_from_dict,
+    validate_result_family_spec,
+)
 from .wrapper_schema_support import connect_for_generation
 
 
@@ -55,6 +59,7 @@ def parse_args() -> argparse.Namespace:
 def command_preview_json(args: argparse.Namespace) -> None:
     config = json.loads(args.result_family_config.read_text())
     spec = result_family_spec_from_dict(config)
+    validate_result_family_spec(spec)
     con = connect_for_generation(
         args.dsn,
         args.user,

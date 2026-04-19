@@ -28,6 +28,18 @@ def qqualified(schema: str, name: str) -> str:
     return f"{qident(schema)}.{qident(name)}"
 
 
+def _current_schema_name(con) -> str | None:
+    rows = con.execute("SELECT CURRENT_SCHEMA FROM DUAL").fetchall()
+    if not rows or rows[0][0] is None:
+        return None
+    return str(rows[0][0])
+
+
+def _restore_current_schema(con, schema_name: str | None) -> None:
+    if schema_name:
+        con.execute(f"OPEN SCHEMA {qident(schema_name)}")
+
+
 @dataclass(frozen=True)
 class ResultTableSpec:
     table_name: str
@@ -418,6 +430,51 @@ def result_family_spec_from_dict(value: dict[str, Any]) -> ResultFamilyMateriali
     raise ValueError(f"Unsupported result family materialization kind: {kind!r}")
 
 
+def validate_family_preserving_subset_spec(spec: FamilyPreservingSubsetSpec) -> None:
+    if not spec.source_helper_schema.strip():
+        raise ValueError("source_helper_schema must not be empty.")
+    if not spec.root_table.strip():
+        raise ValueError("root_table must not be empty.")
+    if not spec.root_filter_sql.strip():
+        raise ValueError("root_filter_sql must not be empty.")
+
+
+def validate_synthesized_family_spec(spec: SynthesizedFamilySpec) -> None:
+    if not spec.root_table.strip():
+        raise ValueError("root_table must not be empty.")
+    if not spec.table_specs:
+        raise ValueError("family_spec.table_specs must not be empty")
+
+    table_names = [table_spec.table_name for table_spec in spec.table_specs]
+    if spec.root_table not in table_names:
+        raise ValueError(
+            f"Root table {spec.root_table!r} must be present in table_specs (got {table_names!r})"
+        )
+    if len(set(table_names)) != len(table_names):
+        raise ValueError(f"table_specs contain duplicate table names: {table_names!r}")
+    for table_spec in spec.table_specs:
+        if not table_spec.table_name.strip():
+            raise ValueError("ResultTableSpec.table_name must not be empty.")
+        if not table_spec.select_sql.strip():
+            raise ValueError(f"ResultTableSpec.select_sql for {table_spec.table_name!r} must not be empty.")
+
+
+def validate_structured_shape_spec(shape_spec: StructuredShapeSpec) -> None:
+    if not shape_spec.root_table.strip():
+        raise ValueError("root_table must not be empty.")
+    _validate_structured_object_node(shape_spec.root, label=shape_spec.root_table)
+
+
+def validate_result_family_spec(spec: ResultFamilyMaterializationSpec) -> None:
+    if isinstance(spec, FamilyPreservingSubsetSpec):
+        validate_family_preserving_subset_spec(spec)
+        return
+    if isinstance(spec, StructuredShapeSpec):
+        validate_structured_shape_spec(spec)
+        return
+    validate_synthesized_family_spec(spec)
+
+
 def materialize_result_family(
     con,
     *,
@@ -463,99 +520,110 @@ def materialize_family_preserving_subset(
     table_kind: TableKind = "table",
     reset_schema: bool = True,
 ) -> MaterializedFamilyResult:
-    _prepare_target_schema(con, target_schema, table_kind, reset_schema)
-    _create_table_as_select(
-        con,
-        target_schema,
-        root_table,
-        f"""
-        SELECT *
-        FROM {qqualified(source_helper_schema, root_table)}
-        WHERE {root_filter_sql}
-        """,
-        table_kind,
-    )
-
-    relationship_rows = con.execute(
-        f"""
-        SELECT PARENT_TABLE, CHILD_TABLE, SEGMENT_NAME, RELATION_KIND
-        FROM {qqualified(source_helper_schema, "__JVS_RELATIONSHIPS")}
-        WHERE ROOT_TABLE = '{root_table}'
-        ORDER BY PARENT_TABLE, CHILD_TABLE, SEGMENT_NAME
-        """
-    ).fetchall()
-    pending = [
-        Relationship(
-            parent_table=parent,
-            child_table=child,
-            segment_name=segment,
-            relation_kind=relation_kind,
+    validate_family_preserving_subset_spec(
+        FamilyPreservingSubsetSpec(
+            source_helper_schema=source_helper_schema,
+            root_table=root_table,
+            root_filter_sql=root_filter_sql,
         )
-        for parent, child, segment, relation_kind in relationship_rows
-    ]
-    created_tables = {root_table}
-
-    while pending:
-        progress = False
-        remaining: list[Relationship] = []
-        for relationship in pending:
-            if relationship.parent_table not in created_tables:
-                remaining.append(relationship)
-                continue
-            if relationship.relation_kind == "object":
-                join_predicate = (
-                    f'p.{qident(relationship.segment_name + "|object")} = '
-                    f'c.{qident("_id")}'
-                )
-            elif relationship.relation_kind == "array":
-                join_predicate = (
-                    f'c.{qident("_parent")} = '
-                    f'p.{qident("_id")}'
-                )
-            else:
-                raise ValueError(f"Unsupported relation kind: {relationship.relation_kind}")
-            _create_table_as_select(
-                con,
-                target_schema,
-                relationship.child_table,
-                f"""
-                SELECT c.*
-                FROM {qqualified(source_helper_schema, relationship.child_table)} c
-                JOIN {qqualified(target_schema, relationship.parent_table)} p
-                  ON {join_predicate}
-                """,
-                table_kind,
-            )
-            created_tables.add(relationship.child_table)
-            progress = True
-        if not progress:
-            unresolved = [
-                {
-                    "parent": relationship.parent_table,
-                    "child": relationship.child_table,
-                    "segment": relationship.segment_name,
-                    "kind": relationship.relation_kind,
-                }
-                for relationship in remaining
-            ]
-            raise AssertionError(f"Could not resolve family materialization order for {unresolved!r}")
-        pending = remaining
-
-    family_description = describe_source_families(con, target_schema)
-    if root_table not in family_description.root_tables:
-        raise AssertionError(f"Expected {root_table} to be a root table in {target_schema}")
-    return MaterializedFamilyResult(
-        source_schema=target_schema,
-        root_table=root_table,
-        created_tables=sorted(created_tables),
-        family_description=family_description,
-        relationships_used=[
-            relationship
-            for relationship in family_description.relationships
-            if relationship.parent_table in created_tables and relationship.child_table in created_tables
-        ],
-        table_kind=table_kind,
     )
+    original_schema = _current_schema_name(con)
+    try:
+        _prepare_target_schema(con, target_schema, table_kind, reset_schema)
+        _create_table_as_select(
+            con,
+            target_schema,
+            root_table,
+            f"""
+            SELECT *
+            FROM {qqualified(source_helper_schema, root_table)}
+            WHERE {root_filter_sql}
+            """,
+            table_kind,
+        )
+
+        relationship_rows = con.execute(
+            f"""
+            SELECT PARENT_TABLE, CHILD_TABLE, SEGMENT_NAME, RELATION_KIND
+            FROM {qqualified(source_helper_schema, "__JVS_RELATIONSHIPS")}
+            WHERE ROOT_TABLE = '{root_table}'
+            ORDER BY PARENT_TABLE, CHILD_TABLE, SEGMENT_NAME
+            """
+        ).fetchall()
+        pending = [
+            Relationship(
+                parent_table=parent,
+                child_table=child,
+                segment_name=segment,
+                relation_kind=relation_kind,
+            )
+            for parent, child, segment, relation_kind in relationship_rows
+        ]
+        created_tables = {root_table}
+
+        while pending:
+            progress = False
+            remaining: list[Relationship] = []
+            for relationship in pending:
+                if relationship.parent_table not in created_tables:
+                    remaining.append(relationship)
+                    continue
+                if relationship.relation_kind == "object":
+                    join_predicate = (
+                        f'p.{qident(relationship.segment_name + "|object")} = '
+                        f'c.{qident("_id")}'
+                    )
+                elif relationship.relation_kind == "array":
+                    join_predicate = (
+                        f'c.{qident("_parent")} = '
+                        f'p.{qident("_id")}'
+                    )
+                else:
+                    raise ValueError(f"Unsupported relation kind: {relationship.relation_kind}")
+                _create_table_as_select(
+                    con,
+                    target_schema,
+                    relationship.child_table,
+                    f"""
+                    SELECT c.*
+                    FROM {qqualified(source_helper_schema, relationship.child_table)} c
+                    JOIN {qqualified(target_schema, relationship.parent_table)} p
+                      ON {join_predicate}
+                    """,
+                    table_kind,
+                )
+                created_tables.add(relationship.child_table)
+                progress = True
+            if not progress:
+                unresolved = [
+                    {
+                        "parent": relationship.parent_table,
+                        "child": relationship.child_table,
+                        "segment": relationship.segment_name,
+                        "kind": relationship.relation_kind,
+                    }
+                    for relationship in remaining
+                ]
+                raise AssertionError(f"Could not resolve family materialization order for {unresolved!r}")
+            pending = remaining
+
+        family_description = describe_source_families(con, target_schema)
+        if root_table not in family_description.root_tables:
+            raise AssertionError(f"Expected {root_table} to be a root table in {target_schema}")
+        return MaterializedFamilyResult(
+            source_schema=target_schema,
+            root_table=root_table,
+            created_tables=sorted(created_tables),
+            family_description=family_description,
+            relationships_used=[
+                relationship
+                for relationship in family_description.relationships
+                if relationship.parent_table in created_tables and relationship.child_table in created_tables
+            ],
+            table_kind=table_kind,
+        )
+    finally:
+        _restore_current_schema(con, original_schema)
 
 
 def _format_select_sql(select_items: list[tuple[str, str]], from_sql: str) -> str:
@@ -744,7 +812,7 @@ def _compile_structured_array_node(
 
 
 def compile_structured_shape_spec(shape_spec: StructuredShapeSpec) -> SynthesizedFamilySpec:
-    _validate_structured_object_node(shape_spec.root, label=shape_spec.root_table)
+    validate_structured_shape_spec(shape_spec)
     return SynthesizedFamilySpec(
         root_table=shape_spec.root_table,
         table_specs=_compile_structured_object_node(
@@ -762,20 +830,13 @@ def materialize_synthesized_family(
     table_kind: TableKind = "table",
     reset_schema: bool = True,
 ) -> MaterializedFamilyResult:
-    if not family_spec.table_specs:
-        raise ValueError("family_spec.table_specs must not be empty")
-    table_names = [table_spec.table_name for table_spec in family_spec.table_specs]
-    if family_spec.root_table not in table_names:
-        raise ValueError(
-            f"Root table {family_spec.root_table!r} must be present in table_specs (got {table_names!r})"
-        )
-    if len(set(table_names)) != len(table_names):
-        raise ValueError(f"table_specs contain duplicate table names: {table_names!r}")
+    validate_synthesized_family_spec(family_spec)
 
-    _prepare_target_schema(con, target_schema, table_kind, reset_schema)
-    wrapper_manifests = _wrapper_manifests_for_family_spec(con, family_spec)
+    original_schema = _current_schema_name(con)
     temp_preprocessor_schema: str | None = None
     try:
+        _prepare_target_schema(con, target_schema, table_kind, reset_schema)
+        wrapper_manifests = _wrapper_manifests_for_family_spec(con, family_spec)
         if wrapper_manifests:
             temp_preprocessor_schema, _ = _install_ephemeral_wrapper_preprocessor(
                 con,
@@ -790,29 +851,30 @@ def materialize_synthesized_family(
                 table_spec.select_sql,
                 table_kind,
             )
+
+        family_description = describe_source_families(con, target_schema)
+        if family_spec.root_table not in family_description.root_tables:
+            raise AssertionError(
+                f"Expected synthesized root {family_spec.root_table} to be a root table in {target_schema}; "
+                f"got roots {family_description.root_tables!r}"
+            )
+        created_tables = [table_spec.table_name for table_spec in family_spec.table_specs]
+        return MaterializedFamilyResult(
+            source_schema=target_schema,
+            root_table=family_spec.root_table,
+            created_tables=created_tables,
+            family_description=family_description,
+            relationships_used=[
+                relationship
+                for relationship in family_description.relationships
+                if relationship.parent_table in created_tables and relationship.child_table in created_tables
+            ],
+            table_kind=table_kind,
+        )
     finally:
         if temp_preprocessor_schema is not None:
             try:
                 con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")
             finally:
                 con.execute(f"DROP SCHEMA IF EXISTS {qident(temp_preprocessor_schema)} CASCADE")
-
-    family_description = describe_source_families(con, target_schema)
-    if family_spec.root_table not in family_description.root_tables:
-        raise AssertionError(
-            f"Expected synthesized root {family_spec.root_table} to be a root table in {target_schema}; "
-            f"got roots {family_description.root_tables!r}"
-        )
-    created_tables = [table_spec.table_name for table_spec in family_spec.table_specs]
-    return MaterializedFamilyResult(
-        source_schema=target_schema,
-        root_table=family_spec.root_table,
-        created_tables=created_tables,
-        family_description=family_description,
-        relationships_used=[
-            relationship
-            for relationship in family_description.relationships
-            if relationship.parent_table in created_tables and relationship.child_table in created_tables
-        ],
-        table_kind=table_kind,
-    )
+        _restore_current_schema(con, original_schema)

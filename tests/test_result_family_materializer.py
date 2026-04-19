@@ -4,10 +4,15 @@ import _bootstrap  # noqa: F401
 
 from nano_support import connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
 from result_family_materializer import (
+    StructuredArrayNodeSpec,
+    StructuredFieldSpec,
+    StructuredObjectNodeSpec,
+    StructuredShapeSpec,
     ResultTableSpec,
     SynthesizedFamilySpec,
     materialize_family_preserving_subset,
     materialize_synthesized_family,
+    validate_result_family_spec,
 )
 
 
@@ -39,9 +44,51 @@ def activate(con, schema: str, script: str) -> None:
     con.execute(f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {schema}.{script}")
 
 
+def current_schema(con) -> str:
+    return str(con.execute("SELECT CURRENT_SCHEMA FROM DUAL").fetchall()[0][0])
+
+
 def main() -> None:
     con = connect()
     try:
+        validate_result_family_spec(
+            StructuredShapeSpec(
+                root_table="VALID_DOC",
+                root=StructuredObjectNodeSpec(
+                    from_sql="FROM DUAL",
+                    id_sql="1",
+                    fields=[StructuredFieldSpec(name="name", sql="'ok'")],
+                    objects=[],
+                    arrays=[],
+                ),
+            )
+        )
+        try:
+            validate_result_family_spec(
+                StructuredShapeSpec(
+                    root_table="BROKEN_DOC",
+                    root=StructuredObjectNodeSpec(
+                        from_sql="FROM DUAL",
+                        id_sql="1",
+                        fields=[],
+                        objects=[],
+                        arrays=[
+                            StructuredArrayNodeSpec(
+                                name="items",
+                                from_sql="FROM DUAL",
+                                parent_id_sql="1",
+                                position_sql="0",
+                                value_sql="'x'",
+                            )
+                        ],
+                    ),
+                )
+            )
+            raise AssertionError("expected validate_result_family_spec to reject arrays without array_ref fields")
+        except ValueError as error:
+            if "requires a matching array_ref field" not in str(error):
+                raise AssertionError(f"unexpected validation error: {error}") from error
+
         install_source_fixture(con, include_deep_fixture=False)
         install_wrapper_views(
             con,
@@ -60,6 +107,7 @@ def main() -> None:
             script_name=BASE_PP_SCRIPT,
         )
         activate(con, BASE_PP_SCHEMA, BASE_PP_SCRIPT)
+        con.execute("OPEN SCHEMA SYS")
 
         subset_result = materialize_family_preserving_subset(
             con,
@@ -84,6 +132,7 @@ def main() -> None:
             "subset created tables",
         )
         assert_equal(subset_result.family_description.root_tables, ["SAMPLE"], "subset root tables")
+        assert_equal(current_schema(con), "SYS", "subset materialization should preserve current schema")
 
         install_wrapper_views(
             con,
@@ -121,6 +170,7 @@ def main() -> None:
         )
 
         activate(con, BASE_PP_SCHEMA, BASE_PP_SCRIPT)
+        con.execute("OPEN SCHEMA SYS")
         report_result = materialize_synthesized_family(
             con,
             target_schema=REPORT_SOURCE_SCHEMA,
@@ -183,6 +233,7 @@ def main() -> None:
             ),
         )
         assert_equal(report_result.family_description.root_tables, ["DOC_REPORT"], "report root tables")
+        assert_equal(current_schema(con), "SYS", "synthesized materialization should preserve current schema")
         assert_equal(
             report_result.family_description.family_tables_by_root["DOC_REPORT"],
             [
@@ -193,6 +244,30 @@ def main() -> None:
             ],
             "report family tables",
         )
+
+        activate(con, BASE_PP_SCHEMA, BASE_PP_SCRIPT)
+        con.execute("OPEN SCHEMA SYS")
+        temp_result = materialize_synthesized_family(
+            con,
+            target_schema="JVS_MAT_TEMP_SRC",
+            table_kind="local_temporary",
+            family_spec=SynthesizedFamilySpec(
+                root_table="TMP_DOC",
+                table_specs=[
+                    ResultTableSpec(
+                        table_name="TMP_DOC",
+                        select_sql=f"""
+                        SELECT
+                          CAST("id" AS DECIMAL(18,0)) AS "_id",
+                          "id" AS "doc_id"
+                        FROM {BASE_WRAPPER_SCHEMA}.SAMPLE
+                        """,
+                    )
+                ],
+            ),
+        )
+        assert_equal(temp_result.family_description.root_tables, ["TMP_DOC"], "local temp roots")
+        assert_equal(current_schema(con), "SYS", "local temporary materialization should preserve current schema")
 
         install_wrapper_views(
             con,
