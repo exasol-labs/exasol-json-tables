@@ -7,9 +7,20 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .generate_json_export_helper_sql import (
+    JSON_ARRAY_FROM_JSON_SORTED_SCRIPT,
+    JSON_OBJECT_FROM_FRAGMENTS_SCRIPT,
+    JSON_OBJECT_FROM_NAME_VALUE_PAIRS_SCRIPT,
+    JSON_OBJECT_FROM_OPTIONAL_FRAGMENTS_SCRIPT,
+    JSON_QUOTE_STRING_SCRIPT,
+    install_json_export_helpers,
+)
+from .generate_json_export_views_sql import install_json_export_views
+from .generate_json_export_views_sql import json_export_root_names_from_wrapper_manifest
 from .generate_preprocessor_sql import validate_identifier
 from .generate_wrapper_preprocessor_sql import (
     DEFAULT_EXPLICIT_NULL_FUNCTION_NAMES,
+    DEFAULT_TO_JSON_FUNCTION_NAMES,
     DEFAULT_VARIANT_BOOLEAN_FUNCTION_NAMES,
     DEFAULT_VARIANT_DECIMAL_FUNCTION_NAMES,
     DEFAULT_VARIANT_TYPEOF_FUNCTION_NAMES,
@@ -254,6 +265,13 @@ def add_generation_arguments(parser: argparse.ArgumentParser) -> None:
         help="Error message used when a blocked helper is called on the wrapper surface.",
     )
     parser.add_argument(
+        "--to-json-function-name",
+        dest="to_json_function_names",
+        action="append",
+        default=None,
+        help="TO_JSON helper name to enable. Repeat to install aliases.",
+    )
+    parser.add_argument(
         "--activate-session",
         action="store_true",
         help="Append an ALTER SESSION statement to the generated preprocessor SQL.",
@@ -343,6 +361,10 @@ def package_config_from_args(args: argparse.Namespace, paths: dict[str, Path]) -
         validate_identifier("Variant BOOLEAN function name", value)
         for value in (args.variant_boolean_function_names or DEFAULT_VARIANT_BOOLEAN_FUNCTION_NAMES)
     ]
+    to_json_function_names = [
+        validate_identifier("TO_JSON function name", value)
+        for value in (getattr(args, "to_json_function_names", None) or DEFAULT_TO_JSON_FUNCTION_NAMES)
+    ]
     blocked_helper_names = [
         validate_identifier("Blocked helper name", value)
         for value in (args.blocked_helper_names or [])
@@ -371,6 +393,7 @@ def package_config_from_args(args: argparse.Namespace, paths: dict[str, Path]) -
             "variantVarcharFunctionNames": variant_varchar_function_names,
             "variantDecimalFunctionNames": variant_decimal_function_names,
             "variantBooleanFunctionNames": variant_boolean_function_names,
+            "toJsonFunctionNames": to_json_function_names,
             "blockedHelperNames": blocked_helper_names,
             "blockedHelperMessage": args.blocked_helper_message,
         },
@@ -444,6 +467,7 @@ def generate_preprocessor_from_package_config(config: dict[str, Any], manifest: 
         variant_varchar_function_names=helper_profile["variantVarcharFunctionNames"],
         variant_decimal_function_names=helper_profile["variantDecimalFunctionNames"],
         variant_boolean_function_names=helper_profile["variantBooleanFunctionNames"],
+        to_json_function_names=helper_profile.get("toJsonFunctionNames") or list(DEFAULT_TO_JSON_FUNCTION_NAMES),
         blocked_helper_names=helper_profile["blockedHelperNames"],
         blocked_helper_message=helper_profile["blockedHelperMessage"],
         activate_session=bool(preprocessor_config["activateSession"]),
@@ -760,6 +784,9 @@ def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, 
     }
     expected_helper_tables = {table["tableName"] for table in manifest["tables"]}
     expected_helper_tables.update({"__JVS_ROOTS", "__JVS_RELATIONSHIPS", "__JVS_COLUMN_MEMBERS"})
+    expected_helper_tables.update(
+        root_names.view_name for root_names in json_export_root_names_from_wrapper_manifest(manifest, schema=helper_schema).values()
+    )
     missing_helper_tables = sorted(expected_helper_tables - helper_table_names)
     if missing_helper_tables:
         raise SystemExit(f"Installed helper schema is missing expected tables/views: {missing_helper_tables}")
@@ -784,6 +811,27 @@ def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, 
     ).fetchone()
     if script_rows is None or int(script_rows[0]) != 1:
         raise SystemExit(f"Installed preprocessor script {script_schema}.{script_name} was not found.")
+
+    helper_script_names = {
+        row[0]
+        for row in con.execute(
+            f"""
+            SELECT SCRIPT_NAME
+            FROM SYS.EXA_ALL_SCRIPTS
+            WHERE SCRIPT_SCHEMA = '{helper_schema}'
+            """
+        ).fetchall()
+    }
+    expected_helper_scripts = {
+        JSON_QUOTE_STRING_SCRIPT,
+        JSON_OBJECT_FROM_FRAGMENTS_SCRIPT,
+        JSON_ARRAY_FROM_JSON_SORTED_SCRIPT,
+        JSON_OBJECT_FROM_OPTIONAL_FRAGMENTS_SCRIPT,
+        JSON_OBJECT_FROM_NAME_VALUE_PAIRS_SCRIPT,
+    }
+    missing_helper_scripts = sorted(expected_helper_scripts - helper_script_names)
+    if missing_helper_scripts:
+        raise SystemExit(f"Installed helper schema is missing expected JSON export scripts: {missing_helper_scripts}")
 
 
 def validate_installed_result_family(con, config: dict[str, Any], result_family_manifest: dict[str, Any]) -> None:
@@ -926,6 +974,13 @@ def command_install(args: argparse.Namespace) -> None:
         if not args.skip_views:
             execute_plain_sql_file(con, views_sql_path.read_text())
         if not args.skip_preprocessor:
+            install_json_export_helpers(con, config["helperSchema"])
+            install_json_export_views(
+                con,
+                source_schema=config["sourceSchema"],
+                schema=config["helperSchema"],
+                udf_schema=config["helperSchema"],
+            )
             execute_generated_preprocessor_sql(con, preprocessor_sql_path.read_text())
         if args.activate_session:
             con.execute(build_activation_sql(config, include_semicolon=False))

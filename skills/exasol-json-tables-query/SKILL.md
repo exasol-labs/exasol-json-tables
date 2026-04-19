@@ -1,6 +1,6 @@
 ---
 name: exasol-json-tables-query
-description: Use when working on the query surface of Exasol JSON Tables in this repository. Covers wrapper views, helper schema generation, SQL preprocessor behavior, JSON helper semantics, path and array syntax, and validation of user-facing JSON-friendly SQL on the wrapper surface.
+description: Use when working on the query surface of Exasol JSON Tables in this repository. Covers wrapper views, helper schema generation, SQL preprocessor behavior, `TO_JSON(...)`, JSON helper semantics, path and array syntax, and validation of user-facing JSON-friendly SQL on the wrapper surface.
 ---
 
 # Exasol JSON Tables Query
@@ -11,6 +11,7 @@ Use this skill when the task is about:
 
 - the wrapper query surface
 - SQL preprocessor behavior
+- `TO_JSON(...)` on wrapper roots or ordinary tables/views
 - dotted paths, bracket access, and array rowset syntax
 - explicit-null and variant helper semantics
 - wrapper package generation, install, deploy, or validate
@@ -46,6 +47,8 @@ Start with:
 Most important tests:
 
 - `tests/test_wrapper_surface.py`
+- `tests/test_wrapper_to_json.py`
+- `tests/test_regular_table_to_json.py`
 - `tests/test_wrapper_errors.py`
 - `tests/test_wrapper_modeling.py`
 - `tests/test_wrapper_package_tool.py`
@@ -66,6 +69,8 @@ Users query wrapper views, not raw source/helper tables.
 
 The preprocessor is not optional sugar from a product perspective. It is part of the supported query surface.
 
+`TO_JSON(...)` is part of that supported surface. It is now the primary way users get final JSON back out of wrapper-root queries.
+
 ## Core Surface
 
 ### Helper functions
@@ -75,6 +80,11 @@ The preprocessor is not optional sugar from a product perspective. It is part of
 - `JSON_AS_VARCHAR(expr)`
 - `JSON_AS_DECIMAL(expr)`
 - `JSON_AS_BOOLEAN(expr)`
+
+### Final-output function
+
+- `TO_JSON(*)`
+- `TO_JSON(col1, col2, ...)`
 
 ### Syntax
 
@@ -108,6 +118,15 @@ The preprocessor is not optional sugar from a product perspective. It is part of
 - arbitrary SQL expressions inside brackets are intentionally rejected
 - do not allow Mongo-style `"items.value"` style traversal through arrays; it should fail with guidance
 
+### `TO_JSON(...)` semantics
+
+- on wrapper roots, `TO_JSON(*)` recursively serializes the whole row
+- on wrapper roots, `TO_JSON("field1", "field2")` recursively serializes only the selected top-level branches
+- in joined wrapper queries, require qualified top-level subset arguments such as `TO_JSON(s."id", s."meta")`
+- on ordinary tables or ordinary views, `TO_JSON` is a flat row serializer
+- in joined ordinary-table queries, prefer `TO_JSON(alias.*)` or qualified columns such as `TO_JSON(s."id", s."name")`
+- derived-table sources are still unsupported
+
 ## First Things To Verify In A Bug
 
 1. Is the query rooted in an allowed wrapper schema?
@@ -125,6 +144,10 @@ Use these as the main regression surface:
 
 - wrapper semantics:
   - `python3 tests/test_wrapper_surface.py`
+- wrapper `TO_JSON(...)` semantics:
+  - `python3 tests/test_wrapper_to_json.py`
+- regular-table `TO_JSON(...)` semantics:
+  - `python3 tests/test_regular_table_to_json.py`
 - error quality:
   - `python3 tests/test_wrapper_errors.py`
 - modeling shapes:
@@ -141,11 +164,13 @@ Run Nano-backed tests sequentially when they rebuild the same schemas.
 ## Guidance For Agents
 
 - Treat the wrapper surface as a product contract, not an internal convenience layer.
+- Treat `TO_JSON(...)` as part of that product contract, not as a secondary helper.
 - Prefer explicit `JVS-*` errors over leaking raw SQL resolution failures when misuse is predictable.
 - Be careful about scope:
   - helper/path syntax should only activate on allowed wrapper schemas
   - iterator semantics differ between object-array iterators and `VALUE` iterators
 - In joined queries, qualify root-document helper arguments with the root alias, for example `JSON_IS_EXPLICIT_NULL(s."note")`.
+- For joined wrapper-root `TO_JSON(...)`, qualify top-level arguments with the root alias.
 - When changing preprocessor behavior, inspect both happy-path and wrong-first-attempt ergonomics.
 - Keep install/activation guidance aligned with package-tool behavior.
 - Prefer `--json` for wrapper lifecycle commands instead of scraping printed next-step text.
@@ -154,6 +179,8 @@ Run Nano-backed tests sequentially when they rebuild the same schemas.
 
 - Preprocessor activation is session-local.
 - Derived-table roots are still a narrower surface than direct wrapper roots.
+- Joined wrapper-root `TO_JSON(*)` is not supported; use qualified top-level subsets instead.
+- `TO_JSON(alias.*)` is for ordinary tables/views, not the recursive wrapper-root path.
 - `VALUE` iterators intentionally do not support full JSON helper/path semantics.
 - Built-in `TYPEOF(...)` and plain `CAST(...)` reflect wrapper SQL types, not the original per-row JSON type contract.
 - Query-surface work should not silently change the ingest contract unless the manifest/source-family seam is explicitly part of the task.

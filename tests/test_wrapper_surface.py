@@ -124,7 +124,7 @@ def main() -> None:
         con.close()
 
     packaged_sql = (ROOT / "dist" / "json_wrapper_preprocessor_packaged_test.sql").read_text()
-    if "Configured function names: JSON_IS_EXPLICIT_NULL, JNULL, JSON_TYPEOF, JSON_AS_VARCHAR, JSON_AS_DECIMAL, JSON_AS_BOOLEAN" not in packaged_sql:
+    if "Configured function names: JSON_IS_EXPLICIT_NULL, JNULL, JSON_TYPEOF, JSON_AS_VARCHAR, JSON_AS_DECIMAL, JSON_AS_BOOLEAN, TO_JSON" not in packaged_sql:
         raise AssertionError("packaged wrapper preprocessor should enable the standard wrapper helper aliases")
     if "JSON syntax allowed only for configured JSON schemas: JSON_VIEW" not in packaged_sql:
         raise AssertionError("packaged wrapper preprocessor should be scoped to the public wrapper schema")

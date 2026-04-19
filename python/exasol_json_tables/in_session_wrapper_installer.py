@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .generate_json_export_helper_sql import install_json_export_helpers
+from .generate_json_export_views_sql import install_json_export_views
 from .generate_preprocessor_sql import validate_identifier
 from .generate_wrapper_preprocessor_sql import (
     DEFAULT_EXPLICIT_NULL_FUNCTION_NAMES,
+    DEFAULT_TO_JSON_FUNCTION_NAMES,
     DEFAULT_VARIANT_BOOLEAN_FUNCTION_NAMES,
     DEFAULT_VARIANT_DECIMAL_FUNCTION_NAMES,
     DEFAULT_VARIANT_TYPEOF_FUNCTION_NAMES,
@@ -101,6 +104,7 @@ def install_wrapper_preprocessor_in_session(
     variant_varchar_function_names: list[str] | None = None,
     variant_decimal_function_names: list[str] | None = None,
     variant_boolean_function_names: list[str] | None = None,
+    to_json_function_names: list[str] | None = None,
     blocked_helper_names: list[str] | None = None,
     blocked_helper_message: str = "This helper is not available on the wrapper surface yet.",
     activate_session: bool = False,
@@ -110,6 +114,15 @@ def install_wrapper_preprocessor_in_session(
     validated_script = validate_identifier("Preprocessor script", script)
     validated_wrapper_schema = validate_identifier("Wrapper schema", wrapper_schema)
     validated_helper_schema = validate_identifier("Helper schema", helper_schema)
+    validated_source_schema = validate_identifier("Source schema", manifest["sourceSchema"])
+
+    install_json_export_helpers(con, validated_helper_schema)
+    install_json_export_views(
+        con,
+        source_schema=validated_source_schema,
+        schema=validated_helper_schema,
+        udf_schema=validated_helper_schema,
+    )
 
     sql_text = generate_wrapper_preprocessor_sql_text(
         schema=validated_schema,
@@ -122,6 +135,7 @@ def install_wrapper_preprocessor_in_session(
         variant_varchar_function_names=variant_varchar_function_names or list(DEFAULT_VARIANT_VARCHAR_FUNCTION_NAMES),
         variant_decimal_function_names=variant_decimal_function_names or list(DEFAULT_VARIANT_DECIMAL_FUNCTION_NAMES),
         variant_boolean_function_names=variant_boolean_function_names or list(DEFAULT_VARIANT_BOOLEAN_FUNCTION_NAMES),
+        to_json_function_names=to_json_function_names or list(DEFAULT_TO_JSON_FUNCTION_NAMES),
         blocked_helper_names=blocked_helper_names or [],
         blocked_helper_message=blocked_helper_message,
         activate_session=activate_session,
@@ -167,6 +181,7 @@ def install_wrapper_surface_in_session(
     variant_varchar_function_names: list[str] | None = None,
     variant_decimal_function_names: list[str] | None = None,
     variant_boolean_function_names: list[str] | None = None,
+    to_json_function_names: list[str] | None = None,
     blocked_helper_names: list[str] | None = None,
     blocked_helper_message: str = "This helper is not available on the wrapper surface yet.",
     activate_preprocessor_session: bool = False,
@@ -191,6 +206,7 @@ def install_wrapper_surface_in_session(
         variant_varchar_function_names=variant_varchar_function_names,
         variant_decimal_function_names=variant_decimal_function_names,
         variant_boolean_function_names=variant_boolean_function_names,
+        to_json_function_names=to_json_function_names,
         blocked_helper_names=blocked_helper_names,
         blocked_helper_message=blocked_helper_message,
         activate_session=activate_preprocessor_session,

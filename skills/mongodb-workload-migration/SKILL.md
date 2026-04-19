@@ -71,13 +71,13 @@ Think in these buckets:
 
 - **Weak fit today**:
   - array-preserving projection as first-class output
-  - nested document-shaped result reconstruction as the default output contract
+  - automatic nested document-shaped reconstruction without switching into the structured-results-plus-`TO_JSON(...)` path
 
 Important practical rule:
 
 - If the target can be expressed as rows, joins, groups, or windows, the wrapper surface is usually a good destination.
 - If the target must preserve or rebuild nested document shapes, expect more manual SQL and more migration friction.
-- In this repository, that nested-output gap is now partially addressed by the **structured results** workflow. Use it when the migrated workload needs to yield nested arrays/objects again instead of plain rows.
+- In this repository, that nested-output gap is now addressed by **structured results plus `TO_JSON(...)`**. Use that combination when the migrated workload needs to yield nested arrays/objects again instead of plain rows.
 
 ## Core Translation Table
 
@@ -192,7 +192,7 @@ The analytical logic may port well, while the result shape may not.
 
 Important update for this repository:
 
-- there is now a supported **structured results** path for rebuilding nested outputs inside Exasol
+- there is now a supported **structured results + `TO_JSON(...)`** path for rebuilding nested outputs inside Exasol
 - use it when the user needs Mongo-like nested payloads, report objects, or API-facing shapes
 - do not promise MongoDB-native pipeline semantics, but do treat structured results as the preferred way to keep shape-building in the database
 
@@ -227,7 +227,7 @@ Move those expressions into the inner `SELECT` or query the wrapper view directl
    - use ordinary SQL joins for collection-to-collection logic
 5. Translate output shape last.
    - if rows are acceptable, stop there
-   - if nested output is required, switch to the structured-results workflow instead of treating it as ad hoc application-layer glue
+   - if nested output is required, switch to the structured-results workflow and plan to emit the final payload with `TO_JSON(...)`
 
 ## Good Default Recommendations
 
@@ -245,6 +245,7 @@ When a Mongo user asks for the **same nested output shape**:
 - if yes, use structured results rather than trying to force everything into one flat query result
 - prefer the higher-level `structured_shape` config first
 - use the one-shot preview tool to validate the shape quickly
+- once the shape is installed, make `TO_JSON(*)` the default final outlet
 - only drop to low-level `synthesized_family` if the shape needs exact table-family control
 
 ## What To Validate On Nano
@@ -261,7 +262,7 @@ For a serious migration task, validate all three:
 If nested output matters, validate a fourth:
 
 4. **structured output path**
-   - can the migrated workload be materialized as a structured result family and exported back to nested JSON-like rows?
+   - can the migrated workload be materialized as a structured result family and emitted through `TO_JSON(*)`?
 
 In this repository, `tests/study_mongodb_migration_focus.py` is the best starting harness.
 
@@ -306,7 +307,7 @@ If the Mongo workload expects joined nested arrays/documents in the output:
 - first write the analytical SQL that produces the needed rows
 - then decide whether to:
   - keep rows,
-  - or rebuild structure through structured results inside Exasol
+  - or rebuild structure through structured results inside Exasol and emit it with `TO_JSON(...)`
 
 ### `$setWindowFields`
 
@@ -356,7 +357,8 @@ exasol-json-tables structured-results package \
   --result-family-config ./dist/result_family_input.json
 ```
 
-5. If `structured_shape` is too limiting, move down to `synthesized_family`.
+5. Install the package, activate the preprocessor, and use `TO_JSON(*)` or `TO_JSON("field1", "field2")` as the final outlet.
+6. If `structured_shape` is too limiting, move down to `synthesized_family`.
 
 Use this especially for Mongo patterns like:
 
@@ -369,6 +371,7 @@ Tell the user clearly:
 
 - this is not MongoDB-native output semantics
 - but it is the repository’s supported way to keep structural work inside Exasol rather than rebuilding everything in application code
+- `preview-json` is the quick validation path; `TO_JSON(...)` is the main final-output path once the result is wrapped
 
 ## Research Anchors
 
@@ -400,5 +403,5 @@ This wrapper architecture is now strong on semantic portability for analytics wo
 For result shape portability:
 
 - plain row-oriented ports are the easiest path
-- structured results are the supported path when nested output must stay inside Exasol
+- structured results plus `TO_JSON(...)` are the supported path when nested output must stay inside Exasol
 - the remaining gap is automatic Mongo-style output parity, not the total absence of a nested-output workflow

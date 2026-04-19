@@ -102,6 +102,34 @@ Verifies:
 - installation
 - installed-package validation
 - end-to-end wrapper queries through the installed preprocessor
+- installed-package `TO_JSON(...)` behavior
+
+## Wrapper `TO_JSON` Surface
+
+```bash
+python3 tests/test_wrapper_to_json.py
+```
+
+Verifies:
+
+- recursive `TO_JSON(*)` on wrapper roots
+- selected top-level subset export such as `TO_JSON("meta", "items")`
+- joined wrapper-root subset export such as `TO_JSON(s."id", s."meta")`
+- repeated `TO_JSON(...)` calls in one query block
+- wrong-shape errors such as joined `TO_JSON(*)` or nested-path arguments
+
+## Regular-Table `TO_JSON` Surface
+
+```bash
+python3 tests/test_regular_table_to_json.py
+```
+
+Verifies:
+
+- flat `TO_JSON(*)` on ordinary tables and ordinary views
+- joined `TO_JSON(alias.*)` on ordinary tables
+- selected-column export such as `TO_JSON("id", "name")`
+- derived-table and unsupported-scope errors
 
 ## Wrapper Error Handling
 
@@ -198,9 +226,10 @@ Verifies:
 - generating wrapper/helper objects from the current database session
 - installing the companion preprocessor in the same session
 - wrapping and querying a `LOCAL TEMPORARY` result family
+- using `TO_JSON(*)` on the in-session wrapped result family
 - the observed cross-session query behavior while the creating session remains alive
 
-### JSON Export Regression
+### Python Export Oracle
 
 ```bash
 python3 tests/test_result_family_json_export.py
@@ -208,11 +237,13 @@ python3 tests/test_result_family_json_export.py
 
 Verifies:
 
-- exporting family-preserving subsets back to nested JSON-like rows
-- exporting durable synthesized result families back to nested JSON-like rows
-- exporting in-session wrapped local-temporary result families back to nested JSON-like rows
+- exporting family-preserving subsets back to nested JSON-like rows through the secondary Python path
+- exporting durable synthesized result families back to nested JSON-like rows through the secondary Python path
+- exporting in-session wrapped local-temporary result families back to nested JSON-like rows through the secondary Python path
 - preserving scalar-array versus object-array reconstruction
 - preserving numeric JSON typing for aggregated export values
+
+This is no longer the main user-facing outlet. Treat it as the programmatic fallback and correctness oracle behind the documented `TO_JSON(...)` surface.
 
 ### Structured Results From Relational Tables
 
@@ -225,7 +256,7 @@ Verifies:
 - materializing a synthesized source-like family from plain relational SQL
 - packaging and installing that family through the durable package workflow
 - querying it through the wrapper surface with path, bracket, and rowset syntax
-- exporting it back to nested JSON-like rows
+- emitting nested JSON through `TO_JSON(*)` and subset forms on the wrapped relational result
 
 ### Structured Result Ergonomics
 
@@ -236,7 +267,7 @@ python3 tests/test_structured_result_ergonomics.py
 Verifies:
 
 - authoring structured results with the higher-level `structured_shape` config
-- one-shot `preview-json` materialize-and-export workflows
+- one-shot `preview-json` materialize-and-preview workflows
 - durable packaging from the same higher-level shape config
 
 ### Durable Result-Family Package

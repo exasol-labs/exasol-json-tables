@@ -6,7 +6,7 @@ It gives you one workflow for:
 
 - ingesting raw JSON or NDJSON into Exasol
 - querying that data with JSON-friendly SQL instead of raw helper tables
-- reshaping SQL results back into nested, JSON-like output when you need it
+- reshaping SQL results back into the nested contract and emitting final JSON with `TO_JSON(...)` when you need it
 
 The usual Exasol pattern for JSON is to store the document as a string and then use built-in JSON functions whenever you need to extract a field, filter on a nested value, or reshape part of the payload. That works, but it gets heavy once the data is deeply nested, reused across many queries, or needs array-aware analytics. Exasol JSON Tables is an alternative workflow: ingest JSON into a stable relational contract once, then query and reshape it through a JSON-friendly SQL surface instead of repeatedly pulling values back out of strings.
 
@@ -19,6 +19,7 @@ Exasol JSON Tables gives you a clean JSON native interface:
 - inspect variants with `JSON_TYPEOF(...)` and `JSON_AS_*`
 - keep missing vs explicit `null` semantics intact
 - materialize structured results back into a reusable nested contract
+- finish with `TO_JSON(*)` or `TO_JSON("field1", "field2")` when you want final JSON output
 - JSON document size is no longer bound by string size limits
 
 It is especially useful if you want to:
@@ -26,7 +27,7 @@ It is especially useful if you want to:
 - analyze semi-structured event or API data directly in Exasol
 - build bronze/silver/gold pipelines on top of JSON-shaped source data
 - migrate analytics workloads from MongoDB into SQL
-- return nested, document-style output from ordinary relational tables
+- return nested, document-style output from ordinary relational tables through structured results plus `TO_JSON(...)`
 
 ## What You Get
 
@@ -59,7 +60,7 @@ Take query results and materialize them back into the same nested contract, so t
 
 - be queried again through the wrapper surface
 - be used as a durable intermediate result
-- be exported back to nested JSON-like rows
+- be emitted as final JSON through `TO_JSON(*)` or `TO_JSON(...)`
 
 ## Quick Example
 
@@ -92,6 +93,14 @@ SELECT
 FROM JSON_VIEW.SAMPLE s
 JOIN item IN s."items"
 ORDER BY s."id", item._index;
+```
+
+And when you want the final document back out of a wrapped family:
+
+```sql
+SELECT TO_JSON(*) AS doc_json
+FROM JSON_VIEW.SAMPLE
+ORDER BY "_id";
 ```
 
 ## Install
@@ -146,6 +155,13 @@ After that, activate the wrapper syntax in your SQL session:
 ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSOR;
 ```
 
+At that point, the primary final-output surface is available too:
+
+```sql
+SELECT TO_JSON(*) AS doc_json
+FROM JSON_VIEW.CUSTOMER_EVENTS;
+```
+
 If you want more control, the same flow is also available as separate commands:
 
 - `exasol-json-tables ingest`
@@ -155,7 +171,7 @@ If you want more control, the same flow is also available as separate commands:
 - `exasol-json-tables validate`
 - `exasol-json-tables structured-results ...`
 
-For automation and autonomous agents, the major workflow commands also support `--json`. In that mode they emit a machine-readable summary on stdout with the important outputs, such as package paths, schema names, activation SQL, smoke-test SQL, and wrapper-scope warnings. `structured-results preview-json` already returns JSON rows directly.
+For automation and autonomous agents, the major workflow commands also support `--json`. In that mode they emit a machine-readable summary on stdout with the important outputs, such as package paths, schema names, activation SQL, smoke-test SQL, and wrapper-scope warnings. `structured-results preview-json` is the fast one-shot preview path; the primary durable final-output path is `TO_JSON(...)` on the installed wrapper or result wrapper.
 
 ## Further Reading
 

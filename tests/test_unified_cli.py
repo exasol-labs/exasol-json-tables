@@ -368,6 +368,12 @@ def test_unified_cli_ingest_and_wrap_with_derived_defaults() -> None:
         package_config: Optional[dict[str, object]] = None
 
         try:
+            con = connect()
+            try:
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
             result = subprocess.run(
                 [
                     "python3",
@@ -419,12 +425,13 @@ def test_unified_cli_ingest_and_wrap_with_derived_defaults() -> None:
                 ("3", None, "deep"),
             ]
         finally:
-            if package_config is not None:
-                con = connect()
-                try:
+            con = connect()
+            try:
+                if package_config is not None:
                     cleanup_package_schemas(con, package_config)
-                finally:
-                    con.close()
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
 
 
 def test_unified_cli_ingest_and_wrap_with_lowercase_root_name() -> None:
@@ -442,6 +449,12 @@ def test_unified_cli_ingest_and_wrap_with_lowercase_root_name() -> None:
         package_config: Optional[dict[str, object]] = None
 
         try:
+            con = connect()
+            try:
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
             result = subprocess.run(
                 [
                     "python3",
@@ -490,12 +503,13 @@ def test_unified_cli_ingest_and_wrap_with_lowercase_root_name() -> None:
                 ("3", "Carol", "NULL", "NULL"),
             ]
         finally:
-            if package_config is not None:
-                con = connect()
-                try:
+            con = connect()
+            try:
+                if package_config is not None:
                     cleanup_package_schemas(con, package_config)
-                finally:
-                    con.close()
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
 
 
 def test_unified_cli_ingest_and_wrap_json_summary() -> None:
@@ -570,12 +584,13 @@ def test_unified_cli_ingest_and_wrap_json_summary() -> None:
 
             assert rows == [("1", "10"), ("2", "20"), ("3", None)]
         finally:
-            if package_config is not None:
-                con = connect()
-                try:
+            con = connect()
+            try:
+                if package_config is not None:
                     cleanup_package_schemas(con, package_config)
-                finally:
-                    con.close()
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
 
 
 if __name__ == "__main__":

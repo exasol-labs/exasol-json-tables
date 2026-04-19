@@ -6,6 +6,8 @@ import argparse
 import json
 from pathlib import Path
 
+from .generate_json_export_helper_sql import helper_names
+from .generate_json_export_views_sql import json_export_root_names_from_wrapper_manifest
 from .generate_preprocessor_sql import render_sql, validate_identifier
 
 
@@ -16,6 +18,7 @@ DEFAULT_VARIANT_TYPEOF_FUNCTION_NAMES = ["JSON_TYPEOF"]
 DEFAULT_VARIANT_VARCHAR_FUNCTION_NAMES = ["JSON_AS_VARCHAR"]
 DEFAULT_VARIANT_DECIMAL_FUNCTION_NAMES = ["JSON_AS_DECIMAL"]
 DEFAULT_VARIANT_BOOLEAN_FUNCTION_NAMES = ["JSON_AS_BOOLEAN"]
+DEFAULT_TO_JSON_FUNCTION_NAMES = ["TO_JSON"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,6 +96,13 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=None,
         help="Additional helper name that should still fail fast on the wrapper surface.",
+    )
+    parser.add_argument(
+        "--to-json-function-name",
+        dest="to_json_function_names",
+        action="append",
+        default=None,
+        help="TO_JSON helper name to enable. Repeat to install aliases. Default: TO_JSON.",
     )
     parser.add_argument(
         "--blocked-helper-message",
@@ -246,6 +256,41 @@ def _build_visible_column_config(manifests: list[dict]) -> dict[str, dict[str, d
     return config
 
 
+def _build_to_json_config(manifests: list[dict]) -> dict[str, dict[str, dict[str, object]]]:
+    config: dict[str, dict[str, dict[str, object]]] = {}
+    for manifest in manifests:
+        public_schema = validate_identifier("Manifest public schema", manifest["publicSchema"])
+        helper_schema = validate_identifier("Manifest helper schema", manifest["helperSchema"])
+        public_schema_tables = config.setdefault(public_schema, {})
+        helper_udf_names = helper_names(helper_schema)
+        export_root_names = json_export_root_names_from_wrapper_manifest(manifest, schema=helper_schema)
+
+        roots_by_table = {str(root["tableName"]).upper(): root for root in manifest["roots"]}
+        for root_table, root_names in export_root_names.items():
+            root = roots_by_table[root_table]
+            argument_to_fragment: dict[str, str] = {}
+            display_name_by_argument: dict[str, str] = {}
+            for fragment in root_names.fragments:
+                normalized_base_name = str(fragment.base_name).upper()
+                argument_to_fragment[normalized_base_name] = fragment.column_name
+                display_name_by_argument[normalized_base_name] = fragment.base_name
+
+                normalized_visible_name = str(fragment.visible_name).upper()
+                argument_to_fragment[normalized_visible_name] = fragment.column_name
+                display_name_by_argument[normalized_visible_name] = fragment.visible_name
+
+            public_schema_tables[validate_identifier("Manifest public view", root["publicView"])] = {
+                "rootTable": root_table,
+                "exportViewQualified": root_names.qualified_view,
+                "idColumn": root_names.id_column,
+                "fullJsonColumn": root_names.full_json_column,
+                "optionalFragmentsFunction": helper_udf_names.json_object_from_optional_fragments,
+                "fragmentColumnByArgumentName": argument_to_fragment,
+                "displayNameByArgumentName": display_name_by_argument,
+            }
+    return config
+
+
 def _add_helper_kind(mapping: dict[str, str], function_name: str, helper_kind: str) -> None:
     previous_kind = mapping.get(function_name)
     if previous_kind is not None and previous_kind != helper_kind:
@@ -267,6 +312,7 @@ def generate_wrapper_preprocessor_sql_text(
     variant_varchar_function_names: list[str] | None = None,
     variant_decimal_function_names: list[str] | None = None,
     variant_boolean_function_names: list[str] | None = None,
+    to_json_function_names: list[str] | None = None,
     blocked_helper_names: list[str] | None = None,
     blocked_helper_message: str = "This helper is not available on the wrapper surface yet.",
     activate_session: bool = False,
@@ -278,6 +324,7 @@ def generate_wrapper_preprocessor_sql_text(
         raise SystemExit("Wrapper semantic helper generation requires manifest data.")
     group_config = _build_group_config(manifests)
     visible_column_config = _build_visible_column_config(manifests)
+    to_json_config = _build_to_json_config(manifests)
     normalized_function_names = [
         validate_identifier("Function name", value)
         for value in (function_names or DEFAULT_EXPLICIT_NULL_FUNCTION_NAMES)
@@ -298,6 +345,10 @@ def generate_wrapper_preprocessor_sql_text(
         validate_identifier("Variant BOOLEAN function name", value)
         for value in (variant_boolean_function_names or DEFAULT_VARIANT_BOOLEAN_FUNCTION_NAMES)
     ]
+    normalized_to_json_function_names = [
+        validate_identifier("TO_JSON function name", value)
+        for value in (to_json_function_names or DEFAULT_TO_JSON_FUNCTION_NAMES)
+    ]
     helper_function_kinds: dict[str, str] = {}
     for function_name in normalized_function_names:
         _add_helper_kind(helper_function_kinds, function_name, "explicit_null")
@@ -309,6 +360,8 @@ def generate_wrapper_preprocessor_sql_text(
         _add_helper_kind(helper_function_kinds, function_name, "variant_as_decimal")
     for function_name in normalized_variant_boolean_function_names:
         _add_helper_kind(helper_function_kinds, function_name, "variant_as_boolean")
+    for function_name in normalized_to_json_function_names:
+        _add_helper_kind(helper_function_kinds, function_name, "to_json")
     normalized_blocked_helpers = [
         validate_identifier("Blocked helper name", value)
         for value in (blocked_helper_names or [])
@@ -317,6 +370,7 @@ def generate_wrapper_preprocessor_sql_text(
         wrapper_schema: helper_schema
         for wrapper_schema, helper_schema in zip(normalized_wrapper_schemas, normalized_helper_schemas)
     }
+    regular_to_json_row_object_function = helper_names(normalized_helper_schemas[0]).json_object_from_name_value_pairs
     return render_sql(
         normalized_schema,
         normalized_script,
@@ -327,6 +381,8 @@ def generate_wrapper_preprocessor_sql_text(
         helper_schema_map,
         group_config,
         visible_column_config,
+        to_json_config,
+        regular_to_json_row_object_function,
         True,
         activate_session,
         helper_function_kinds,
@@ -349,6 +405,7 @@ def main() -> None:
         variant_varchar_function_names=args.variant_varchar_function_names,
         variant_decimal_function_names=args.variant_decimal_function_names,
         variant_boolean_function_names=args.variant_boolean_function_names,
+        to_json_function_names=args.to_json_function_names,
         blocked_helper_names=args.blocked_helper_names,
         blocked_helper_message=args.blocked_helper_message,
         activate_session=args.activate_session,

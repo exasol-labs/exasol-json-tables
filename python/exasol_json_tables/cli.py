@@ -676,6 +676,7 @@ def command_ingest_and_wrap(args: argparse.Namespace) -> None:
             variant_varchar_function_names=None,
             variant_decimal_function_names=None,
             variant_boolean_function_names=None,
+            to_json_function_names=None,
             blocked_helper_names=None,
             blocked_helper_message="This helper is not available on the wrapper surface yet.",
             activate_session=False,

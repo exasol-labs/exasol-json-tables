@@ -8,6 +8,7 @@ from pathlib import Path
 
 import _bootstrap  # noqa: F401
 
+from result_family_json_export import export_root_family_to_json
 from nano_support import ROOT, connect, install_source_fixture
 
 
@@ -24,6 +25,17 @@ PREPROCESSOR_SCRIPT = "JSON_WRAPPER_PKG_PREPROCESSOR"
 def assert_equal(actual, expected, label: str) -> None:
     if actual != expected:
         raise AssertionError(f"{label} mismatch.\nExpected: {expected}\nActual:   {actual}")
+
+
+def project_top_level(rows: list[dict[str, object]], keys: list[str]) -> list[dict[str, object]]:
+    projected: list[dict[str, object]] = []
+    for row in rows:
+        projected_row: dict[str, object] = {}
+        for key in keys:
+            if key in row:
+                projected_row[key] = row[key]
+        projected.append(projected_row)
+    return projected
 
 
 def main() -> None:
@@ -68,6 +80,11 @@ def main() -> None:
         package_config["helperProfile"]["variantTypeofFunctionNames"],
         ["JSON_TYPEOF"],
         "package config variant typeof helper profile",
+    )
+    assert_equal(
+        package_config["helperProfile"]["toJsonFunctionNames"],
+        ["TO_JSON"],
+        "package config TO_JSON helper profile",
     )
     assert_equal(
         package_config["generatedFiles"]["viewsSql"],
@@ -167,6 +184,7 @@ def main() -> None:
     con = connect()
     try:
         con.execute(f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {PREPROCESSOR_SCHEMA}.{PREPROCESSOR_SCRIPT}")
+        sample_expected = export_root_family_to_json(con, source_schema="JVS_SRC", root_table="SAMPLE")
         rows = con.execute(
             f"""
             SELECT
@@ -188,6 +206,96 @@ def main() -> None:
             ],
             "installed wrapper package query",
         )
+        to_json_rows = [
+            (json.loads(row[0]), json.loads(row[1]), json.loads(row[2]), json.loads(row[3]))
+            for row in con.execute(
+                f"""
+                SELECT
+                  TO_JSON(*) AS full_json,
+                  TO_JSON("id", "meta") AS subset_json,
+                  TO_JSON("meta") AS meta_json,
+                  TO_JSON("meta") AS meta_json_again
+                FROM {WRAPPER_SCHEMA}.SAMPLE
+                ORDER BY "id"
+                """
+            ).fetchall()
+        ]
+        assert_equal(
+            [row[0] for row in to_json_rows],
+            sample_expected,
+            "installed package TO_JSON(*) rows",
+        )
+        assert_equal(
+            [row[1] for row in to_json_rows],
+            project_top_level(sample_expected, ["id", "meta"]),
+            "installed package TO_JSON subset rows",
+        )
+        assert_equal(
+            [row[2] for row in to_json_rows],
+            project_top_level(sample_expected, ["meta"]),
+            "installed package repeated TO_JSON rows",
+        )
+        assert_equal(
+            [row[3] for row in to_json_rows],
+            project_top_level(sample_expected, ["meta"]),
+            "installed package repeated TO_JSON rows again",
+        )
+        regular_rows = [
+            json.loads(row[0])
+            for row in con.execute(
+                """
+                SELECT TO_JSON("id", "name")
+                FROM JVS_SRC.SAMPLE
+                ORDER BY "_id"
+                """
+            ).fetchall()
+        ]
+        assert_equal(
+            regular_rows,
+            [{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}, {"id": 3, "name": "gamma"}],
+            "installed package regular-table TO_JSON rows",
+        )
+
+        helper_view_names = {
+            row[0]
+            for row in con.execute(
+                f"""
+                SELECT OBJECT_NAME
+                FROM SYS.EXA_ALL_OBJECTS
+                WHERE ROOT_NAME = '{HELPER_SCHEMA}'
+                  AND OBJECT_TYPE = 'VIEW'
+                ORDER BY OBJECT_NAME
+                """
+            ).fetchall()
+        }
+        expected_helper_views = {"__JVS_JSON_EXPORT_SAMPLE", "__JVS_JSON_EXPORT_DEEPDOC"}
+        missing_helper_views = expected_helper_views - helper_view_names
+        if missing_helper_views:
+            raise AssertionError(f"installed package should materialize hidden export views; missing {sorted(missing_helper_views)}")
+
+        helper_script_names = {
+            row[0]
+            for row in con.execute(
+                f"""
+                SELECT SCRIPT_NAME
+                FROM SYS.EXA_ALL_SCRIPTS
+                WHERE SCRIPT_SCHEMA = '{HELPER_SCHEMA}'
+                ORDER BY SCRIPT_NAME
+                """
+            ).fetchall()
+        }
+        expected_helper_scripts = {
+            "JSON_QUOTE_STRING",
+            "JSON_OBJECT_FROM_FRAGMENTS",
+            "JSON_ARRAY_FROM_JSON_SORTED",
+            "JSON_OBJECT_FROM_OPTIONAL_FRAGMENTS",
+            "JSON_OBJECT_FROM_NAME_VALUE_PAIRS",
+        }
+        missing_helper_scripts = expected_helper_scripts - helper_script_names
+        if missing_helper_scripts:
+            raise AssertionError(
+                f"installed package should materialize JSON export helper scripts; missing {sorted(missing_helper_scripts)}"
+            )
     finally:
         con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")
         con.close()

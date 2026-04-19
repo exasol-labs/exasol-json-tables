@@ -27,6 +27,17 @@ def assert_equal(actual, expected, label: str) -> None:
         raise AssertionError(f"{label} mismatch.\nExpected: {expected}\nActual:   {actual}")
 
 
+def project_top_level(rows: list[dict[str, object]], keys: list[str]) -> list[dict[str, object]]:
+    projected: list[dict[str, object]] = []
+    for row in rows:
+        projected_row: dict[str, object] = {}
+        for key in keys:
+            if key in row:
+                projected_row[key] = row[key]
+        projected.append(projected_row)
+    return projected
+
+
 def install_relational_fixture(con) -> None:
     statements = [
         f"DROP SCHEMA IF EXISTS {UPSTREAM_SCHEMA} CASCADE",
@@ -279,6 +290,20 @@ def main() -> None:
         )
 
         exported = export_root_family_to_json(con, source_schema=RESULT_SOURCE_SCHEMA, root_table="ORDER_REPORT")
+        to_json_rows = [
+            (json.loads(row[0]), json.loads(row[1]), json.loads(row[2]), json.loads(row[3]))
+            for row in con.execute(
+                f"""
+                SELECT
+                  TO_JSON(*) AS full_json,
+                  TO_JSON("customer", "items") AS nested_subset_json,
+                  TO_JSON("order_id", "status") AS scalar_subset_json,
+                  TO_JSON("customer") AS customer_json
+                FROM {RESULT_WRAPPER_SCHEMA}.ORDER_REPORT
+                ORDER BY "order_id"
+                """
+            ).fetchall()
+        ]
         assert_equal(
             exported,
             [
@@ -310,6 +335,26 @@ def main() -> None:
                 },
             ],
             "relational-source JSON export",
+        )
+        assert_equal(
+            [row[0] for row in to_json_rows],
+            exported,
+            "relational-source TO_JSON(*) export",
+        )
+        assert_equal(
+            [row[1] for row in to_json_rows],
+            project_top_level(exported, ["customer", "items"]),
+            "relational-source TO_JSON nested subset",
+        )
+        assert_equal(
+            [row[2] for row in to_json_rows],
+            project_top_level(exported, ["order_id", "status"]),
+            "relational-source TO_JSON scalar subset",
+        )
+        assert_equal(
+            [row[3] for row in to_json_rows],
+            project_top_level(exported, ["customer"]),
+            "relational-source TO_JSON customer subset",
         )
     finally:
         try:

@@ -1,6 +1,6 @@
 ---
 name: exasol-json-tables-reshape
-description: Use when working on the reshape stage of Exasol JSON Tables in this repository. Covers structured results, nested output materialization, structured_shape and synthesized_family authoring, durable or in-session result families, JSON-like export, and turning relational query output back into the Exasol JSON Tables nested contract.
+description: Use when working on the reshape stage of Exasol JSON Tables in this repository. Covers structured results, nested output materialization, structured_shape and synthesized_family authoring, durable or in-session result families, `TO_JSON(...)` as the primary final outlet, and turning relational query output back into the Exasol JSON Tables nested contract.
 ---
 
 # Exasol JSON Tables Reshape
@@ -14,7 +14,7 @@ Use this skill when the task is about:
 - reshaping SQL output back into the Exasol JSON Tables family contract
 - `structured_shape` or `synthesized_family`
 - durable or in-session result families
-- exporting result families back to nested JSON-like rows
+- `TO_JSON(*)` or `TO_JSON("field1", "field2")` as the final output surface
 - shaping relational output into document-like results
 
 Do not use this skill for raw ingest or wrapper query-surface work unless the structured-result flow depends on them directly.
@@ -23,8 +23,8 @@ Do not use this skill for raw ingest or wrapper query-surface work unless the st
 
 1. Identify whether the user wants:
    - one-shot preview of nested output
-   - a durable structured result package
-   - programmatic export back to JSON-like rows
+   - a durable structured result package with `TO_JSON(...)` as the final outlet
+   - a secondary programmatic export path for automation or oracle checks
 2. Decide whether the authoring level should be:
    - `structured_shape` first
    - `synthesized_family` only if exact table-family control is required
@@ -36,7 +36,9 @@ Start with:
 
 - `README.md`
 - `docs/structured-results.md`
+- `docs/query-surface.md`
 - `python/exasol_json_tables/result_family_materializer.py`
+- `python/exasol_json_tables/generate_preprocessor_sql.py`
 - `python/exasol_json_tables/result_family_json_export.py`
 - `python/exasol_json_tables/structured_result_tool.py`
 - `python/exasol_json_tables/in_session_wrapper_installer.py`
@@ -44,6 +46,8 @@ Start with:
 
 Most relevant tests:
 
+- `tests/test_wrapper_to_json.py`
+- `tests/test_regular_table_to_json.py`
 - `tests/test_result_family_materializer.py`
 - `tests/test_result_family_json_export.py`
 - `tests/test_result_family_package_tool.py`
@@ -64,7 +68,8 @@ Once materialized, the result can:
 
 - be wrapped and queried again through the normal query surface
 - be kept as a durable intermediate dataset
-- be exported back to nested JSON-like rows
+- be emitted through `TO_JSON(...)` as the primary final outlet
+- still be exported through the Python path when programmatic export is specifically needed
 
 This is the right tool when plain SQL rows are not the final desired shape.
 
@@ -91,7 +96,7 @@ exasol-json-tables structured-results preview-json \
   --table-kind local_temporary
 ```
 
-This command already returns JSON rows directly. Do not expect a separate summary envelope unless a higher-level wrapper adds one.
+This command already returns JSON rows directly. Treat it as the quickest shape-validation path, not the main durable outlet.
 
 ### Durable package
 
@@ -118,6 +123,16 @@ exasol-json-tables wrap install \
 
 For agented packaging flows, prefer `--json` on `structured-results package` and the follow-up wrapper lifecycle commands.
 
+After install, the default final-output path is SQL:
+
+```sql
+ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_RESULT_PP.JSON_RESULT_PREPROCESSOR;
+
+SELECT TO_JSON(*) AS doc_json
+FROM JSON_VIEW_RESULT.DOC_REPORT
+ORDER BY "_id";
+```
+
 ## Important Guidance
 
 ### Use structured results for nested output from regular tables
@@ -137,7 +152,8 @@ That keeps:
 
 - wrapper querying
 - durable packaging
-- nested export
+- `TO_JSON(...)` as the final outlet
+- nested export as a secondary programmatic path
 
 on one consistent substrate.
 
@@ -150,9 +166,13 @@ on one consistent substrate.
 
 Use the smallest relevant validation:
 
+- primary `TO_JSON(...)` wrapper outlet:
+  - `python3 tests/test_wrapper_to_json.py`
+- flat `TO_JSON(...)` on ordinary tables/views:
+  - `python3 tests/test_regular_table_to_json.py`
 - low-level family materialization:
   - `python3 tests/test_result_family_materializer.py`
-- nested export:
+- secondary Python export path:
   - `python3 tests/test_result_family_json_export.py`
 - durable package lifecycle:
   - `python3 tests/test_result_family_package_tool.py`
@@ -172,18 +192,20 @@ If the task touches the unified CLI path too, also run:
 - Start with `structured_shape` unless the user clearly needs low-level control.
 - Distinguish three concerns:
   - materializing the family
-  - optionally wrapping it for SQL
-  - exporting it back to nested JSON-like rows
+  - wrapping it for SQL
+  - emitting final JSON with `TO_JSON(...)`
+- Keep the Python exporter positioned as a fallback or oracle, not the first user-facing recommendation.
 - If a user wants Mongo-like nested outputs, structured results are usually the correct answer.
-- `structured-results preview-json` already emits JSON rows; use `--json` on the packaging / wrapper lifecycle commands around it.
+- `structured-results preview-json` already emits JSON rows; use it for preview, then steer durable workflows toward `TO_JSON(...)`.
 - Be explicit about whether the result family is:
   - durable
   - session-local
   - for further querying
-  - for final export
+  - for final `TO_JSON(...)`
 
 ## Current Boundaries
 
 - Flat analytical results do not need structured results; plain SQL is still simpler there.
-- Structured results are the preferred nested-output path, but they are a materialization workflow, not a single-statement magic output mode.
+- Structured results are the preferred nested-output path, but the final user-facing outlet should usually be `TO_JSON(...)`, not the Python exporter.
+- `TO_JSON(...)` on ordinary tables is flat; recursive nested output still depends on the wrapped family contract.
 - Reshape-stage work should reuse the existing family contract instead of inventing incompatible nested-output representations.

@@ -2,6 +2,7 @@
 
 import _bootstrap  # noqa: F401
 
+from generate_json_export_views_sql import json_export_view_name
 from in_session_wrapper_installer import install_wrapper_surface_in_session
 from nano_support import connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
 from result_family_materializer import (
@@ -27,6 +28,12 @@ TEMP_PP_SCRIPT = "JSON_TEMP_PHASE2_PREPROCESSOR"
 def assert_equal(actual, expected, label: str) -> None:
     if actual != expected:
         raise AssertionError(f"{label} mismatch.\nExpected: {expected}\nActual:   {actual}")
+
+
+def parse_json_rows(rows) -> list[object]:
+    import json
+
+    return [json.loads(row[0]) for row in rows]
 
 
 def main() -> None:
@@ -100,6 +107,44 @@ def main() -> None:
             ["TMP_REPORT"],
             "installed manifest roots",
         )
+        helper_view_names = {
+            row[0]
+            for row in con.execute(
+                f"""
+                SELECT OBJECT_NAME
+                FROM SYS.EXA_ALL_OBJECTS
+                WHERE ROOT_NAME = '{TEMP_HELPER_SCHEMA}'
+                  AND OBJECT_TYPE = 'VIEW'
+                ORDER BY OBJECT_NAME
+                """
+            ).fetchall()
+        }
+        if json_export_view_name("TMP_REPORT") not in helper_view_names:
+            raise AssertionError("in-session install should materialize the hidden JSON export view in the helper schema")
+
+        helper_script_names = {
+            row[0]
+            for row in con.execute(
+                f"""
+                SELECT SCRIPT_NAME
+                FROM SYS.EXA_ALL_SCRIPTS
+                WHERE SCRIPT_SCHEMA = '{TEMP_HELPER_SCHEMA}'
+                ORDER BY SCRIPT_NAME
+                """
+            ).fetchall()
+        }
+        expected_helper_scripts = {
+            "JSON_QUOTE_STRING",
+            "JSON_OBJECT_FROM_FRAGMENTS",
+            "JSON_ARRAY_FROM_JSON_SORTED",
+            "JSON_OBJECT_FROM_OPTIONAL_FRAGMENTS",
+            "JSON_OBJECT_FROM_NAME_VALUE_PAIRS",
+        }
+        missing_helper_scripts = expected_helper_scripts - helper_script_names
+        if missing_helper_scripts:
+            raise AssertionError(
+                f"in-session install should materialize the JSON export helper scripts; missing {sorted(missing_helper_scripts)}"
+            )
 
         wrapper_rows = con.execute(
             f"""
@@ -115,6 +160,38 @@ def main() -> None:
             wrapper_rows,
             [("1", "A", "second"), ("2", "C", "only"), ("3", "NULL", "NULL")],
             "local temp wrapper rows",
+        )
+        to_json_rows = parse_json_rows(
+            con.execute(
+                f"""
+                SELECT TO_JSON(*)
+                FROM {TEMP_WRAPPER_SCHEMA}.TMP_REPORT
+                ORDER BY "doc_id"
+                """
+            ).fetchall()
+        )
+        assert_equal(
+            to_json_rows,
+            [
+                {"doc_id": 1, "items": [{"label": "A", "value": "first"}, {"label": "B", "value": "second"}]},
+                {"doc_id": 2, "items": [{"label": "C", "value": "only"}]},
+                {"doc_id": 3, "items": []},
+            ],
+            "local temp TO_JSON rows",
+        )
+        regular_rows = parse_json_rows(
+            con.execute(
+                """
+                SELECT TO_JSON("id", "name")
+                FROM JVS_SRC.SAMPLE
+                ORDER BY "_id"
+                """
+            ).fetchall()
+        )
+        assert_equal(
+            regular_rows,
+            [{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}, {"id": 3, "name": "gamma"}],
+            "regular-table TO_JSON rows in in-session installer test",
         )
 
         rowset_rows = con.execute(

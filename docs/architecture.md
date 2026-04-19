@@ -21,7 +21,7 @@ The product has three stages:
    Wrapper views, helper schema objects, and a scoped SQL preprocessor make those tables feel like JSON again in SQL.
 
 3. `Reshape`
-   SQL results can be materialized back into the same source-like contract, queried again, or exported back to nested JSON-like rows.
+   SQL results can be materialized back into the same source-like contract, queried again, and emitted as final JSON through `TO_JSON(...)`.
 
 ## The Shared Table Contract
 
@@ -85,6 +85,7 @@ The query layer hides most raw structural columns from normal user queries and r
 
 - `JSON_IS_EXPLICIT_NULL(...)`
 - `JSON_TYPEOF(...)`
+- `TO_JSON(*)` and `TO_JSON("field1", "field2")`
 - dotted paths such as `"meta.info.note"`
 - bracket access such as `"tags[LAST]"`
 - rowset expansion such as `JOIN item IN s."items"`
@@ -97,7 +98,8 @@ It can:
 
 - materialize query output back into the source-like contract
 - install wrapper surfaces over those result families
-- export result families back into nested JSON-like rows
+- use `TO_JSON(...)` as the primary final outlet on wrapped families
+- still support secondary programmatic export back into nested JSON-like rows
 
 That is what makes the same contract useful both as input storage and as a structured-output interchange format.
 
@@ -138,4 +140,4 @@ It is one system where:
 
 - ingest writes the nested table contract
 - query makes that contract pleasant to use
-- reshape reuses the same contract for nested output
+- reshape reuses the same contract for nested output and `TO_JSON(...)` turns it back into final JSON

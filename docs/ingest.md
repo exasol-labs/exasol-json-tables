@@ -150,7 +150,7 @@ That contract is what powers the later stages:
 - the query layer can distinguish missing from explicit `null`
 - deep object traversal can be rewritten into joins
 - arrays can be addressed by position or expanded into rows
-- structured results can reuse the same contract on output
+- structured results can reuse the same contract on output, and wrapped families can emit final JSON through `TO_JSON(...)`
 
 ## Next Step After Ingest
 

@@ -7,6 +7,9 @@ from typing import Optional
 
 import pyexasol
 
+from .generate_json_export_helper_sql import install_json_export_helpers
+from .generate_json_export_views_sql import install_json_export_views
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -77,6 +80,7 @@ def install_wrapper_preprocessor(
     manifest_paths: Optional[list[Path]] = None,
     schema_name: str = "JVS_WRAP_PP",
     script_name: str = "JSON_WRAPPER_PREPROCESSOR",
+    to_json_function_names: Optional[list[str]] = None,
 ) -> None:
     output_path = ROOT / "dist" / "json_wrapper_preprocessor_test.sql"
     helper_schemas = helper_schemas or [f"{wrapper_schema}_INTERNAL" for wrapper_schema in wrapper_schemas]
@@ -104,7 +108,19 @@ def install_wrapper_preprocessor(
         cmd.extend(["--helper-schema", helper_schema])
     for manifest_path in manifest_paths:
         cmd.extend(["--manifest", str(manifest_path)])
+    for function_name in to_json_function_names or []:
+        cmd.extend(["--to-json-function-name", function_name])
     subprocess.run(cmd, check=True)
+
+    manifests = [json.loads(path.read_text()) for path in manifest_paths]
+    for helper_schema, manifest in zip(helper_schemas, manifests):
+        install_json_export_helpers(con, helper_schema)
+        install_json_export_views(
+            con,
+            source_schema=manifest["sourceSchema"],
+            schema=helper_schema,
+            udf_schema=helper_schema,
+        )
 
     content = output_path.read_text()
     script_marker = f"CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema_name}.{script_name} AS\n"

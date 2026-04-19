@@ -31,10 +31,12 @@ They are intentionally thin wrappers over the package modules, not a second impl
 - wrapper preprocessor generator: [python/exasol_json_tables/generate_wrapper_preprocessor_sql.py](../python/exasol_json_tables/generate_wrapper_preprocessor_sql.py)
 - shared wrapper manifest and generation logic: [python/exasol_json_tables/wrapper_schema_support.py](../python/exasol_json_tables/wrapper_schema_support.py)
 - shared preprocessor engine: [python/exasol_json_tables/generate_preprocessor_sql.py](../python/exasol_json_tables/generate_preprocessor_sql.py)
+- JSON export helper generator for `TO_JSON(...)`: [python/exasol_json_tables/generate_json_export_helper_sql.py](../python/exasol_json_tables/generate_json_export_helper_sql.py)
+- hidden export-view generator for recursive `TO_JSON(...)`: [python/exasol_json_tables/generate_json_export_views_sql.py](../python/exasol_json_tables/generate_json_export_views_sql.py)
 - structured result-family materializer: [python/exasol_json_tables/result_family_materializer.py](../python/exasol_json_tables/result_family_materializer.py)
 - structured result preview/export CLI logic: [python/exasol_json_tables/structured_result_tool.py](../python/exasol_json_tables/structured_result_tool.py)
 - in-session wrapper installer: [python/exasol_json_tables/in_session_wrapper_installer.py](../python/exasol_json_tables/in_session_wrapper_installer.py)
-- result-family JSON exporter: [python/exasol_json_tables/result_family_json_export.py](../python/exasol_json_tables/result_family_json_export.py)
+- programmatic/oracle JSON exporter: [python/exasol_json_tables/result_family_json_export.py](../python/exasol_json_tables/result_family_json_export.py)
 - Nano fixture helpers: [python/exasol_json_tables/nano_support.py](../python/exasol_json_tables/nano_support.py)
 - compatibility CLI wrappers and developer glue: [tools](../tools)
 - executable regressions and studies: [tests](../tests)
@@ -73,6 +75,7 @@ These files are generated on demand and are not checked into git:
 - installed CLI: `exasol-json-tables`
 - wrapper package outputs
 - documented SQL query surface
+- documented `TO_JSON(...)` final-output surface
 - documented structured-results workflow
 
 ### Internal Or Compatibility Surface
@@ -94,8 +97,14 @@ If you are trying to understand:
 - how the SQL surface is rewritten
   Start with [python/exasol_json_tables/generate_preprocessor_sql.py](../python/exasol_json_tables/generate_preprocessor_sql.py)
 
-- how structured results are materialized and exported
-  Start with [python/exasol_json_tables/result_family_materializer.py](../python/exasol_json_tables/result_family_materializer.py) and [python/exasol_json_tables/result_family_json_export.py](../python/exasol_json_tables/result_family_json_export.py)
+- how final JSON output is generated
+  Start with [python/exasol_json_tables/generate_preprocessor_sql.py](../python/exasol_json_tables/generate_preprocessor_sql.py), [python/exasol_json_tables/generate_json_export_helper_sql.py](../python/exasol_json_tables/generate_json_export_helper_sql.py), and [python/exasol_json_tables/generate_json_export_views_sql.py](../python/exasol_json_tables/generate_json_export_views_sql.py)
+
+- how structured results are materialized and then surfaced through `TO_JSON(...)`
+  Start with [python/exasol_json_tables/result_family_materializer.py](../python/exasol_json_tables/result_family_materializer.py) and [python/exasol_json_tables/in_session_wrapper_installer.py](../python/exasol_json_tables/in_session_wrapper_installer.py)
+
+- how the secondary programmatic export path works
+  Start with [python/exasol_json_tables/result_family_json_export.py](../python/exasol_json_tables/result_family_json_export.py)
 
 - how the end-to-end user workflow is orchestrated
   Start with [python/exasol_json_tables/cli.py](../python/exasol_json_tables/cli.py)

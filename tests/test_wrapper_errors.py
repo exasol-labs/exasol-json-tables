@@ -339,7 +339,7 @@ def main() -> None:
         assert_contains_all(
             packaged_wrapper_sql,
             [
-                "Configured function names: JSON_IS_EXPLICIT_NULL, JNULL, JSON_TYPEOF, JSON_AS_VARCHAR, JSON_AS_DECIMAL, JSON_AS_BOOLEAN",
+                "Configured function names: JSON_IS_EXPLICIT_NULL, JNULL, JSON_TYPEOF, JSON_AS_VARCHAR, JSON_AS_DECIMAL, JSON_AS_BOOLEAN, TO_JSON",
                 "JSON syntax allowed only for configured JSON schemas: JSON_VIEW",
                 "Helper rewrite mode: wrapper semantic helpers",
             ],

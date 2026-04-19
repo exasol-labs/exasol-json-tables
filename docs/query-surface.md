@@ -32,6 +32,11 @@ Without that activation, the wrapper views still exist, but the extra JSON synta
 - `JSON_AS_DECIMAL(expr)`
 - `JSON_AS_BOOLEAN(expr)`
 
+### Final-Output Function
+
+- `TO_JSON(*)`
+- `TO_JSON(col1, col2, ...)`
+
 ### Syntax Sugar
 
 - dotted paths such as `"child.value"` or `"meta.info.note"`
@@ -41,6 +46,42 @@ Without that activation, the wrapper views still exist, but the extra JSON synta
 - iterator-row path and bracket access such as `item."nested.note"` and `entry."extras[LAST]"`
 
 ## Core Semantics
+
+### Final JSON Output With `TO_JSON`
+
+`TO_JSON` is the primary final outlet when you want JSON back out of a query.
+
+On wrapped roots, it serializes the row recursively:
+
+```sql
+SELECT TO_JSON(*) AS doc_json
+FROM JSON_VIEW.SAMPLE
+ORDER BY "_id";
+```
+
+For selected top-level properties, keep the same root and name them explicitly:
+
+```sql
+SELECT TO_JSON("id", "meta", "items") AS doc_json
+FROM JSON_VIEW.SAMPLE
+ORDER BY "_id";
+```
+
+For ordinary tables or ordinary views, `TO_JSON` is also available, but it is a flat row serializer rather than a recursive wrapper export:
+
+```sql
+SELECT TO_JSON(*) AS row_json
+FROM JVS_SRC.SAMPLE
+ORDER BY "_id";
+```
+
+Important boundaries:
+
+- on wrapped roots, `TO_JSON(*)` recursively serializes the full document row
+- on wrapped roots, `TO_JSON("field1", "field2")` recursively serializes only the selected top-level branches
+- in joined wrapper queries, use qualified top-level properties such as `TO_JSON(s."id", s."meta")`; joined `TO_JSON(*)` is not supported
+- in joined ordinary-table queries, use `TO_JSON(alias.*)` or qualified columns such as `TO_JSON(s."id", s."name")`
+- nested paths such as `TO_JSON("meta.info.note")` and derived-table sources are not supported yet
 
 ### Missing vs Explicit `null`
 
@@ -227,10 +268,21 @@ JSON_IS_EXPLICIT_NULL(s."note")
 JSON_TYPEOF(s."value")
 ```
 
+Do the same for wrapper-root `TO_JSON(...)` subset exports:
+
+```sql
+SELECT TO_JSON(s."id", s."meta")
+FROM JSON_VIEW.SAMPLE s
+JOIN JVS_DIM.DOC_FLAGS f
+  ON f.DOC_ID = s."id";
+```
+
 ## Known Boundaries
 
 - The preprocessor is session-local. Activate it in the SQL session where you want wrapper syntax.
 - In joined queries, qualify root-document helper arguments with the root alias, for example `JSON_IS_EXPLICIT_NULL(s."note")`.
+- `TO_JSON(*)` is the primary final-output surface on wrapped roots, but joined wrapper queries must use qualified top-level subsets such as `TO_JSON(s."id", s."meta")`.
+- On ordinary tables and ordinary views, `TO_JSON` is a flat row serializer and joined queries should use `TO_JSON(alias.*)` or qualified columns.
 - Path/helper syntax does not start from derived-table roots yet. Move the JSON expression into the inner `SELECT` or query the wrapper view directly.
 - `VALUE` iterators support plain SQL on the scalar value, but JSON helper/path syntax is intentionally not supported on them.
 - Use `JSON_TYPEOF(...)` and `JSON_AS_*` for JSON-aware variant semantics. Built-in `TYPEOF(...)` and plain `CAST(...)` reflect wrapper view SQL types, not the original per-row JSON type contract.

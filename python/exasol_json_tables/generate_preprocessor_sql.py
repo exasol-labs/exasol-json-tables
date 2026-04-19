@@ -2526,6 +2526,17 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
         return table_config[normalize_identifier_value(visible_name)]
     end
 
+    local function lookup_to_json_root_config(schema_name, table_name)
+        if schema_name == nil or table_name == nil then
+            return nil
+        end
+        local schema_tables = TO_JSON_CONFIG_BY_SCHEMA_AND_TABLE[normalize_identifier_value(schema_name)]
+        if schema_tables == nil then
+            return nil
+        end
+        return schema_tables[normalize_identifier_value(table_name)]
+    end
+
     local function read_simple_identifier_argument(tokens, opening_paren, closing_paren)
         local argument_token = nil
         for index = opening_paren + 1, closing_paren - 1 do
@@ -2548,6 +2559,108 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
             normalized_parts[index] = normalize_identifier_value(part)
         end
         return normalized_parts
+    end
+
+    local function read_simple_identifier_argument_in_range(tokens, start_index, end_index)
+        local identifier_index = next_significant(tokens, start_index)
+        if identifier_index > end_index then
+            return nil
+        end
+
+        local current = identifier_index
+        local identifier_parts = parse_identifier_token(tokens[current])
+        if identifier_parts == nil then
+            return nil
+        end
+
+        local normalized_parts = {}
+        for _, part in ipairs(identifier_parts) do
+            normalized_parts[#normalized_parts + 1] = normalize_identifier_value(part)
+        end
+
+        while true do
+            local dot_index = next_significant(tokens, current + 1)
+            if dot_index > end_index or tokens[dot_index] ~= "." then
+                break
+            end
+            local next_identifier_index = next_significant(tokens, dot_index + 1)
+            if next_identifier_index > end_index then
+                return nil
+            end
+            current = next_identifier_index
+            local next_identifier_parts = parse_identifier_token(tokens[current])
+            if next_identifier_parts == nil then
+                return nil
+            end
+            for _, part in ipairs(next_identifier_parts) do
+                normalized_parts[#normalized_parts + 1] = normalize_identifier_value(part)
+            end
+        end
+
+        if next_significant(tokens, current + 1) <= end_index then
+            return nil
+        end
+        return normalized_parts
+    end
+
+    local function argument_range_is_star(tokens, start_index, end_index)
+        local token_index = next_significant(tokens, start_index)
+        if token_index > end_index or tokens[token_index] ~= "*" then
+            return false
+        end
+        return next_significant(tokens, token_index + 1) > end_index
+    end
+
+    local function split_call_argument_ranges(tokens, opening_paren, closing_paren)
+        local ranges = {}
+        local depth = 0
+        local argument_start = nil
+        local saw_any_token = false
+        local index = opening_paren + 1
+        while index < closing_paren do
+            local token = tokens[index]
+            if not is_ignored(token) then
+                saw_any_token = true
+                if argument_start == nil then
+                    argument_start = index
+                end
+                if token == "(" then
+                    depth = depth + 1
+                elseif token == ")" then
+                    if depth > 0 then
+                        depth = depth - 1
+                    end
+                elseif token == "," and depth == 0 then
+                    local argument_end = previous_significant_raw(tokens, index - 1)
+                    if argument_end == nil or argument_start == nil or argument_end < argument_start then
+                        return nil, "TO_JSON does not allow empty arguments."
+                    end
+                    ranges[#ranges + 1] = {
+                        start_index = argument_start,
+                        end_index = argument_end
+                    }
+                    argument_start = nil
+                end
+            end
+            index = index + 1
+        end
+
+        if argument_start == nil then
+            if saw_any_token then
+                return nil, "TO_JSON does not allow a trailing comma."
+            end
+            return {}, nil
+        end
+
+        local final_end = previous_significant_raw(tokens, closing_paren - 1)
+        if final_end == nil or final_end < argument_start then
+            return nil, "TO_JSON does not allow empty arguments."
+        end
+        ranges[#ranges + 1] = {
+            start_index = argument_start,
+            end_index = final_end
+        }
+        return ranges, nil
     end
 
     local function collect_helper_table_reference_lookup(tokens)
@@ -2623,6 +2736,146 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
             index = index + 1
         end
         return false
+    end
+
+    local function collect_to_json_display_names(root_config)
+        local names = {}
+        local seen = {}
+        local display_lookup = root_config and root_config.displayNameByArgumentName or nil
+        if display_lookup == nil then
+            return names
+        end
+        for _, display_name in pairs(display_lookup) do
+            local normalized_name = normalize_identifier_value(display_name)
+            if normalized_name ~= nil and not seen[normalized_name] then
+                seen[normalized_name] = true
+                names[#names + 1] = display_name
+            end
+        end
+        table.sort(names, function(left, right)
+            return normalize_identifier_value(left) < normalize_identifier_value(right)
+        end)
+        return names
+    end
+
+    local REGULAR_TO_JSON_COLUMNS_BY_SCHEMA_AND_TABLE = {}
+    local REGULAR_TO_JSON_COLUMN_LOOKUP_BY_SCHEMA_AND_TABLE = {}
+    local TO_JSON_CURRENT_SCHEMA_NAME = nil
+
+    local function current_schema_name_for_to_json()
+        if TO_JSON_CURRENT_SCHEMA_NAME ~= nil then
+            return TO_JSON_CURRENT_SCHEMA_NAME
+        end
+        local ok, rows = pquery([[SELECT CURRENT_SCHEMA FROM DUAL]])
+        if not ok or rows == nil or rows[1] == nil or rows[1][1] == nil then
+            raise_function_error(
+                "TO_JSON",
+                "Could not resolve the current schema for an unqualified table reference."
+            )
+        end
+        TO_JSON_CURRENT_SCHEMA_NAME = normalize_identifier_value(rows[1][1])
+        return TO_JSON_CURRENT_SCHEMA_NAME
+    end
+
+    local function schema_name_for_to_json_table_reference(table_reference)
+        if table_reference == nil then
+            return nil
+        end
+        if table_reference.schema_name ~= nil then
+            return normalize_identifier_value(table_reference.schema_name)
+        end
+        return current_schema_name_for_to_json()
+    end
+
+    local function load_regular_to_json_columns(table_reference)
+        if table_reference == nil or table_reference.table_name == nil then
+            raise_function_error("TO_JSON", "Could not resolve the selected row source.")
+        end
+        local schema_name = schema_name_for_to_json_table_reference(table_reference)
+        local table_name = normalize_identifier_value(table_reference.table_name)
+        if schema_name == nil or table_name == nil then
+            raise_function_error("TO_JSON", "Could not resolve the selected row source.")
+        end
+
+        local schema_columns = REGULAR_TO_JSON_COLUMNS_BY_SCHEMA_AND_TABLE[schema_name]
+        if schema_columns == nil then
+            schema_columns = {}
+            REGULAR_TO_JSON_COLUMNS_BY_SCHEMA_AND_TABLE[schema_name] = schema_columns
+        end
+        local schema_lookup = REGULAR_TO_JSON_COLUMN_LOOKUP_BY_SCHEMA_AND_TABLE[schema_name]
+        if schema_lookup == nil then
+            schema_lookup = {}
+            REGULAR_TO_JSON_COLUMN_LOOKUP_BY_SCHEMA_AND_TABLE[schema_name] = schema_lookup
+        end
+        if schema_columns[table_name] ~= nil and schema_lookup[table_name] ~= nil then
+            return schema_columns[table_name], schema_lookup[table_name]
+        end
+
+        local ok, rows = pquery(
+            [[
+SELECT COLUMN_NAME
+FROM SYS.EXA_ALL_COLUMNS
+WHERE UPPER(COLUMN_SCHEMA) = :schema_name
+  AND UPPER(COLUMN_TABLE) = :table_name
+ORDER BY COLUMN_ORDINAL_POSITION
+]],
+            {
+                schema_name = schema_name,
+                table_name = table_name
+            }
+        )
+        if not ok then
+            raise_function_error(
+                "TO_JSON",
+                'Could not load column metadata for "' .. schema_name .. '"."' .. table_name .. '".'
+            )
+        end
+
+        local column_names = {}
+        local lookup = {}
+        for _, row in ipairs(rows or {}) do
+            local column_name = row[1]
+            if column_name ~= nil then
+                column_names[#column_names + 1] = column_name
+                lookup[normalize_identifier_value(column_name)] = column_name
+            end
+        end
+        schema_columns[table_name] = column_names
+        schema_lookup[table_name] = lookup
+        return column_names, lookup
+    end
+
+    local function collect_regular_to_json_display_names(table_reference)
+        local column_names = load_regular_to_json_columns(table_reference)
+        local names = {}
+        for _, column_name in ipairs(column_names) do
+            names[#names + 1] = column_name
+        end
+        return names
+    end
+
+    local function resolve_regular_to_json_column_name(table_reference, member_name)
+        local accepted_names, lookup = load_regular_to_json_columns(table_reference)
+        local actual_name = lookup[normalize_identifier_value(member_name)]
+        if actual_name ~= nil then
+            return actual_name
+        end
+        local accepted_sql = #accepted_names > 0 and table.concat(accepted_names, ", ") or "(none)"
+        raise_function_error(
+            "TO_JSON",
+            'TO_JSON subset arguments must be visible top-level columns on the current row source. Accepted names: '
+                    .. accepted_sql .. "."
+        )
+    end
+
+    local function same_table_reference(left, right)
+        if left == nil or right == nil then
+            return false
+        end
+        return normalize_identifier_value(left.schema_name) == normalize_identifier_value(right.schema_name)
+                and normalize_identifier_value(left.table_name) == normalize_identifier_value(right.table_name)
+                and normalize_identifier_value(left.alias_name or left.table_name)
+                    == normalize_identifier_value(right.alias_name or right.table_name)
     end
 
     local function table_reference_sql(table_reference)
@@ -2900,13 +3153,484 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
         return table.concat(out)
     end
 
+    local function build_to_json_projection_join(table_reference, root_config, column_names, to_json_state)
+        if column_names == nil or #column_names == 0 then
+            raise_function_error("TO_JSON", "Internal error: missing export projection columns.")
+        end
+
+        local join_key = normalize_identifier_value(table_reference.alias_name or table_reference.table_name)
+                .. "|" .. normalize_identifier_value(root_config.exportViewQualified)
+        for _, column_name in ipairs(column_names) do
+            join_key = join_key .. "|" .. normalize_identifier_value(column_name)
+        end
+        local existing = to_json_state.alias_by_key[join_key]
+        if existing ~= nil then
+            return existing
+        end
+
+        local alias_name = "__jvs_to_json_" .. tostring(to_json_state.next_alias_id)
+        to_json_state.next_alias_id = to_json_state.next_alias_id + 1
+        local alias_ref = encode_quoted_identifier(alias_name)
+        local projected_alias_by_name = {}
+        local row_id_alias = "__jvs_row_id"
+        local helper_reference = build_helper_reference(alias_ref, projected_alias_by_name)
+        to_json_state.alias_by_key[join_key] = helper_reference
+        local projected_columns = {
+            encode_quoted_identifier(root_config.idColumn) .. " AS " .. encode_quoted_identifier(row_id_alias)
+        }
+        for column_index, column_name in ipairs(column_names) do
+            local projected_alias = "__jvs_col_" .. tostring(column_index)
+            projected_alias_by_name[normalize_identifier_value(column_name)] = projected_alias
+            projected_columns[#projected_columns + 1] = encode_quoted_identifier(column_name)
+                    .. " AS " .. encode_quoted_identifier(projected_alias)
+        end
+        add_join_insertion(
+            to_json_state.join_insertions,
+            table_reference.insert_after_index,
+            " LEFT OUTER JOIN (SELECT " .. table.concat(projected_columns, ", ")
+                    .. " FROM " .. root_config.exportViewQualified .. ") " .. alias_ref
+                    .. " ON (" .. table_reference_sql(table_reference) .. "."
+                    .. encode_quoted_identifier(root_config.idColumn) .. " = "
+                    .. alias_ref .. "." .. encode_quoted_identifier(row_id_alias) .. ")"
+        )
+        return helper_reference
+    end
+
+    local function build_regular_to_json_object_call(table_reference, column_names)
+        if REGULAR_TO_JSON_ROW_OBJECT_FUNCTION == nil or REGULAR_TO_JSON_ROW_OBJECT_FUNCTION == "" then
+            raise_function_error("TO_JSON", "Internal error: missing regular-row JSON serializer.")
+        end
+        local arguments = {}
+        for _, column_name in ipairs(column_names) do
+            arguments[#arguments + 1] = encode_string_literal(column_name)
+            arguments[#arguments + 1] = table_reference_sql(table_reference)
+                    .. "." .. encode_quoted_identifier(column_name)
+        end
+        return REGULAR_TO_JSON_ROW_OBJECT_FUNCTION .. "(" .. table.concat(arguments, ", ") .. ")"
+    end
+
+    local function read_to_json_star_target(tokens, start_index, end_index)
+        if argument_range_is_star(tokens, start_index, end_index) then
+            return {
+                kind = "plain_star"
+            }
+        end
+        if tokens[end_index] ~= "*" then
+            return nil
+        end
+        local dot_index = previous_significant_raw(tokens, end_index - 1)
+        if dot_index == nil or tokens[dot_index] ~= "." then
+            return nil
+        end
+        local qualifier_parts = read_simple_identifier_argument_in_range(tokens, start_index, dot_index - 1)
+        if qualifier_parts == nil or #qualifier_parts ~= 1 then
+            return nil
+        end
+        return {
+            kind = "qualified_star",
+            qualifier_name = qualifier_parts[1]
+        }
+    end
+
+    local function resolve_to_json_star_table_reference(
+            function_name,
+            original_sqltext,
+            tokens,
+            argument_range,
+            base_table,
+            table_reference_lookup
+    )
+        local star_target = read_to_json_star_target(tokens, argument_range.start_index, argument_range.end_index)
+        if star_target == nil then
+            return nil
+        end
+        if star_target.kind == "plain_star" then
+            if query_has_top_level_user_join(original_sqltext) then
+                raise_function_error(
+                    function_name,
+                    'TO_JSON(*) is not supported in joined queries. Use TO_JSON(root_alias.*) for ordinary tables or TO_JSON(root_alias."id", root_alias."meta", ...) instead.'
+                )
+            end
+            if base_table == nil then
+                local path_base_binding = read_base_source_binding_from_path_tokens(tokenize_path_sql(original_sqltext))
+                if path_base_binding ~= nil and path_base_binding.kind == "derived_source" then
+                    raise_function_error(
+                        function_name,
+                        'TO_JSON does not resolve through derived-table aliases yet. Move the call into the inner SELECT or query the base table directly.'
+                    )
+                end
+                raise_function_error(
+                    function_name,
+                    "TO_JSON(*) currently requires a query with a single base source in FROM."
+                )
+            end
+            if base_table.kind == "derived_source" then
+                raise_function_error(
+                    function_name,
+                    'TO_JSON does not resolve through derived-table aliases yet. Move the call into the inner SELECT or query the base table directly.'
+                )
+            end
+            if base_table.kind == "iterator_value" then
+                raise_function_error(
+                    function_name,
+                    'TO_JSON is not supported on VALUE iterators yet. Use plain SQL on the scalar iterator value instead.'
+                )
+            end
+            if base_table.kind == "iterator_row" then
+                raise_function_error(
+                    function_name,
+                    'TO_JSON is not supported on iterator-row aliases yet. Use the wrapper root row instead.'
+                )
+            end
+            return base_table
+        end
+
+        local table_reference = table_reference_lookup[star_target.qualifier_name]
+        if table_reference == nil then
+            raise_function_error(
+                function_name,
+                'Could not resolve the TO_JSON star qualifier "' .. star_target.qualifier_name .. '" in the current query block.'
+            )
+        end
+        local normalized_alias_name = normalize_identifier_value(table_reference.alias_name or "")
+        if string.sub(normalized_alias_name, 1, 6) == "__JVS_" then
+            raise_function_error(
+                function_name,
+                "TO_JSON(alias.*) must qualify a visible base table or wrapper root alias."
+            )
+        end
+        if table_reference.kind == "derived_source" then
+            raise_function_error(
+                function_name,
+                'TO_JSON does not resolve through derived-table aliases yet. Move the call into the inner SELECT or query the base table directly.'
+            )
+        end
+        if table_reference.kind == "iterator_value" then
+            raise_function_error(
+                function_name,
+                'TO_JSON is not supported on VALUE iterators yet. Use plain SQL on the scalar iterator value instead.'
+            )
+        end
+        if table_reference.kind == "iterator_row" then
+            raise_function_error(
+                function_name,
+                'TO_JSON is not supported on iterator-row aliases yet. Use the wrapper root row instead.'
+            )
+        end
+        return table_reference
+    end
+
+    local function resolve_to_json_table_reference(
+            function_name,
+            original_sqltext,
+            base_table,
+            table_reference_lookup,
+            identifier_parts
+    )
+        if identifier_parts == nil or #identifier_parts == 0 then
+            raise_function_error(
+                function_name,
+                'Expected TO_JSON(*) or one or more top-level property references such as "id", "meta", or root_alias."meta".'
+            )
+        end
+
+        local member_name = identifier_parts[#identifier_parts]
+        if string.find(member_name, ".", 1, true) ~= nil or string.find(member_name, "[", 1, true) ~= nil then
+            raise_function_error(
+                function_name,
+                'TO_JSON subset arguments must be visible top-level properties. Nested paths such as "meta.info.note" are not supported.'
+            )
+        end
+
+        local table_reference = nil
+        if #identifier_parts == 1 then
+            if query_has_top_level_user_join(original_sqltext) then
+                raise_function_error(
+                    function_name,
+                    'Unqualified TO_JSON arguments are not supported in joined queries. Qualify each property, for example TO_JSON(root_alias."id", root_alias."meta") or TO_JSON(root_alias.*).'
+                )
+            end
+            if base_table == nil then
+                local path_base_binding = read_base_source_binding_from_path_tokens(tokenize_path_sql(original_sqltext))
+                if path_base_binding ~= nil and path_base_binding.kind == "derived_source" then
+                    raise_function_error(
+                        function_name,
+                        'TO_JSON does not resolve through derived-table aliases yet. Move the call into the inner SELECT or query the base table directly.'
+                    )
+                end
+                raise_function_error(
+                    function_name,
+                    "TO_JSON currently requires a query with a single base source in FROM."
+                )
+            end
+            if base_table.kind == "derived_source" then
+                raise_function_error(
+                    function_name,
+                    'TO_JSON does not resolve through derived-table aliases yet. Move the call into the inner SELECT or query the base table directly.'
+                )
+            end
+            if base_table.kind == "iterator_value" then
+                raise_function_error(
+                    function_name,
+                    'TO_JSON is not supported on VALUE iterators yet. Use plain SQL on the scalar iterator value instead.'
+                )
+            end
+            if base_table.kind == "iterator_row" then
+                raise_function_error(
+                    function_name,
+                    'TO_JSON is not supported on iterator-row aliases yet. Use the wrapper root row instead.'
+                )
+            end
+            table_reference = base_table
+        elseif #identifier_parts == 2 then
+            local qualifier_name = identifier_parts[1]
+            table_reference = table_reference_lookup[qualifier_name]
+            if table_reference == nil then
+                raise_function_error(
+                    function_name,
+                    'Could not resolve the TO_JSON argument qualifier "' .. qualifier_name .. '" in the current query block.'
+                )
+            end
+            local normalized_alias_name = normalize_identifier_value(table_reference.alias_name or "")
+            if string.sub(normalized_alias_name, 1, 6) == "__JVS_" then
+                raise_function_error(
+                    function_name,
+                    'TO_JSON subset arguments must be visible top-level properties. Nested paths such as "meta.info.note" are not supported.'
+                )
+            end
+            if table_reference.kind == "derived_source" then
+                raise_function_error(
+                    function_name,
+                    'TO_JSON does not resolve through derived-table aliases yet. Move the call into the inner SELECT or query the wrapper view directly.'
+                )
+            end
+            if table_reference.kind == "iterator_value" then
+                raise_function_error(
+                    function_name,
+                    'TO_JSON is not supported on VALUE iterators yet. Use plain SQL on the scalar iterator value instead.'
+                )
+            end
+            if table_reference.kind == "iterator_row" then
+                raise_function_error(
+                    function_name,
+                    'TO_JSON is not supported on iterator-row aliases yet. Use the wrapper root row instead.'
+                )
+            end
+        else
+            raise_function_error(
+                function_name,
+                'TO_JSON subset arguments must be top-level property references, optionally qualified as root_alias."property".'
+            )
+        end
+
+        local root_config = lookup_to_json_root_config(table_reference.schema_name, table_reference.table_name)
+        return table_reference, root_config, member_name
+    end
+
+    local function build_to_json_star_replacement(
+            function_name,
+            original_sqltext,
+            tokens,
+            argument_range,
+            base_table,
+            table_reference_lookup,
+            to_json_state
+    )
+        local target_table_reference = resolve_to_json_star_table_reference(
+            function_name,
+            original_sqltext,
+            tokens,
+            argument_range,
+            base_table,
+            table_reference_lookup
+        )
+        local root_config = lookup_to_json_root_config(
+            target_table_reference.schema_name,
+            target_table_reference.table_name
+        )
+        if root_config == nil then
+            local column_names = collect_regular_to_json_display_names(target_table_reference)
+            return build_regular_to_json_object_call(target_table_reference, column_names)
+        end
+        local export_ref = build_to_json_projection_join(
+            target_table_reference,
+            root_config,
+            {root_config.fullJsonColumn},
+            to_json_state
+        )
+        return render_column_reference(export_ref, root_config.fullJsonColumn)
+    end
+
+    local function build_to_json_subset_replacement(
+            function_name,
+            original_sqltext,
+            tokens,
+            opening_paren,
+            closing_paren,
+            base_table,
+            table_reference_lookup,
+            to_json_state
+    )
+        local argument_ranges, split_error = split_call_argument_ranges(tokens, opening_paren, closing_paren)
+        if argument_ranges == nil then
+            raise_function_error(function_name, split_error)
+        end
+        if #argument_ranges == 0 then
+            raise_function_error(
+                function_name,
+                'Expected TO_JSON(*) or one or more top-level property references such as "id", "meta", or root_alias."meta".'
+            )
+        end
+
+        local target_table_reference = nil
+        local target_root_config = nil
+        local target_regular_source = false
+        local selected_column_names = {}
+        local seen_selected_columns = {}
+
+        for _, argument_range in ipairs(argument_ranges) do
+            if read_to_json_star_target(tokens, argument_range.start_index, argument_range.end_index) ~= nil then
+                raise_function_error(
+                    function_name,
+                    'TO_JSON(*) cannot be mixed with explicit properties. Use either TO_JSON(*) or TO_JSON(col1, col2, ...).'
+                )
+            end
+
+            local identifier_parts = read_simple_identifier_argument_in_range(
+                tokens,
+                argument_range.start_index,
+                argument_range.end_index
+            )
+            local table_reference, root_config, member_name = resolve_to_json_table_reference(
+                function_name,
+                original_sqltext,
+                base_table,
+                table_reference_lookup,
+                identifier_parts
+            )
+
+            if target_table_reference == nil then
+                target_table_reference = table_reference
+                target_root_config = root_config
+            elseif not same_table_reference(target_table_reference, table_reference) then
+                raise_function_error(
+                    function_name,
+                    "All TO_JSON subset arguments must resolve to the same row source."
+                )
+            end
+
+            if root_config ~= nil then
+                local fragment_lookup = root_config.fragmentColumnByArgumentName or {}
+                local fragment_column_name = fragment_lookup[normalize_identifier_value(member_name)]
+                if fragment_column_name == nil then
+                    local accepted_names = collect_to_json_display_names(root_config)
+                    local accepted_sql = #accepted_names > 0 and table.concat(accepted_names, ", ") or "(none)"
+                    raise_function_error(
+                        function_name,
+                        'TO_JSON subset arguments must be visible top-level properties on the current root. Accepted names: '
+                                .. accepted_sql .. "."
+                    )
+                end
+                local normalized_fragment = normalize_identifier_value(fragment_column_name)
+                if not seen_selected_columns[normalized_fragment] then
+                    seen_selected_columns[normalized_fragment] = true
+                    selected_column_names[#selected_column_names + 1] = fragment_column_name
+                end
+            else
+                target_regular_source = true
+                local actual_column_name = resolve_regular_to_json_column_name(table_reference, member_name)
+                local normalized_column = normalize_identifier_value(actual_column_name)
+                if not seen_selected_columns[normalized_column] then
+                    seen_selected_columns[normalized_column] = true
+                    selected_column_names[#selected_column_names + 1] = actual_column_name
+                end
+            end
+        end
+
+        if target_regular_source then
+            return build_regular_to_json_object_call(target_table_reference, selected_column_names)
+        end
+
+        local export_ref = build_to_json_projection_join(
+            target_table_reference,
+            target_root_config,
+            selected_column_names,
+            to_json_state
+        )
+        local qualified_fragments = {}
+        for _, fragment_column_name in ipairs(selected_column_names) do
+            qualified_fragments[#qualified_fragments + 1] = render_column_reference(export_ref, fragment_column_name)
+        end
+        return target_root_config.optionalFragmentsFunction .. "(" .. table.concat(qualified_fragments, ", ") .. ")"
+    end
+
+    local function build_to_json_replacement(
+            function_name,
+            original_sqltext,
+            tokens,
+            opening_paren,
+            closing_paren,
+            base_table,
+            table_reference_lookup,
+            to_json_state
+    )
+        if not has_expression_argument(tokens, opening_paren, closing_paren) then
+            raise_function_error(
+                function_name,
+                'Expected TO_JSON(*) or one or more top-level property references such as "id", "meta", or root_alias."meta".'
+            )
+        end
+
+        local argument_ranges, split_error = split_call_argument_ranges(tokens, opening_paren, closing_paren)
+        if argument_ranges == nil then
+            raise_function_error(function_name, split_error)
+        end
+        if #argument_ranges == 1
+                and read_to_json_star_target(tokens, argument_ranges[1].start_index, argument_ranges[1].end_index) ~= nil then
+            return build_to_json_star_replacement(
+                function_name,
+                original_sqltext,
+                tokens,
+                argument_ranges[1],
+                base_table,
+                table_reference_lookup,
+                to_json_state
+            )
+        end
+
+        return build_to_json_subset_replacement(
+            function_name,
+            original_sqltext,
+            tokens,
+            opening_paren,
+            closing_paren,
+            base_table,
+            table_reference_lookup,
+            to_json_state
+        )
+    end
+
     local function collect_helper_call_replacements(original_sqltext, tokens, base_table)
         local replacements = {}
         local table_reference_lookup = collect_helper_table_reference_lookup_from_sql(original_sqltext)
+        local raw_table_reference_lookup = collect_helper_table_reference_lookup(tokens)
+        for key, raw_reference in pairs(raw_table_reference_lookup) do
+            local existing_reference = table_reference_lookup[key]
+            if existing_reference ~= nil then
+                existing_reference.insert_after_index = raw_reference.insert_after_index
+            else
+                table_reference_lookup[key] = raw_reference
+            end
+        end
         local join_state = {
             next_alias_id = 1,
             alias_by_key = {},
             join_sql_parts = {}
+        }
+        local to_json_state = {
+            next_alias_id = 1,
+            alias_by_key = {},
+            join_insertions = {}
         }
         local index = 1
         while index <= #tokens do
@@ -2916,52 +3640,66 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
                 local closing_paren, top_level_commas = find_matching_paren(tokens, call.opening_paren)
                 if closing_paren == nil then
                     raise_function_error(call.last_identifier, "Missing closing parenthesis.")
-                elseif top_level_commas ~= 0 then
-                    raise_function_error(call.last_identifier, "Expected exactly one argument.")
-                elseif not has_expression_argument(tokens, call.opening_paren, closing_paren) then
-                    raise_function_error(call.last_identifier, "Expected exactly one argument.")
                 else
-                    local helper_allowed, helper_scope_message = helper_query_targets_allowed_schema(original_sqltext)
-                    if not helper_allowed then
-                        raise_scope_error("JSON helper functions", helper_scope_message)
-                    end
-                    local table_reference, group_config = resolve_wrapper_helper_argument(
-                        call.last_identifier,
-                        original_sqltext,
-                        tokens,
-                        call.opening_paren,
-                        closing_paren,
-                        base_table,
-                        table_reference_lookup
-                    )
                     local replacement_sql = nil
-                    if helper_kind == "explicit_null" then
-                        replacement_sql = build_wrapper_explicit_null_replacement(table_reference, group_config, join_state)
-                    elseif helper_kind == "variant_typeof" then
-                        replacement_sql = build_wrapper_variant_typeof_replacement(table_reference, group_config, join_state)
-                    elseif helper_kind == "variant_as_varchar" then
-                        replacement_sql = build_wrapper_variant_cast_replacement(
-                            table_reference,
-                            group_config,
-                            join_state,
-                            "VARCHAR(2000000)"
-                        )
-                    elseif helper_kind == "variant_as_decimal" then
-                        replacement_sql = build_wrapper_variant_cast_replacement(
-                            table_reference,
-                            group_config,
-                            join_state,
-                            "DECIMAL(36,18)"
-                        )
-                    elseif helper_kind == "variant_as_boolean" then
-                        replacement_sql = build_wrapper_variant_cast_replacement(
-                            table_reference,
-                            group_config,
-                            join_state,
-                            "BOOLEAN"
+                    if helper_kind == "to_json" then
+                        replacement_sql = build_to_json_replacement(
+                            call.last_identifier,
+                            original_sqltext,
+                            tokens,
+                            call.opening_paren,
+                            closing_paren,
+                            base_table,
+                            table_reference_lookup,
+                            to_json_state
                         )
                     else
-                        raise_function_error(call.last_identifier, "Unsupported helper rewrite kind: " .. tostring(helper_kind))
+                        local helper_allowed, helper_scope_message = helper_query_targets_allowed_schema(original_sqltext)
+                        if not helper_allowed then
+                            raise_scope_error("JSON helper functions", helper_scope_message)
+                        end
+                        if top_level_commas ~= 0 then
+                            raise_function_error(call.last_identifier, "Expected exactly one argument.")
+                        elseif not has_expression_argument(tokens, call.opening_paren, closing_paren) then
+                            raise_function_error(call.last_identifier, "Expected exactly one argument.")
+                        end
+                        local table_reference, group_config = resolve_wrapper_helper_argument(
+                            call.last_identifier,
+                            original_sqltext,
+                            tokens,
+                            call.opening_paren,
+                            closing_paren,
+                            base_table,
+                            table_reference_lookup
+                        )
+                        if helper_kind == "explicit_null" then
+                            replacement_sql = build_wrapper_explicit_null_replacement(table_reference, group_config, join_state)
+                        elseif helper_kind == "variant_typeof" then
+                            replacement_sql = build_wrapper_variant_typeof_replacement(table_reference, group_config, join_state)
+                        elseif helper_kind == "variant_as_varchar" then
+                            replacement_sql = build_wrapper_variant_cast_replacement(
+                                table_reference,
+                                group_config,
+                                join_state,
+                                "VARCHAR(2000000)"
+                            )
+                        elseif helper_kind == "variant_as_decimal" then
+                            replacement_sql = build_wrapper_variant_cast_replacement(
+                                table_reference,
+                                group_config,
+                                join_state,
+                                "DECIMAL(36,18)"
+                            )
+                        elseif helper_kind == "variant_as_boolean" then
+                            replacement_sql = build_wrapper_variant_cast_replacement(
+                                table_reference,
+                                group_config,
+                                join_state,
+                                "BOOLEAN"
+                            )
+                        else
+                            raise_function_error(call.last_identifier, "Unsupported helper rewrite kind: " .. tostring(helper_kind))
+                        end
                     end
                     replacements[index] = {
                         closing_paren = closing_paren,
@@ -2973,7 +3711,7 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
                 index = index + 1
             end
         end
-        return replacements, join_state.join_sql_parts
+        return replacements, join_state.join_sql_parts, to_json_state.join_insertions
     end
 
     local function rewrite_helper_query_block_sql(sqltext)
@@ -2983,7 +3721,7 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
         if base_table ~= nil and path_base_table ~= nil and path_base_table.reference_sql ~= nil then
             base_table.reference_sql = path_base_table.reference_sql
         end
-        local helper_call_replacements, helper_join_sql_parts =
+        local helper_call_replacements, helper_join_sql_parts, to_json_join_insertions =
                 collect_helper_call_replacements(sqltext, tokens, base_table)
         local out = {}
         local index = 1
@@ -3001,6 +3739,10 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
                 out[#out + 1] = tokens[index]
                 if base_table ~= nil and index == base_table.insert_after_index and #helper_join_sql_parts > 0 then
                     out[#out + 1] = table.concat(helper_join_sql_parts)
+                end
+                local pending_to_json_joins = to_json_join_insertions[index]
+                if pending_to_json_joins ~= nil then
+                    out[#out + 1] = table.concat(pending_to_json_joins)
                 end
                 index = index + 1
             end
@@ -3031,6 +3773,8 @@ def render_sql(
     helper_schema_map: dict[str, str],
     wrapper_group_config: dict[str, dict[str, dict[str, object]]] | None,
     wrapper_visible_column_config: dict[str, dict[str, dict[str, bool]]] | None,
+    wrapper_to_json_config: dict[str, dict[str, dict[str, object]]] | None,
+    regular_to_json_row_object_function: str | None,
     rewrite_path_identifiers: bool,
     activate_session: bool,
     helper_function_kinds: dict[str, str] | None = None,
@@ -3058,6 +3802,8 @@ def render_sql(
     )
     wrapper_group_config_lua = render_lua_string_table(wrapper_group_config or {}, 4)
     wrapper_visible_columns_lua = render_lua_string_table(wrapper_visible_column_config or {}, 4)
+    wrapper_to_json_config_lua = render_lua_string_table(wrapper_to_json_config or {}, 4)
+    regular_to_json_row_object_function_lua = lua_quote_string(regular_to_json_row_object_function or "")
     has_variant_helpers = any(kind != "explicit_null" for kind in helper_function_kinds.values())
     if wrapper_group_config:
         helper_mode = "wrapper semantic helpers" if has_variant_helpers else "wrapper explicit-null joins"
@@ -3103,6 +3849,8 @@ CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
     local HELPER_SCHEMA_BY_ALLOWED_SCHEMA = {helper_schema_map_lua}
     local GROUP_CONFIG_BY_SCHEMA_AND_TABLE = {wrapper_group_config_lua}
     local VISIBLE_COLUMNS_BY_SCHEMA_AND_TABLE = {wrapper_visible_columns_lua}
+    local TO_JSON_CONFIG_BY_SCHEMA_AND_TABLE = {wrapper_to_json_config_lua}
+    local REGULAR_TO_JSON_ROW_OBJECT_FUNCTION = {regular_to_json_row_object_function_lua}
 
     local function raise_function_error(function_name, message)
         error("JVS-FUNCTION-ERROR: " .. function_name .. ": " .. message, 0)
@@ -3286,6 +4034,8 @@ def main() -> None:
         args.blocked_function_message or "This helper is not available in this build.",
         allowed_schemas,
         helper_schema_map,
+        None,
+        None,
         None,
         None,
         args.rewrite_path_identifiers,
