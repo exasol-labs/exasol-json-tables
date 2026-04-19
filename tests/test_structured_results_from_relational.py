@@ -6,7 +6,6 @@ import subprocess
 import _bootstrap  # noqa: F401
 
 from nano_support import ROOT, connect
-from result_family_json_export import export_root_family_to_json
 
 
 UPSTREAM_SCHEMA = "JVS_RELATIONAL_UPSTREAM"
@@ -289,7 +288,34 @@ def main() -> None:
             "relational-source rowset rows",
         )
 
-        exported = export_root_family_to_json(con, source_schema=RESULT_SOURCE_SCHEMA, root_table="ORDER_REPORT")
+        expected_exported = [
+            {
+                "customer": {"name": "Alice", "tier": "gold"},
+                "items": [
+                    {"product": {"category": "hardware", "title": "Widget"}, "qty": 2, "sku": "sku-1"},
+                    {"product": {"category": "accessory", "title": "Gizmo"}, "qty": 1, "sku": "sku-2"},
+                ],
+                "order_id": 100,
+                "status": "paid",
+                "tags": ["priority", "gift"],
+            },
+            {
+                "customer": {"name": "Bob", "tier": "silver"},
+                "items": [
+                    {"product": {"category": "accessory", "title": "Cable"}, "qty": 4, "sku": "sku-3"},
+                ],
+                "order_id": 101,
+                "status": "pending",
+                "tags": ["review"],
+            },
+            {
+                "customer": {"name": "Alice", "tier": "gold"},
+                "items": [],
+                "order_id": 102,
+                "status": "cancelled",
+                "tags": [],
+            },
+        ]
         to_json_rows = [
             (json.loads(row[0]), json.loads(row[1]), json.loads(row[2]), json.loads(row[3]))
             for row in con.execute(
@@ -305,55 +331,23 @@ def main() -> None:
             ).fetchall()
         ]
         assert_equal(
-            exported,
-            [
-                {
-                    "customer": {"name": "Alice", "tier": "gold"},
-                    "items": [
-                        {"product": {"category": "hardware", "title": "Widget"}, "qty": 2, "sku": "sku-1"},
-                        {"product": {"category": "accessory", "title": "Gizmo"}, "qty": 1, "sku": "sku-2"},
-                    ],
-                    "order_id": 100,
-                    "status": "paid",
-                    "tags": ["priority", "gift"],
-                },
-                {
-                    "customer": {"name": "Bob", "tier": "silver"},
-                    "items": [
-                        {"product": {"category": "accessory", "title": "Cable"}, "qty": 4, "sku": "sku-3"},
-                    ],
-                    "order_id": 101,
-                    "status": "pending",
-                    "tags": ["review"],
-                },
-                {
-                    "customer": {"name": "Alice", "tier": "gold"},
-                    "items": [],
-                    "order_id": 102,
-                    "status": "cancelled",
-                    "tags": [],
-                },
-            ],
-            "relational-source JSON export",
-        )
-        assert_equal(
             [row[0] for row in to_json_rows],
-            exported,
+            expected_exported,
             "relational-source TO_JSON(*) export",
         )
         assert_equal(
             [row[1] for row in to_json_rows],
-            project_top_level(exported, ["customer", "items"]),
+            project_top_level(expected_exported, ["customer", "items"]),
             "relational-source TO_JSON nested subset",
         )
         assert_equal(
             [row[2] for row in to_json_rows],
-            project_top_level(exported, ["order_id", "status"]),
+            project_top_level(expected_exported, ["order_id", "status"]),
             "relational-source TO_JSON scalar subset",
         )
         assert_equal(
             [row[3] for row in to_json_rows],
-            project_top_level(exported, ["customer"]),
+            project_top_level(expected_exported, ["customer"]),
             "relational-source TO_JSON customer subset",
         )
     finally:

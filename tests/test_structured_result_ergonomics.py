@@ -5,7 +5,13 @@ import subprocess
 
 import _bootstrap  # noqa: F401
 
+from in_session_wrapper_installer import install_wrapper_surface_in_session
 from nano_support import ROOT, connect, install_source_fixture, install_wrapper_views
+from result_family_materializer import (
+    materialize_result_family,
+    result_family_spec_from_dict,
+    validate_result_family_spec,
+)
 
 
 UPSTREAM_SCHEMA = "JVS_ERGO_UPSTREAM"
@@ -33,10 +39,78 @@ WRAPPER_RESULT_HELPER_SCHEMA = "JSON_VIEW_ERGO_WRAPPER_RESULT_INTERNAL"
 WRAPPER_RESULT_PP_SCHEMA = "JVS_ERGO_WRAPPER_RESULT_PP"
 WRAPPER_RESULT_PP_SCRIPT = "JSON_ERGO_WRAPPER_RESULT_PREPROCESSOR"
 
+DIRECT_PREVIEW_SOURCE_SCHEMA = "JVS_ERGO_DIRECT_PREVIEW_SRC"
+DIRECT_PREVIEW_WRAPPER_SCHEMA = "JSON_VIEW_ERGO_DIRECT_PREVIEW"
+DIRECT_PREVIEW_HELPER_SCHEMA = "JSON_VIEW_ERGO_DIRECT_PREVIEW_INTERNAL"
+DIRECT_PREVIEW_PP_SCHEMA = "JVS_ERGO_DIRECT_PREVIEW_PP"
+DIRECT_PREVIEW_PP_SCRIPT = "JSON_ERGO_DIRECT_PREVIEW_PREPROCESSOR"
+
+WRAPPER_DIRECT_PREVIEW_SOURCE_SCHEMA = "JVS_ERGO_WRAPPER_DIRECT_PREVIEW_SRC"
+WRAPPER_DIRECT_PREVIEW_WRAPPER_SCHEMA = "JSON_VIEW_ERGO_WRAPPER_DIRECT_PREVIEW"
+WRAPPER_DIRECT_PREVIEW_HELPER_SCHEMA = "JSON_VIEW_ERGO_WRAPPER_DIRECT_PREVIEW_INTERNAL"
+WRAPPER_DIRECT_PREVIEW_PP_SCHEMA = "JVS_ERGO_WRAPPER_DIRECT_PREVIEW_PP"
+WRAPPER_DIRECT_PREVIEW_PP_SCRIPT = "JSON_ERGO_WRAPPER_DIRECT_PREVIEW_PREPROCESSOR"
+
 
 def assert_equal(actual, expected, label: str) -> None:
     if actual != expected:
         raise AssertionError(f"{label} mismatch.\nExpected: {expected}\nActual:   {actual}")
+
+
+def parse_json_rows(rows) -> list[object]:
+    return [json.loads(row[0]) for row in rows]
+
+
+def preview_rows_via_wrapped_to_json(
+    *,
+    config_path,
+    target_schema: str,
+    wrapper_schema: str,
+    helper_schema: str,
+    preprocessor_schema: str,
+    preprocessor_script: str,
+) -> list[object]:
+    con = connect()
+    try:
+        for schema in [preprocessor_schema, helper_schema, wrapper_schema, target_schema]:
+            con.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+        spec = result_family_spec_from_dict(json.loads(config_path.read_text()))
+        validate_result_family_spec(spec)
+        materialized = materialize_result_family(
+            con,
+            target_schema=target_schema,
+            spec=spec,
+            table_kind="local_temporary",
+            reset_schema=True,
+        )
+        install_result = install_wrapper_surface_in_session(
+            con,
+            materialized_family=materialized,
+            wrapper_schema=wrapper_schema,
+            helper_schema=helper_schema,
+            preprocessor_schema=preprocessor_schema,
+            preprocessor_script=preprocessor_script,
+            activate_preprocessor_session=True,
+        )
+        public_view = str(install_result.manifest["roots"][0]["publicView"])
+        return parse_json_rows(
+            con.execute(
+                f"""
+                SELECT TO_JSON(*)
+                FROM "{wrapper_schema}"."{public_view}"
+                ORDER BY "_id"
+                """
+            ).fetchall()
+        )
+    finally:
+        try:
+            con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")
+        except Exception:
+            pass
+        for schema in [preprocessor_schema, helper_schema, wrapper_schema, target_schema]:
+            con.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        con.close()
 
 
 def install_relational_fixture(con) -> None:
@@ -310,6 +384,18 @@ def main() -> None:
         ],
         "preview-json output",
     )
+    assert_equal(
+        preview_rows,
+        preview_rows_via_wrapped_to_json(
+            config_path=SHAPE_CONFIG_PATH,
+            target_schema=DIRECT_PREVIEW_SOURCE_SCHEMA,
+            wrapper_schema=DIRECT_PREVIEW_WRAPPER_SCHEMA,
+            helper_schema=DIRECT_PREVIEW_HELPER_SCHEMA,
+            preprocessor_schema=DIRECT_PREVIEW_PP_SCHEMA,
+            preprocessor_script=DIRECT_PREVIEW_PP_SCRIPT,
+        ),
+        "preview-json parity with wrapped TO_JSON output",
+    )
 
     wrapper_preview = subprocess.run(
         [
@@ -354,6 +440,18 @@ def main() -> None:
             },
         ],
         "wrapper-based preview-json output",
+    )
+    assert_equal(
+        wrapper_preview_rows,
+        preview_rows_via_wrapped_to_json(
+            config_path=WRAPPER_SHAPE_CONFIG_PATH,
+            target_schema=WRAPPER_DIRECT_PREVIEW_SOURCE_SCHEMA,
+            wrapper_schema=WRAPPER_DIRECT_PREVIEW_WRAPPER_SCHEMA,
+            helper_schema=WRAPPER_DIRECT_PREVIEW_HELPER_SCHEMA,
+            preprocessor_schema=WRAPPER_DIRECT_PREVIEW_PP_SCHEMA,
+            preprocessor_script=WRAPPER_DIRECT_PREVIEW_PP_SCRIPT,
+        ),
+        "wrapper-based preview-json parity with wrapped TO_JSON output",
     )
 
     subprocess.run(

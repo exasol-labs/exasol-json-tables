@@ -36,7 +36,6 @@ They are intentionally thin wrappers over the package modules, not a second impl
 - structured result-family materializer: [python/exasol_json_tables/result_family_materializer.py](../python/exasol_json_tables/result_family_materializer.py)
 - structured result preview/export CLI logic: [python/exasol_json_tables/structured_result_tool.py](../python/exasol_json_tables/structured_result_tool.py)
 - in-session wrapper installer: [python/exasol_json_tables/in_session_wrapper_installer.py](../python/exasol_json_tables/in_session_wrapper_installer.py)
-- programmatic/oracle JSON exporter: [python/exasol_json_tables/result_family_json_export.py](../python/exasol_json_tables/result_family_json_export.py)
 - Nano fixture helpers: [python/exasol_json_tables/nano_support.py](../python/exasol_json_tables/nano_support.py)
 - compatibility CLI wrappers and developer glue: [tools](../tools)
 - executable regressions and studies: [tests](../tests)
@@ -103,8 +102,8 @@ If you are trying to understand:
 - how structured results are materialized and then surfaced through `TO_JSON(...)`
   Start with [python/exasol_json_tables/result_family_materializer.py](../python/exasol_json_tables/result_family_materializer.py) and [python/exasol_json_tables/in_session_wrapper_installer.py](../python/exasol_json_tables/in_session_wrapper_installer.py)
 
-- how the secondary programmatic export path works
-  Start with [python/exasol_json_tables/result_family_json_export.py](../python/exasol_json_tables/result_family_json_export.py)
+- how JSON correctness is verified end to end
+  Start with [tests/test_to_json_roundtrip_e2e.py](../tests/test_to_json_roundtrip_e2e.py), [tests/test_wrapper_to_json.py](../tests/test_wrapper_to_json.py), and [tests/test_json_export_views_sql.py](../tests/test_json_export_views_sql.py)
 
 - how the end-to-end user workflow is orchestrated
   Start with [python/exasol_json_tables/cli.py](../python/exasol_json_tables/cli.py)

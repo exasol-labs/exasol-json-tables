@@ -8,7 +8,7 @@ from pathlib import Path
 
 import _bootstrap  # noqa: F401
 
-from result_family_json_export import export_root_family_to_json
+from _fixture_expected_json import sample_fixture_documents
 from nano_support import ROOT, connect, install_source_fixture
 
 
@@ -186,7 +186,7 @@ def main() -> None:
     con = connect()
     try:
         con.execute(f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {PREPROCESSOR_SCHEMA}.{PREPROCESSOR_SCRIPT}")
-        sample_expected = export_root_family_to_json(con, source_schema="JVS_SRC", root_table="SAMPLE")
+        sample_expected = sample_fixture_documents()
         rows = con.execute(
             f"""
             SELECT

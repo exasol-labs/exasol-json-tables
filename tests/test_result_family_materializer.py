@@ -4,6 +4,10 @@ import _bootstrap  # noqa: F401
 
 from nano_support import connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
 from result_family_materializer import (
+    materialized_family_result_from_dict,
+    materialized_family_result_to_dict,
+    result_family_spec_from_dict,
+    result_family_spec_to_dict,
     StructuredArrayNodeSpec,
     StructuredFieldSpec,
     StructuredObjectNodeSpec,
@@ -62,6 +66,22 @@ def main() -> None:
                     arrays=[],
                 ),
             )
+        )
+        valid_shape_spec = StructuredShapeSpec(
+            root_table="VALID_DOC",
+            root=StructuredObjectNodeSpec(
+                from_sql="FROM DUAL",
+                id_sql="1",
+                fields=[StructuredFieldSpec(name="name", sql="'ok'")],
+                objects=[],
+                arrays=[],
+            ),
+        )
+        valid_shape_dict = result_family_spec_to_dict(valid_shape_spec)
+        assert_equal(
+            result_family_spec_to_dict(result_family_spec_from_dict(valid_shape_dict)),
+            valid_shape_dict,
+            "structured-shape config serialization",
         )
         try:
             validate_result_family_spec(
@@ -133,6 +153,13 @@ def main() -> None:
         )
         assert_equal(subset_result.family_description.root_tables, ["SAMPLE"], "subset root tables")
         assert_equal(current_schema(con), "SYS", "subset materialization should preserve current schema")
+        assert_equal(
+            materialized_family_result_to_dict(
+                materialized_family_result_from_dict(materialized_family_result_to_dict(subset_result))
+            ),
+            materialized_family_result_to_dict(subset_result),
+            "subset materialized-family serialization",
+        )
 
         install_wrapper_views(
             con,
@@ -243,6 +270,29 @@ def main() -> None:
                 "DOC_REPORT_summary",
             ],
             "report family tables",
+        )
+        report_spec_dict = result_family_spec_to_dict(
+            SynthesizedFamilySpec(
+                root_table="DOC_REPORT",
+                table_specs=[
+                    ResultTableSpec(
+                        table_name="DOC_REPORT",
+                        select_sql=f"""
+                        SELECT
+                          CAST("id" AS DECIMAL(18,0)) AS "_id",
+                          "id" AS "doc_id",
+                          CAST(1000 + "id" AS DECIMAL(18,0)) AS "summary|object",
+                          CASE WHEN "items[SIZE]" IS NULL THEN 0 ELSE "items[SIZE]" END AS "items|array"
+                        FROM {BASE_WRAPPER_SCHEMA}.SAMPLE
+                        """,
+                    )
+                ],
+            )
+        )
+        assert_equal(
+            result_family_spec_to_dict(result_family_spec_from_dict(report_spec_dict)),
+            report_spec_dict,
+            "synthesized-family config serialization",
         )
 
         activate(con, BASE_PP_SCHEMA, BASE_PP_SCRIPT)

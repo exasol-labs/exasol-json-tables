@@ -6,8 +6,8 @@ import json
 
 import _bootstrap  # noqa: F401
 
+from _fixture_expected_json import bigdoc_fixture_documents, deepdoc_fixture_documents, sample_fixture_documents
 from nano_support import connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
-from result_family_json_export import export_root_family_to_json
 
 
 SOURCE_SCHEMA = "JVS_SRC"
@@ -90,9 +90,9 @@ def main() -> None:
             script_name=PREPROCESSOR_SCRIPT,
         )
 
-        sample_expected = export_root_family_to_json(con, source_schema=SOURCE_SCHEMA, root_table="SAMPLE")
-        deepdoc_expected = export_root_family_to_json(con, source_schema=SOURCE_SCHEMA, root_table="DEEPDOC")
-        bigdoc_expected = export_root_family_to_json(con, source_schema=SOURCE_SCHEMA, root_table="BIGDOC")
+        sample_expected = sample_fixture_documents()
+        deepdoc_expected = deepdoc_fixture_documents()
+        bigdoc_expected = bigdoc_fixture_documents()
 
         sample_full_rows = fetch_json_rows(
             con,

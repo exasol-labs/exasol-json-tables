@@ -222,6 +222,7 @@ Verifies:
 
 - family-preserving subset materialization from helper metadata
 - synthesized nested result-family materialization from declarative table specs
+- supported config/materialization serialization helpers
 - re-wrapping both materialized families through the normal wrapper interface
 
 ### In-Session Installer Regression
@@ -238,21 +239,18 @@ Verifies:
 - using `TO_JSON(*)` on the in-session wrapped result family
 - the observed cross-session query behavior while the creating session remains alive
 
-### Python Export Oracle
+### TO_JSON Roundtrip E2E
 
 ```bash
-python3 tests/test_result_family_json_export.py
+python3 tests/test_to_json_roundtrip_e2e.py
 ```
 
 Verifies:
 
-- exporting family-preserving subsets back to nested JSON-like rows through the secondary Python path
-- exporting durable synthesized result families back to nested JSON-like rows through the secondary Python path
-- exporting in-session wrapped local-temporary result families back to nested JSON-like rows through the secondary Python path
-- preserving scalar-array versus object-array reconstruction
-- preserving numeric JSON typing for aggregated export values
-
-This is no longer the main user-facing outlet. Treat it as the programmatic fallback and correctness oracle behind the documented `TO_JSON(...)` surface.
+- ingest-and-wrap on real complex fixture files
+- wrapped `TO_JSON(*)` roundtripping back to the original JSON documents
+- null, array, and object preservation across the full table-family contract
+- end-to-end JSON correctness without relying on a separate Python serializer
 
 ### Structured Results From Relational Tables
 
@@ -278,6 +276,7 @@ Verifies:
 - authoring structured results with the higher-level `structured_shape` config
 - validating config-first structured-result specs before materialization
 - one-shot `preview-json` materialize-and-preview workflows
+- parity between `preview-json` and direct wrapped `TO_JSON(*)` output
 - durable packaging from the same higher-level shape config
 
 ### Quickstart To Structured Result

@@ -8,6 +8,7 @@ import subprocess
 
 import _bootstrap  # noqa: F401
 
+from _fixture_expected_json import deepdoc_fixture_documents, sample_fixture_documents
 from generate_json_export_helper_sql import install_json_export_helpers
 from generate_json_export_views_sql import (
     generate_json_export_artifacts,
@@ -15,7 +16,6 @@ from generate_json_export_views_sql import (
     json_export_root_names_from_wrapper_manifest,
 )
 from nano_support import ROOT, connect, install_source_fixture, install_wrapper_views
-from result_family_json_export import export_root_family_to_json
 from wrapper_schema_support import quote_identifier
 
 
@@ -158,12 +158,12 @@ def main() -> None:
         )
         assert_equal(
             sample_json,
-            export_root_family_to_json(con, source_schema=SOURCE_SCHEMA, root_table="SAMPLE"),
+            sample_fixture_documents(),
             "SAMPLE export view full JSON",
         )
         assert_equal(
             deepdoc_json,
-            export_root_family_to_json(con, source_schema=SOURCE_SCHEMA, root_table="DEEPDOC"),
+            deepdoc_fixture_documents(),
             "DEEPDOC export view full JSON",
         )
 

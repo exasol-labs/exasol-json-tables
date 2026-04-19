@@ -95,6 +95,8 @@ exasol-json-tables structured-results preview-json \
 
 That materializes the family in the current command session and prints the JSON rows directly. Treat it as a fast validation tool for the shape, not the primary durable output surface.
 
+Internally, `preview-json` now installs a temporary wrapper over the materialized family and emits rows through `TO_JSON(*)`. That keeps the preview path aligned with the same SQL-native final-output surface used by durable wrapped results.
+
 ### 2. Durable Package
 
 Use this when you want a reusable result family that can be installed, queried again, and handed off operationally:
@@ -151,7 +153,7 @@ Important semantics:
 - on wrapped result families, `TO_JSON(*)` recursively serializes the whole wrapped row
 - `TO_JSON("field1", "field2")` keeps only the selected top-level properties and recursively serializes those branches
 - on ordinary tables or views, `TO_JSON` is a flat row serializer; nested output still comes from materializing a family first
-- `structured-results preview-json` and the Python exporter remain useful for preview, automation, and oracle-style validation, but they are no longer the main user-facing final outlet
+- `structured-results preview-json` remains useful for one-shot validation, but it is no longer a separate output model; it now exercises the same wrapped `TO_JSON(*)` path as the primary SQL surface
 
 ## Quickstart Example
 
@@ -332,32 +334,38 @@ FROM JSON_VIEW_RELATIONAL_RESULT.ORDER_REPORT
 ORDER BY "_id";
 ```
 
-## Preview And Programmatic Export
+## Preview And Advanced Python Surface
 
-Two secondary paths still matter:
+There are two secondary paths to keep in mind:
 
 - `structured-results preview-json` for one-shot shape validation without a durable install
-- the Python exporter for compatibility, automation, and oracle-style regression checks
+- the narrow advanced Python materialization surface for validation, authoring, and packaging workflows
 
-If you need that programmatic path, use the export helper directly:
+The intentionally supported advanced Python surface is in `result_family_materializer`:
+
+- validation helpers such as `validate_result_family_spec(...)`
+- materialization entry points such as `materialize_result_family(...)`
+- config serialization helpers such as `result_family_spec_to_dict(...)` and `result_family_spec_from_dict(...)`
+
+Example:
 
 ```python
-from nano_support import connect
-from result_family_json_export import export_root_family_to_json
+import json
+from pathlib import Path
 
-con = connect()
-rows = export_root_family_to_json(con, source_schema="JVS_RESULT_SRC", root_table="DOC_REPORT")
-print(rows)
-con.close()
+from exasol_json_tables.result_family_materializer import (
+    materialize_result_family,
+    result_family_spec_from_dict,
+    result_family_spec_to_dict,
+    validate_result_family_spec,
+)
+
+spec = result_family_spec_from_dict(json.loads(Path("result_family.json").read_text()))
+validate_result_family_spec(spec)
+print(result_family_spec_to_dict(spec)["kind"])
 ```
 
-The same export path works for:
-
-- family-preserving subsets
-- durable synthesized result families
-- in-session wrapped local-temporary result families
-
-Treat that Python exporter path as secondary tooling. The supported primary final-output path remains wrapped SQL plus `TO_JSON(...)`.
+Treat lower-level Python helpers as advanced compatibility tooling, not as the primary documented product surface. The supported primary final-output path remains wrapped SQL plus `TO_JSON(...)`.
 
 ## Choosing Between Durable And Session-Local
 
@@ -374,7 +382,7 @@ Use the lower-level in-session path when the result family only needs to live in
 
 - [tests/test_wrapper_to_json.py](../tests/test_wrapper_to_json.py)
 - [tests/test_result_family_materializer.py](../tests/test_result_family_materializer.py)
-- [tests/test_result_family_json_export.py](../tests/test_result_family_json_export.py)
+- [tests/test_to_json_roundtrip_e2e.py](../tests/test_to_json_roundtrip_e2e.py)
 - [tests/test_structured_results_from_relational.py](../tests/test_structured_results_from_relational.py)
 - [tests/test_structured_result_ergonomics.py](../tests/test_structured_result_ergonomics.py)
 - [tests/test_result_family_package_tool.py](../tests/test_result_family_package_tool.py)
