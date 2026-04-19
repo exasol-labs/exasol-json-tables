@@ -139,6 +139,8 @@ def main() -> None:
     )
     if "Validated installed package" not in validate_result.stdout:
         raise AssertionError("validate output should confirm the installed durable result-family package")
+    if "Validated installed query probes: rowset, qualified-helper, TO_JSON(*)" not in validate_result.stdout:
+        raise AssertionError("validate output should report the installed query probes it executed")
 
     con = connect()
     try:

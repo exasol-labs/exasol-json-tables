@@ -6,7 +6,7 @@ That means a result can become:
 
 - a nested result that can be queried again through the wrapper surface
 - a durable intermediate result for downstream SQL
-- a shape that can be exported back to nested JSON-like rows later
+- a wrapped result that can be emitted as final JSON through `TO_JSON(...)`
 
 This is useful both when the input already came from JSON and when the input is ordinary relational data that you want to turn into document-shaped output.
 
@@ -16,6 +16,7 @@ The easiest way to think about it is:
 
 - the wrapper surface makes JSON-shaped source data pleasant to query
 - structured results take SQL output and put it back into that same JSON-shaped contract
+- `TO_JSON(*)` or `TO_JSON("field1", "field2")` is usually the final outlet once that wrapped contract exists
 
 If the result is nested, it will usually become:
 
@@ -29,7 +30,7 @@ Use structured results when:
 - you want nested output from ordinary relational tables
 - you want to persist a nested intermediate result inside Exasol
 - you want to keep shape-building inside SQL instead of rebuilding everything in application code
-- you want to export a query result back to nested JSON-like rows later
+- you want the final nested output to come from the SQL surface through `TO_JSON(...)`
 
 If you only need a flat analytical result, plain SQL tables or views are usually enough.
 
@@ -55,7 +56,7 @@ exasol-json-tables structured-results preview-json \
   --table-kind local_temporary
 ```
 
-That materializes the family in the current command session and prints the nested JSON-like rows directly.
+That materializes the family in the current command session and prints the JSON rows directly. Treat it as a fast validation tool for the shape, not the primary durable output surface.
 
 ### 2. Durable Package
 
@@ -87,6 +88,33 @@ exasol-json-tables wrap install \
 ```
 
 For result-family packages, `install` also recreates the durable source-like family before it installs the wrapper views and preprocessor.
+
+## Primary Final Outlet: `TO_JSON`
+
+Once a structured result is wrapped, the normal way to emit final JSON is SQL:
+
+```sql
+ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_RESULT_PP.JSON_RESULT_PREPROCESSOR;
+
+SELECT TO_JSON(*) AS doc_json
+FROM JSON_VIEW_RESULT.DOC_REPORT
+ORDER BY "_id";
+```
+
+If you only want selected top-level properties, keep the same wrapped root and choose them explicitly:
+
+```sql
+SELECT TO_JSON("doc_id", "items") AS doc_json
+FROM JSON_VIEW_RESULT.DOC_REPORT
+ORDER BY "_id";
+```
+
+Important semantics:
+
+- on wrapped result families, `TO_JSON(*)` recursively serializes the whole wrapped row
+- `TO_JSON("field1", "field2")` keeps only the selected top-level properties and recursively serializes those branches
+- on ordinary tables or views, `TO_JSON` is a flat row serializer; nested output still comes from materializing a family first
+- `structured-results preview-json` and the Python exporter remain useful for preview, automation, and oracle-style validation, but they are no longer the main user-facing final outlet
 
 ## Quickstart Example
 
@@ -135,9 +163,17 @@ FROM JSON_VIEW_RESULT.DOC_REPORT
 ORDER BY "doc_id";
 ```
 
+And when you want the final document payload:
+
+```sql
+SELECT TO_JSON(*) AS doc_json
+FROM JSON_VIEW_RESULT.DOC_REPORT
+ORDER BY "_id";
+```
+
 ## Structured Results From Regular Tables
 
-This is a common pattern: start from ordinary relational tables, then materialize a nested result family that is easier to query, export, or hand off as document-shaped output.
+This is a common pattern: start from ordinary relational tables, then materialize a nested result family that is easier to query, emit with `TO_JSON(...)`, or hand off as document-shaped output.
 
 For example, suppose you have upstream tables like:
 
@@ -189,9 +225,24 @@ FROM JSON_VIEW_RELATIONAL_RESULT.ORDER_REPORT
 ORDER BY "order_id";
 ```
 
-## Export Back To Nested Rows
+For the final payload, use `TO_JSON(...)` on the wrapped result:
 
-If you want to turn a source-like family back into nested JSON-like rows, use the export helper programmatically:
+```sql
+SELECT
+  TO_JSON(*) AS full_json,
+  TO_JSON("customer", "items") AS nested_subset_json
+FROM JSON_VIEW_RELATIONAL_RESULT.ORDER_REPORT
+ORDER BY "_id";
+```
+
+## Preview And Programmatic Export
+
+Two secondary paths still matter:
+
+- `structured-results preview-json` for one-shot shape validation without a durable install
+- the Python exporter for programmatic export and oracle-style regression checks
+
+If you need that programmatic path, use the export helper directly:
 
 ```python
 from nano_support import connect
@@ -222,7 +273,7 @@ Use the lower-level in-session path when the result family only needs to live in
 
 ## See Also
 
-- [structured-result-materialization-study.md](../structured-result-materialization-study.md)
+- [tests/test_wrapper_to_json.py](../tests/test_wrapper_to_json.py)
 - [tests/test_result_family_materializer.py](../tests/test_result_family_materializer.py)
 - [tests/test_result_family_json_export.py](../tests/test_result_family_json_export.py)
 - [tests/test_structured_results_from_relational.py](../tests/test_structured_results_from_relational.py)

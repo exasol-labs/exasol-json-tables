@@ -176,6 +176,8 @@ def main() -> None:
     validate_stdout = validate_result.stdout
     if "Activation reminder:" not in validate_stdout:
         raise AssertionError("validate --check-installed should print an activation reminder")
+    if "Validated installed query probes: rowset, qualified-helper, TO_JSON(*)" not in validate_stdout:
+        raise AssertionError("validate --check-installed should report the installed query probes it executed")
     if f'ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = "{PREPROCESSOR_SCHEMA}"."{PREPROCESSOR_SCRIPT}";' not in validate_stdout:
         raise AssertionError("validate --check-installed should print an activation snippet")
     if f'FROM "{WRAPPER_SCHEMA}"."DEEPDOC"' not in validate_stdout or 'JSON_AS_VARCHAR("title")' not in validate_stdout:

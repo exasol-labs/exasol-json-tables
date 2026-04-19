@@ -326,6 +326,9 @@ def test_unified_cli_wrap_deploy_chains_install_and_validate() -> None:
                 text=True,
             )
             assert "Validated installed package for" in deploy.stdout
+            assert "Validated installed query probes:" in deploy.stdout
+            assert "qualified-helper" in deploy.stdout
+            assert "TO_JSON(*)" in deploy.stdout
 
             con = connect()
             try:
