@@ -172,42 +172,34 @@ Verifies:
 - UDF interoperability on the wrapper surface
 - additive source-DDL refresh through package regeneration, install, and validation
 
-## Performance Study
+## Local Benchmark Harnesses
+
+Some larger exploratory studies are intentionally kept out of the tracked `tests/` suite.
+If your local workspace includes the ignored `benchmarks/` folder, the main study entrypoints are:
 
 ```bash
-python3 tests/study_wrapper_performance.py
+python3 benchmarks/study_wrapper_performance.py
+python3 benchmarks/study_structured_result_materialization.py
 ```
 
-Benchmarks:
+These local-only studies benchmark or investigate:
 
 - path traversal
 - rowset iteration
 - explicit-null helper queries
 - helper-based variant type and extraction queries
 - warm steady-state and isolated cold-start behavior
+- structured-result materialization and JSON reconstruction flows
 
 ## Structured Results
-
-### Materialization Study
-
-```bash
-python3 tests/study_structured_result_materialization.py
-```
-
-Investigates whether the existing JSON table mapping can also serve as a structured-result interchange format for:
-
-- family-preserving filtered copies of JSON documents
-- synthesized nested analytical result families
-- generic JSON reconstruction from source-like result tables
-- local temporary result families versus durable scratch schemas
-
-See also [structured-result-materialization-study.md](../structured-result-materialization-study.md).
 
 ### Materializer Regression
 
 ```bash
 python3 tests/test_result_family_materializer.py
 ```
+
+For deeper local experimentation beyond the tracked regression, see the optional `benchmarks/study_structured_result_materialization.py` harness when present.
 
 Verifies:
 

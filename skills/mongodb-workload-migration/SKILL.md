@@ -33,7 +33,7 @@ In this repository, inspect first:
 
 - `README.md`
 - `structured-result-materialization-study.md`
-- `tests/study_mongodb_migration_focus.py`
+- `user-studies/mongodb-focused/README.md`
 - `tests/test_wrapper_surface.py`
 - `tests/test_wrapper_errors.py`
 - `tests/test_structured_result_ergonomics.py`
@@ -43,11 +43,14 @@ In this repository, inspect first:
 
 Useful live checks:
 
-- `python3 tests/study_mongodb_migration_focus.py`
 - `python3 tests/test_wrapper_surface.py`
 - `python3 tests/test_wrapper_errors.py`
 - `python3 tests/test_structured_result_ergonomics.py`
 - `python3 tests/test_structured_results_from_relational.py`
+
+If your local workspace keeps the optional ignored benchmark harnesses, also run:
+
+- `python3 benchmarks/study_mongodb_migration_focus.py`
 
 ## Migration Mental Model
 
@@ -165,8 +168,11 @@ These are validated in this repository against Nano:
 
 See:
 
-- `tests/study_mongodb_migration_focus.py`
 - `user-studies/mongodb-focused/README.md`
+
+If present locally:
+
+- `benchmarks/study_mongodb_migration_focus.py`
 
 ## Known Boundaries To Tell The User Early
 
@@ -264,7 +270,8 @@ If nested output matters, validate a fourth:
 4. **structured output path**
    - can the migrated workload be materialized as a structured result family and emitted through `TO_JSON(*)`?
 
-In this repository, `tests/study_mongodb_migration_focus.py` is the best starting harness.
+In this repository, the best tracked starting point is `user-studies/mongodb-focused/README.md`.
+If your local workspace also keeps the optional benchmark harnesses, `benchmarks/study_mongodb_migration_focus.py` is the matching executable study.
 
 ## Practical Patterns To Reuse
 

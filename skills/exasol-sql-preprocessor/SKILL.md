@@ -424,7 +424,10 @@ If you are working in this repository, the main live checks are:
 - `python3 tests/test_wrapper_errors.py`
 - `python3 tests/test_wrapper_evaluation.py`
 - `python3 tests/test_wrapper_package_tool.py`
-- `python3 tests/study_wrapper_performance.py`
+
+If your local workspace keeps the optional ignored benchmark harnesses, also use:
+
+- `python3 benchmarks/study_wrapper_performance.py`
 
 ## Repo-Specific Guidance For This Repository
 
