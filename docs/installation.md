@@ -79,6 +79,10 @@ After installation, activate the wrapper syntax in the SQL session where you wan
 ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSOR;
 ```
 
+If your environment already uses another SQL preprocessor, remember that Exasol only allows one active `SQL_PREPROCESSOR_SCRIPT` per session. Activating the JSON Tables preprocessor will replace the currently active one for that session.
+
+In that case, use a small master preprocessor script as the single active entrypoint. Keep the real rewrite logic in helper functions or helper scripts, have the master script call the existing preprocessor logic and the JSON Tables preprocessor logic in the required order, and activate the master script instead of trying to enable multiple preprocessors separately.
+
 ## Connection Models
 
 There are two common ways to run the workflow.
