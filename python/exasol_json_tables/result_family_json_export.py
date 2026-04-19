@@ -254,7 +254,12 @@ def export_root_family_to_json(
         model = table_models[table_name]
         table_relationships = relationships_by_parent.get(table_name, [])
         if set(model.groups) == {"_value"} and not table_relationships:
-            return [normalize_scalar(row["_value"]) for row in table_rows]
+            value_group = model.groups["_value"]
+            elements: list[Any] = []
+            for row in table_rows:
+                value = scalar_group_value(value_group, row)
+                elements.append(None if value is MISSING else value)
+            return elements
         return [build_object(table_name, row) for row in table_rows]
 
     def build_object(table_name: str, row: dict[str, Any]) -> dict[str, Any]:

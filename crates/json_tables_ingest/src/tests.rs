@@ -9,8 +9,7 @@ use parquet::{
 };
 use std::{
     collections::BTreeMap,
-    env,
-    fs,
+    env, fs,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -218,7 +217,10 @@ fn collects_array_stats_and_nested_arrays() {
     assert_eq!(lookup_count(&nested.stats, "value", SimpleType::Array), 4);
 
     let nested_values = table("nested[].value[]");
-    assert_eq!(lookup_count(&nested_values.stats, "value", SimpleType::Integer), 6);
+    assert_eq!(
+        lookup_count(&nested_values.stats, "value", SimpleType::Integer),
+        6
+    );
 }
 
 #[test]
@@ -251,7 +253,10 @@ fn collects_heterogeneous_array_stats() {
     assert_eq!(lookup_count(&mixed.stats, "x", SimpleType::Integer), 1);
 
     let mixed_arr = table("mixed[].value[]");
-    assert_eq!(lookup_count(&mixed_arr.stats, "value", SimpleType::Integer), 2);
+    assert_eq!(
+        lookup_count(&mixed_arr.stats, "value", SimpleType::Integer),
+        2
+    );
 }
 
 #[test]
@@ -266,11 +271,17 @@ fn edge_case_schema_and_arrays() {
     let plans = build_all_schema_plans(&stats);
 
     let root = plans.iter().find(|p| p.path.is_root()).unwrap();
-    // only_null is always null -> should be omitted.
-    assert!(root.properties.get("only_null").is_none());
+    // only_null is always explicit null -> keep only a null mask so downstream surfaces can address it.
+    let only_null = root.properties.get("only_null").expect("only_null plan");
+    assert_eq!(only_null.main_type, None);
+    assert!(only_null.primary.is_none());
+    assert!(only_null.null_mask.is_some());
 
     // missing_vs_null has nulls and ints -> main int + null mask.
-    let mvn = root.properties.get("missing_vs_null").expect("missing_vs_null plan");
+    let mvn = root
+        .properties
+        .get("missing_vs_null")
+        .expect("missing_vs_null plan");
     assert_eq!(mvn.main_type, Some(SimpleType::Integer));
     assert!(mvn.null_mask.is_some());
 
@@ -296,8 +307,18 @@ fn edge_case_schema_and_arrays() {
     let a_cols = obj_arr_table.properties.get("a").expect("a cols");
     assert!(a_cols.null_mask.is_some());
 
-    // only_null_arr has all nulls; array table should still exist for parent count.
-    assert!(plans.iter().any(|p| p.path.to_string() == "only_null_arr[]"));
+    // only_null_arr has all nulls; the array table should still exist and retain explicit-null element masks.
+    let only_null_arr = plans
+        .iter()
+        .find(|p| p.path.to_string() == "only_null_arr[]")
+        .expect("only_null_arr table");
+    let only_null_value = only_null_arr
+        .properties
+        .get("value")
+        .expect("only_null_arr value cols");
+    assert_eq!(only_null_value.main_type, None);
+    assert!(only_null_value.primary.is_none());
+    assert!(only_null_value.null_mask.is_some());
 }
 
 #[test]
@@ -337,10 +358,21 @@ fn roundtrip_preserves_mixed_object_and_primitive_values() {
     let format = detect_input_format(&input_path).expect("format");
     let stats = scan_all_stats(&input_path, format).expect("scan");
     let planned = build_all_schema_plans(&stats);
-    let root_path = planned.iter().find(|p| p.path.is_root()).unwrap().path.clone();
+    let root_path = planned
+        .iter()
+        .find(|p| p.path.is_root())
+        .unwrap()
+        .path
+        .clone();
 
-    write_all_tables(&input_path, format, &planned, dir.path(), "mixed_object_primitive")
-        .expect("write parquet");
+    write_all_tables(
+        &input_path,
+        format,
+        &planned,
+        dir.path(),
+        "mixed_object_primitive",
+    )
+    .expect("write parquet");
 
     let expected: Vec<serde_json::Value> =
         serde_json::from_reader(File::open(&input_path).unwrap()).expect("read expected json");
@@ -401,7 +433,12 @@ fn roundtrip_fixture(fixture: &str) {
     let format = detect_input_format(&input_path).expect("format");
     let stats = scan_all_stats(&input_path, format).expect("scan");
     let planned = build_all_schema_plans(&stats);
-    let root_plan = planned.iter().find(|p| p.path.is_root()).unwrap().path.clone();
+    let root_plan = planned
+        .iter()
+        .find(|p| p.path.is_root())
+        .unwrap()
+        .path
+        .clone();
 
     write_all_tables(&input_path, format, &planned, dir.path(), &stem).expect("write parquet");
 
@@ -627,11 +664,7 @@ fn reconstruct_object(
                 value = Some(serde_json::Value::Null);
             } else if let Some(fk) = row.values.get(object_fk_col).and_then(|v| v.as_i64()) {
                 let child_path = path.child_object(prop);
-                if let Some(idx) = id_index
-                    .get(&child_path)
-                    .and_then(|m| m.get(&fk))
-                    .copied()
-                {
+                if let Some(idx) = id_index.get(&child_path).and_then(|m| m.get(&fk)).copied() {
                     value = Some(reconstruct_object(
                         &child_path,
                         idx,
@@ -682,11 +715,16 @@ fn reconstruct_object(
             Some(SimpleType::String) => {
                 if null_mask {
                     value = Some(serde_json::Value::Null);
-                } else if let Some(v) = primary_val.and_then(|v| v.as_str().map(|s| s.to_string())) {
+                } else if let Some(v) = primary_val.and_then(|v| v.as_str().map(|s| s.to_string()))
+                {
                     value = Some(serde_json::Value::String(v));
                 }
             }
-            _ => {}
+            _ => {
+                if null_mask {
+                    value = Some(serde_json::Value::Null);
+                }
+            }
         };
 
         if let Some(v) = value {
@@ -738,12 +776,10 @@ fn reconstruct_array_elem(
             .and_then(|p| row.values.get(p))
             .map(|v| !v.is_null())
             .unwrap_or(false);
-        let alt_present = cols.alternates.values().any(|name| {
-            row.values
-                .get(name)
-                .map(|v| !v.is_null())
-                .unwrap_or(false)
-        });
+        let alt_present = cols
+            .alternates
+            .values()
+            .any(|name| row.values.get(name).map(|v| !v.is_null()).unwrap_or(false));
         mask || primary_present || object_present || array_present || alt_present
     };
 
@@ -801,9 +837,9 @@ fn reconstruct_array_elem(
                     Some(SimpleType::Integer) => primary_val
                         .and_then(|v| v.as_i64())
                         .map(|v| serde_json::Value::Number(v.into())),
-                    Some(SimpleType::Number) => primary_val
-                        .and_then(|v| v.as_f64())
-                        .map(to_json_number),
+                    Some(SimpleType::Number) => {
+                        primary_val.and_then(|v| v.as_f64()).map(to_json_number)
+                    }
                     Some(SimpleType::String) => primary_val
                         .and_then(|v| v.as_str().map(|s| s.to_string()))
                         .map(serde_json::Value::String),
@@ -814,13 +850,15 @@ fn reconstruct_array_elem(
                     for (ty, name) in &prop_cols.alternates {
                         let candidate = row.values.get(name);
                         let alt_val = match ty {
-                            SimpleType::Bool => candidate.and_then(|v| v.as_bool()).map(serde_json::Value::Bool),
+                            SimpleType::Bool => candidate
+                                .and_then(|v| v.as_bool())
+                                .map(serde_json::Value::Bool),
                             SimpleType::Integer => candidate
                                 .and_then(|v| v.as_i64())
                                 .map(|v| serde_json::Value::Number(v.into())),
-                            SimpleType::Number => candidate
-                                .and_then(|v| v.as_f64())
-                                .map(to_json_number),
+                            SimpleType::Number => {
+                                candidate.and_then(|v| v.as_f64()).map(to_json_number)
+                            }
                             SimpleType::String => candidate
                                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                                 .map(serde_json::Value::String),
@@ -900,11 +938,7 @@ fn reconstruct_array_elem(
                 continue;
             } else if let Some(fk) = row.values.get(object_fk_col).and_then(|v| v.as_i64()) {
                 let child_path = path.child_object(prop);
-                if let Some(idx) = id_index
-                    .get(&child_path)
-                    .and_then(|m| m.get(&fk))
-                    .copied()
-                {
+                if let Some(idx) = id_index.get(&child_path).and_then(|m| m.get(&fk)).copied() {
                     obj.insert(
                         prop.clone(),
                         reconstruct_object(&child_path, idx, plans, tables, id_index, parent_index),
@@ -938,7 +972,14 @@ fn reconstruct_array_elem(
             _ => serde_json::Value::Null,
         };
         if null_mask || !value.is_null() {
-            obj.insert(prop.clone(), if null_mask { serde_json::Value::Null } else { value });
+            obj.insert(
+                prop.clone(),
+                if null_mask {
+                    serde_json::Value::Null
+                } else {
+                    value
+                },
+            );
         }
     }
 
@@ -1065,16 +1106,7 @@ fn exports_parquet_with_expected_schema_and_values() {
         .collect();
     assert_eq!(
         names,
-        vec![
-            "_id",
-            "id",
-            "name",
-            "score",
-            "flag",
-            "flag|n",
-            "note",
-            "note|n"
-        ]
+        vec!["_id", "id", "name", "score", "flag", "flag|n", "note", "note|n"]
     );
 
     let idx = |col: &str| names.iter().position(|n| n == col).unwrap();
@@ -1088,7 +1120,10 @@ fn exports_parquet_with_expected_schema_and_values() {
     assert_eq!(r1.get_bool(idx("flag")).ok(), Some(true));
     assert_eq!(r1.get_bool(idx("flag|n")).ok(), Some(false));
     assert_eq!(r1.get_long(idx("id")).ok(), Some(1));
-    assert_eq!(r1.get_string(idx("name")).ok().map(String::as_str), Some("a"));
+    assert_eq!(
+        r1.get_string(idx("name")).ok().map(String::as_str),
+        Some("a")
+    );
     assert_eq!(r1.get_double(idx("score")).ok(), Some(1.5));
     assert_eq!(r1.get_string(idx("note")).ok().map(String::as_str), None);
     assert_eq!(r1.get_bool(idx("note|n")).ok(), Some(true));
@@ -1098,9 +1133,15 @@ fn exports_parquet_with_expected_schema_and_values() {
     assert!(matches!(r2.get_bool(idx("flag")).ok(), None | Some(false)));
     assert_eq!(r2.get_bool(idx("flag|n")).ok(), Some(true));
     assert_eq!(r2.get_long(idx("id")).ok(), Some(2));
-    assert_eq!(r2.get_string(idx("name")).ok().map(String::as_str), Some("b"));
+    assert_eq!(
+        r2.get_string(idx("name")).ok().map(String::as_str),
+        Some("b")
+    );
     assert_eq!(r2.get_double(idx("score")).ok(), Some(2.0));
-    assert_eq!(r2.get_string(idx("note")).ok().map(String::as_str), Some("x"));
+    assert_eq!(
+        r2.get_string(idx("note")).ok().map(String::as_str),
+        Some("x")
+    );
     assert_eq!(r2.get_bool(idx("note|n")).ok(), Some(false));
 }
 
@@ -1163,7 +1204,11 @@ fn exasol_import_uses_schema_table_names() {
             stmt.find(needle).map(|idx| {
                 let start = idx + needle.len();
                 let rest = &stmt[start..];
-                rest.split_whitespace().next().unwrap_or("").trim().to_string()
+                rest.split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
             })
         })
         .collect();
@@ -1192,7 +1237,9 @@ fn exasol_constraints_are_emitted_disabled_explicitly() {
 
     let (_create_stmts, constraint_stmts) = build_sql_schema(&planned, stem);
     assert!(
-        constraint_stmts.iter().all(|stmt| stmt.contains(" DISABLE;")),
+        constraint_stmts
+            .iter()
+            .all(|stmt| stmt.contains(" DISABLE;")),
         "all Exasol PK/FK constraints should have explicit DISABLE semantics"
     );
 }
@@ -1211,9 +1258,13 @@ fn writes_source_manifest_with_expected_tables_and_relationships() {
     let planned = build_all_schema_plans(&stats);
     write_source_manifest(&planned, &output_path, "NESTED").expect("manifest");
 
-    let manifest: Value = serde_json::from_str(&fs::read_to_string(&output_path).expect("read manifest"))
-        .expect("parse manifest");
-    assert_eq!(manifest["format"], Value::String("exasol-json-tables-source-manifest".to_string()));
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(&output_path).expect("read manifest"))
+            .expect("parse manifest");
+    assert_eq!(
+        manifest["format"],
+        Value::String("exasol-json-tables-source-manifest".to_string())
+    );
     assert_eq!(manifest["stem"], Value::String("NESTED".to_string()));
 
     let table_names: Vec<String> = manifest["tables"]
@@ -1227,7 +1278,9 @@ fn writes_source_manifest_with_expected_tables_and_relationships() {
     assert!(table_names.contains(&"NESTED_meta".to_string()));
     assert!(table_names.contains(&"NESTED_meta_info".to_string()));
 
-    let relationships = manifest["relationships"].as_array().expect("relationships array");
+    let relationships = manifest["relationships"]
+        .as_array()
+        .expect("relationships array");
     assert!(relationships.iter().any(|relationship| {
         relationship["parentTable"] == Value::String("NESTED".to_string())
             && relationship["childTable"] == Value::String("NESTED_child".to_string())
@@ -1262,7 +1315,10 @@ impl ExasolE2eSchema {
 
 impl Drop for ExasolE2eSchema {
     fn drop(&mut self) {
-        let _ = exasol_execute_update(&self.base_url, &format!("DROP SCHEMA {} CASCADE", self.schema));
+        let _ = exasol_execute_update(
+            &self.base_url,
+            &format!("DROP SCHEMA {} CASCADE", self.schema),
+        );
     }
 }
 

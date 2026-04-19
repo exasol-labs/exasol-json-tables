@@ -244,7 +244,11 @@ def count_non_null_members(group: Group) -> int:
     return count
 
 
-def visible_name_for_group(group: Group, visible_member: ColumnMeta) -> str:
+def visible_name_for_group(group: Group, visible_member: ColumnMeta | None) -> str:
+    if visible_member is None:
+        if group.null_mask is not None:
+            return group.base_name
+        raise ValueError(f"No visible member for group {group.base_name}")
     if count_non_null_members(group) > 1:
         return group.base_name
     return visible_member.name
@@ -274,6 +278,8 @@ def can_use_native_coalesce(columns: list[ColumnMeta]) -> bool:
 def render_projection_expression(group: Group) -> str:
     visible_member = choose_visible_member(group)
     if visible_member is None:
+        if group.null_mask is not None:
+            return f"CAST(NULL AS VARCHAR({STRING_CAST_SIZE}))"
         raise ValueError(f"No visible member for group {group.base_name}")
     members = ordered_non_null_members(group)
     if len(members) == 1:
@@ -375,9 +381,17 @@ def generate_public_view_sql(public_schema: str, table_model: TableModel, source
         if parsed is None:
             continue
         base_name, kind, _ = parsed
-        if kind == "nullMask" or base_name in emitted_groups:
+        if base_name in emitted_groups:
             continue
         group = table_model.groups[base_name]
+        if kind == "nullMask":
+            visible_member = choose_visible_member(group)
+            if visible_member is None and group.null_mask is not None:
+                visible_name = visible_name_for_group(group, visible_member)
+                expression = render_projection_expression(group)
+                select_lines.append(f"  {expression} AS {quote_identifier(visible_name)}")
+                emitted_groups.add(base_name)
+            continue
         visible_member = choose_visible_member(group)
         if visible_member is None or column.name != visible_member.name:
             continue
@@ -432,7 +446,9 @@ def build_manifest(
         groups_manifest: list[dict[str, Any]] = []
         for group in sorted(model.groups.values(), key=lambda item: item.base_name):
             visible_member = choose_visible_member(group)
-            visible_name = visible_name_for_group(group, visible_member) if visible_member is not None else None
+            visible_name = visible_name_for_group(group, visible_member) if (
+                visible_member is not None or group.null_mask is not None
+            ) else None
             members = ordered_non_null_members(group)
             groups_manifest.append(
                 {
@@ -573,7 +589,9 @@ def generate_metadata_sql(
         root_table = root_by_table[table_name]
         for group in sorted(model.groups.values(), key=lambda item: item.base_name):
             visible_member = choose_visible_member(group)
-            visible_name = visible_name_for_group(group, visible_member) if visible_member is not None else None
+            visible_name = visible_name_for_group(group, visible_member) if (
+                visible_member is not None or group.null_mask is not None
+            ) else None
             null_mask_name = group.null_mask.name if group.null_mask is not None else None
             if group.primary is not None:
                 column_rows.append([
@@ -624,6 +642,25 @@ def generate_metadata_sql(
                     "array",
                     group.array_member.type_name,
                     visible_member is not None and group.array_member.name == visible_member.name,
+                    False,
+                    null_mask_name,
+                ])
+            if (
+                group.primary is None
+                and group.object_member is None
+                and group.array_member is None
+                and not group.alternates
+                and null_mask_name is not None
+            ):
+                column_rows.append([
+                    root_table,
+                    table_name,
+                    group.base_name,
+                    visible_name,
+                    null_mask_name,
+                    "nullMaskOnly",
+                    group.null_mask.type_name,
+                    False,
                     False,
                     null_mask_name,
                 ])
@@ -797,6 +834,7 @@ def load_installed_wrapper_manifest(con, helper_schema: str) -> dict[str, Any]:
         base_name = str(row[2])
         visible_name = None if row[3] is None else str(row[3])
         member_name = str(row[4])
+        member_kind = str(row[5])
         member_type = str(row[6])
         is_primary = bool(row[8])
         null_mask_name = None if row[9] is None else str(row[9])
@@ -822,14 +860,15 @@ def load_installed_wrapper_manifest(con, helper_schema: str) -> dict[str, Any]:
             }
             groups_by_table_and_base[group_key] = group_entry
             table_entry["groups"].append(group_entry)
-        group_entry["members"].append(
-            {
-                "name": member_name,
-                "type": member_type,
-                "ordinal": len(group_entry["members"]) + 1,
-                "isPrimary": is_primary,
-            }
-        )
+        if member_kind != "nullMaskOnly":
+            group_entry["members"].append(
+                {
+                    "name": member_name,
+                    "type": member_type,
+                    "ordinal": len(group_entry["members"]) + 1,
+                    "isPrimary": is_primary,
+                }
+            )
 
     roots: list[dict[str, Any]] = []
     public_root_views = {str(row[3]): str(row[0]) for row in roots_rows}

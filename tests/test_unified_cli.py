@@ -494,6 +494,19 @@ def test_unified_cli_ingest_and_wrap_with_lowercase_root_name() -> None:
                     ORDER BY 1
                     '''
                 ).fetchall()
+                aliased_rows = con.execute(
+                    f'''
+                    SELECT
+                      CAST(s."id" AS VARCHAR(20)),
+                      COALESCE(JSON_AS_VARCHAR(s."name"), 'NULL'),
+                      COALESCE(CAST(tag._index AS VARCHAR(10)), 'NULL'),
+                      COALESCE(CAST(tag AS VARCHAR(20)), 'NULL'),
+                      TO_JSON(s.*)
+                    FROM "{package_config["wrapperSchema"]}"."sample" s
+                    LEFT JOIN VALUE tag IN s."tags"
+                    ORDER BY 1, 3
+                    '''
+                ).fetchall()
             finally:
                 con.close()
 
@@ -501,6 +514,129 @@ def test_unified_cli_ingest_and_wrap_with_lowercase_root_name() -> None:
                 ("1", "Alice", "A", "y"),
                 ("2", "Bob", "NULL", "NULL"),
                 ("3", "Carol", "NULL", "NULL"),
+            ]
+            assert aliased_rows == [
+                (
+                    "1",
+                    "Alice",
+                    "0",
+                    "x",
+                    '{"active":true,"age":30,"id":1,"meta":{"team":"A"},"name":"Alice","note":null,"score":12.5,"tags":["x","y"]}',
+                ),
+                (
+                    "1",
+                    "Alice",
+                    "1",
+                    "y",
+                    '{"active":true,"age":30,"id":1,"meta":{"team":"A"},"name":"Alice","note":null,"score":12.5,"tags":["x","y"]}',
+                ),
+                (
+                    "2",
+                    "Bob",
+                    "NULL",
+                    "NULL",
+                    '{"active":false,"age":null,"id":2,"misc":"extra","name":"Bob","score":15}',
+                ),
+                (
+                    "3",
+                    "Carol",
+                    "NULL",
+                    "NULL",
+                    '{"active":true,"age":28,"height":170.2,"id":3,"meta":{},"name":"Carol","note":"hello","score":null}',
+                ),
+            ]
+        finally:
+            con = connect()
+            try:
+                if package_config is not None:
+                    cleanup_package_schemas(con, package_config)
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
+
+def test_unified_cli_ingest_and_wrap_with_explicit_null_only_root_property() -> None:
+    fixture_path = ROOT / "crates" / "json_tables_ingest" / "tests" / "fixtures" / "edge_cases.json"
+    with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_null_only_") as tmpdir:
+        tmp = Path(tmpdir)
+        artifact_root = tmp / "artifacts"
+        staging_dir = tmp / "staging"
+        input_path = tmp / "edge_cases.json"
+        shutil.copyfile(fixture_path, input_path)
+
+        workflow_name = "edge_cases_nulls"
+        run_artifact_dir = artifact_root / workflow_name
+        package_config_path = run_artifact_dir / f"{workflow_name}_wrapper_package.json"
+        package_config: Optional[dict[str, object]] = None
+
+        try:
+            con = connect()
+            try:
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "ingest-and-wrap",
+                    "--input",
+                    str(input_path),
+                    "--name",
+                    workflow_name,
+                    "--artifact-dir",
+                    str(artifact_root),
+                    "--exasol-temp-dir",
+                    str(staging_dir),
+                    "--exasol-cleanup",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            assert "Unified CLI completed ingest-and-wrap workflow." in result.stdout
+            package_config = json.loads(package_config_path.read_text())
+
+            con = connect()
+            try:
+                con.execute(
+                    f'ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = "{package_config["preprocessor"]["schema"]}"."{package_config["preprocessor"]["script"]}"'
+                )
+                rows = con.execute(
+                    f'''
+                    SELECT
+                      CAST(e."id" AS VARCHAR(20)),
+                      CASE WHEN JSON_IS_EXPLICIT_NULL(e."only_null") THEN '1' ELSE '0' END,
+                      COALESCE(JSON_AS_VARCHAR(e."only_null"), 'NULL'),
+                      TO_JSON(e.*)
+                    FROM "{package_config["wrapperSchema"]}"."edge_cases" e
+                    ORDER BY 1
+                    '''
+                ).fetchall()
+            finally:
+                con.close()
+
+            assert rows == [
+                (
+                    "1",
+                    "1",
+                    "NULL",
+                    '{"id":1,"missing_vs_null":null,"mixed_num_arr":[1,2.5],"obj_arr":[{"a":1},{"a":null}],"only_null":null,"only_null_arr":[null,null]}',
+                ),
+                (
+                    "2",
+                    "0",
+                    "NULL",
+                    '{"arr_mix":[],"id":2,"missing_vs_null":10,"mixed_num_arr":[],"obj_arr":[],"only_null_arr":[]}',
+                ),
+                (
+                    "3",
+                    "1",
+                    "NULL",
+                    '{"arr_mix":[1,2],"id":3,"missing_vs_null":null,"mixed_num_arr":[3],"obj_arr":[{"a":2},{"a":3}],"only_null":null,"only_null_arr":[null]}',
+                ),
             ]
         finally:
             con = connect()

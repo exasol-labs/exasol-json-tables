@@ -208,7 +208,7 @@ def _root_groups(model: TableModel) -> list[tuple[str, str]]:
     groups: list[tuple[str, str]] = []
     for group in sorted(model.groups.values(), key=lambda item: item.base_name):
         visible_member = choose_visible_member(group)
-        if visible_member is None:
+        if visible_member is None and group.null_mask is None:
             continue
         groups.append((group.base_name, visible_name_for_group(group, visible_member)))
     return groups
@@ -265,26 +265,30 @@ def _build_root_export_select_sql(
         if _scalar_array_table(model, child_relationships):
             group = model.groups["_value"]
             value_column = group.primary or (group.alternates[0] if group.alternates else None)
-            if value_column is None:
-                raise AssertionError(f"Scalar array table {table_name} has no value column")
-            value_expr = _scalar_value_json_expr(
-                udf_names.json_quote_string,
-                value_column,
-                f'base.{quote_identifier(value_column.name)}',
-            )
             key_select_sql = ",\n      ".join(
                 f'base.{quote_identifier(column_name)} AS {quote_identifier(column_name)}'
                 for column_name in key_columns
             )
+            if value_column is None:
+                if group.null_mask is None:
+                    raise AssertionError(f"Scalar array table {table_name} has no value column")
+                json_expr = "'null'"
+            else:
+                value_expr = _scalar_value_json_expr(
+                    udf_names.json_quote_string,
+                    value_column,
+                    f'base.{quote_identifier(value_column.name)}',
+                )
+                json_expr = f"""CASE
+        WHEN base.{quote_identifier(value_column.name)} IS NULL THEN 'null'
+        ELSE {value_expr}
+      END"""
             ctes.append(
                 f"""
 {row_cte} AS (
     SELECT
       {key_select_sql},
-      CASE
-        WHEN base.{quote_identifier(value_column.name)} IS NULL THEN 'null'
-        ELSE {value_expr}
-      END AS j
+      {json_expr} AS j
     FROM {source_qtable} base
 )""".strip()
             )

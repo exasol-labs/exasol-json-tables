@@ -1742,7 +1742,10 @@ ARRAY_ITERATION_LUA = """
         end
         local alias_name, alias_end_index, alias_quoted = read_alias_after_source_path_tokens(tokens, table_end_index)
         local resolved_alias_name = alias_name or parts[#parts]
-        local resolved_alias_quoted = alias_name and alias_quoted or table_name_quoted
+        local resolved_alias_quoted = table_name_quoted
+        if alias_name ~= nil then
+            resolved_alias_quoted = alias_quoted
+        end
         local binding = {
             alias_name = resolved_alias_name,
             reference_sql = render_bound_identifier(resolved_alias_name, resolved_alias_quoted),

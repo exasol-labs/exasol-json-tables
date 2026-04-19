@@ -34,5 +34,6 @@ dist/
 # Temporary state
 plans/
 user-studies/
+benchmarks/
 .cargo-home/
 .exanano-config

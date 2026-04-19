@@ -201,7 +201,9 @@ fn import_into_exasol(
         .build()?;
 
     runtime
-        .block_on(async { import_into_exasol_async(exasol_url, planned_tables, table_files, stem).await })
+        .block_on(async {
+            import_into_exasol_async(exasol_url, planned_tables, table_files, stem).await
+        })
         .map_err(|err| err as Box<dyn Error>)
 }
 
@@ -488,10 +490,7 @@ fn build_source_manifest(plans: &[PlannedTable], stem: &str) -> serde_json::Valu
     })
 }
 
-fn build_sql_schema(
-    plans: &[PlannedTable],
-    stem: &str,
-) -> (Vec<String>, Vec<String>) {
+fn build_sql_schema(plans: &[PlannedTable], stem: &str) -> (Vec<String>, Vec<String>) {
     let mut name_map = HashMap::new();
     let mut token_map = HashMap::new();
     for plan in plans {
@@ -516,7 +515,11 @@ fn build_sql_schema(
         let mut columns: Vec<String> = Vec::new();
         for col in &plan.columns {
             if let Some(sql_ty) = column_sql_type(col.ty) {
-                let nn = if col.is_required || col.is_null_mask { " NOT NULL" } else { "" };
+                let nn = if col.is_required || col.is_null_mask {
+                    " NOT NULL"
+                } else {
+                    ""
+                };
                 columns.push(format!("  {} {}{}", sanitize_ident(&col.name), sql_ty, nn));
             }
         }
@@ -625,9 +628,17 @@ struct ColumnPlan {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum ColumnKind {
-    Primary { property: String, main_type: SimpleType },
-    Alternate { property: String, source_ty: SimpleType },
-    NullBitmask { property: String },
+    Primary {
+        property: String,
+        main_type: SimpleType,
+    },
+    Alternate {
+        property: String,
+        source_ty: SimpleType,
+    },
+    NullBitmask {
+        property: String,
+    },
 }
 
 #[derive(Debug, Default, Clone)]
@@ -722,7 +733,9 @@ fn encode_path_component(name: &str) -> String {
 
 impl TablePath {
     fn root() -> Self {
-        Self { segments: Vec::new() }
+        Self {
+            segments: Vec::new(),
+        }
     }
 
     fn child_object(&self, segment: &str) -> Self {
@@ -847,10 +860,7 @@ fn scan_all_stats(path: &Path, format: InputFormat) -> Result<Vec<TableStats>, B
         Ok(())
     })?;
 
-    let mut result: Vec<TableStats> = tables
-        .into_iter()
-        .map(|(_, stats)| stats)
-        .collect();
+    let mut result: Vec<TableStats> = tables.into_iter().map(|(_, stats)| stats).collect();
     result.sort_by(|a, b| a.path.to_string().cmp(&b.path.to_string()));
     Ok(result)
 }
@@ -859,18 +869,19 @@ fn get_or_create_table<'a>(
     tables: &'a mut HashMap<TablePath, TableStats>,
     path: &TablePath,
 ) -> &'a mut TableStats {
-    tables
-        .entry(path.clone())
-        .or_insert_with(|| TableStats {
-            path: path.clone(),
-            stats: PropertyStats::default(),
-            kind: if path.is_root() {
-                PathKind::Object
-            } else {
-                path.segments.last().map(|s| s.kind.clone()).unwrap_or(PathKind::Object)
-            },
-            has_nested_array: false,
-        })
+    tables.entry(path.clone()).or_insert_with(|| TableStats {
+        path: path.clone(),
+        stats: PropertyStats::default(),
+        kind: if path.is_root() {
+            PathKind::Object
+        } else {
+            path.segments
+                .last()
+                .map(|s| s.kind.clone())
+                .unwrap_or(PathKind::Object)
+        },
+        has_nested_array: false,
+    })
 }
 
 fn accumulate_object_stats(
@@ -1115,8 +1126,9 @@ fn build_schema_plan(
     // Heuristics:
     // 1) Single observed non-null type -> main column with original name.
     // 2) Multiple non-null types -> most frequent becomes main column; others become "<name>|<type>" alternates.
-    // 3) If explicit nulls are observed alongside non-null values -> add "<name>|n" bool column to mark explicit nulls.
-    //    In JSON there is a distinction between non-existant values and explict nulls, so we need to record this.
+    // 3) If explicit nulls are observed -> add "<name>|n" bool column to mark them.
+    //    In JSON there is a distinction between non-existant values and explict nulls, so we need to record this,
+    //    even when a property is observed only as explicit null.
     // 4) If both integer and number are observed for a property, merge them into a single number column.
     // Nested/array values are dropped earlier in `classify_value` (objects only trigger subtable creation).
     let mut per_property: HashMap<String, HashMap<SimpleType, usize>> = HashMap::new();
@@ -1187,7 +1199,9 @@ fn build_schema_plan(
         let object_count = type_counts.remove(&SimpleType::Object).unwrap_or(0);
         let array_count = type_counts.remove(&SimpleType::Array).unwrap_or(0);
         // Merge integer + number into number without losing either count.
-        if type_counts.contains_key(&SimpleType::Integer) && type_counts.contains_key(&SimpleType::Number) {
+        if type_counts.contains_key(&SimpleType::Integer)
+            && type_counts.contains_key(&SimpleType::Number)
+        {
             let merged = type_counts[&SimpleType::Integer] + type_counts[&SimpleType::Number];
             type_counts.insert(SimpleType::Number, merged);
             type_counts.remove(&SimpleType::Integer);
@@ -1234,7 +1248,7 @@ fn build_schema_plan(
             has_any = true;
         }
 
-        // Exclude null when choosing a main type; if only nulls exist, skip this property.
+        // Exclude null when choosing a main type; if only nulls exist, keep only the null mask.
         let mut typed: Vec<(SimpleType, usize)> = type_counts
             .iter()
             .filter(|(ty, _)| **ty != SimpleType::Null && **ty != SimpleType::Object)
@@ -1279,7 +1293,7 @@ fn build_schema_plan(
             }
         }
 
-        if null_count > 0 && has_any {
+        if null_count > 0 {
             let null_mask_name = format!("{base_name}|n");
             columns.push(ColumnPlan {
                 name: null_mask_name.clone(),
@@ -1293,7 +1307,7 @@ fn build_schema_plan(
             prop_columns.null_mask = Some(null_mask_name);
         }
 
-        if has_any {
+        if has_any || prop_columns.null_mask.is_some() {
             properties.insert(property, prop_columns);
         }
     }
@@ -1366,10 +1380,7 @@ impl ColumnValues {
     }
 }
 
-fn write_parquet(
-    table: &TableWriter,
-    output_path: &Path,
-) -> Result<(), Box<dyn Error>> {
+fn write_parquet(table: &TableWriter, output_path: &Path) -> Result<(), Box<dyn Error>> {
     let columns = &table.plan.columns;
     let column_data = &table.columns;
 
@@ -1514,11 +1525,7 @@ fn write_all_tables(
             path: path.clone(),
             file_path: output_path.clone(),
         });
-        println!(
-            "Wrote Parquet file for table {} to {:?}",
-            path,
-            output_path
-        );
+        println!("Wrote Parquet file for table {} to {:?}", path, output_path);
         let _ = log_parquet_summary(&output_path);
     }
 
@@ -1750,7 +1757,10 @@ fn write_column_values(
     match (untyped, values) {
         (ColumnWriter::BoolColumnWriter(ref mut w), ColumnValues::Bool(v)) => {
             // Definition levels mark which rows are present (1) vs null (0); data only includes present values.
-            let def_levels: Vec<i16> = v.iter().map(|val| if val.is_some() { 1 } else { 0 }).collect();
+            let def_levels: Vec<i16> = v
+                .iter()
+                .map(|val| if val.is_some() { 1 } else { 0 })
+                .collect();
             let data: Vec<bool> = v.iter().filter_map(|val| *val).collect();
             w.write_batch(&data, Some(&def_levels), None)?;
         }
@@ -1759,17 +1769,26 @@ fn write_column_values(
             w.write_batch(v, None, None)?;
         }
         (ColumnWriter::Int64ColumnWriter(ref mut w), ColumnValues::Int(v)) => {
-            let def_levels: Vec<i16> = v.iter().map(|val| if val.is_some() { 1 } else { 0 }).collect();
+            let def_levels: Vec<i16> = v
+                .iter()
+                .map(|val| if val.is_some() { 1 } else { 0 })
+                .collect();
             let data: Vec<i64> = v.iter().filter_map(|val| *val).collect();
             w.write_batch(&data, Some(&def_levels), None)?;
         }
         (ColumnWriter::DoubleColumnWriter(ref mut w), ColumnValues::Double(v)) => {
-            let def_levels: Vec<i16> = v.iter().map(|val| if val.is_some() { 1 } else { 0 }).collect();
+            let def_levels: Vec<i16> = v
+                .iter()
+                .map(|val| if val.is_some() { 1 } else { 0 })
+                .collect();
             let data: Vec<f64> = v.iter().filter_map(|val| *val).collect();
             w.write_batch(&data, Some(&def_levels), None)?;
         }
         (ColumnWriter::ByteArrayColumnWriter(ref mut w), ColumnValues::Str(v)) => {
-            let def_levels: Vec<i16> = v.iter().map(|val| if val.is_some() { 1 } else { 0 }).collect();
+            let def_levels: Vec<i16> = v
+                .iter()
+                .map(|val| if val.is_some() { 1 } else { 0 })
+                .collect();
             let data: Vec<ByteArray> = v
                 .iter()
                 .filter_map(|val| val.as_ref().map(|s| ByteArray::from(s.as_bytes())))
