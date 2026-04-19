@@ -763,11 +763,13 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
         shutil.copyfile(fixture_path, input_path)
 
         workflow_name = "describe_json"
+        published_schema = "JVS_CLI_PUBLISHED"
         package_config: Optional[dict[str, object]] = None
 
         try:
             con = connect()
             try:
+                con.execute(f'DROP SCHEMA IF EXISTS "{published_schema}" CASCADE')
                 cleanup_named_workflow_schemas(con, workflow_name)
             finally:
                 con.close()
@@ -818,6 +820,8 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
             assert validate_payload["checkedInstalled"] is True
             assert validate_payload["validation"]["installed"]["capabilities"]["qualifiedHelper"]["ok"] is True
             assert validate_payload["validation"]["installed"]["capabilities"]["toJson"]["ok"] is True
+            assert validate_payload["validation"]["installed"]["metadata"]["integrity"]["publicViewsMatchManifest"] is True
+            assert validate_payload["validation"]["installed"]["metadata"]["integrity"]["rootCountMatchesManifest"] is True
 
             describe_package_result = subprocess.run(
                 [
@@ -844,6 +848,19 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
             assert "toJsonAll" in root_description["exampleQueries"]
             assert "qualifiedHelper" in root_description["exampleQueries"]
 
+            con = connect()
+            try:
+                con.execute(f'CREATE SCHEMA "{published_schema}"')
+                con.execute(
+                    f'''
+                    CREATE OR REPLACE VIEW "{published_schema}"."NESTED_PUBLISHED" AS
+                    SELECT CAST("_id" AS VARCHAR(20)) AS doc_id
+                    FROM "{package_config["wrapperSchema"]}"."NESTED"
+                    '''
+                )
+            finally:
+                con.close()
+
             describe_wrapper_result = subprocess.run(
                 [
                     "python3",
@@ -852,8 +869,6 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
                     "wrapper",
                     "--wrapper-schema",
                     str(package_config["wrapperSchema"]),
-                    "--helper-schema",
-                    str(package_config["helperSchema"]),
                     "--preprocessor-schema",
                     str(package_config["preprocessor"]["schema"]),
                     "--preprocessor-script",
@@ -869,13 +884,38 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
             assert describe_wrapper_payload["status"] == "ok"
             assert describe_wrapper_payload["command"] == "describe wrapper"
             assert describe_wrapper_payload["description"]["wrapperSchema"] == package_config["wrapperSchema"]
+            assert describe_wrapper_payload["discovery"]["autodiscoveredHelperSchema"] is True
+            assert describe_wrapper_payload["discovery"]["surfaceKind"] == "wrapperPackage"
+            assert describe_wrapper_payload["installedState"]["integrity"]["publicViewsMatchManifest"] is True
             assert (
                 describe_wrapper_payload["description"]["preprocessor"]["activationSql"]
                 == wrap_payload["wrapper"]["preprocessor"]["activationSql"]
             )
+
+            describe_wrappers_result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "describe",
+                    "wrappers",
+                    "--json",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            describe_wrappers_payload = json.loads(describe_wrappers_result.stdout)
+            assert describe_wrappers_payload["status"] == "ok"
+            assert describe_wrappers_payload["command"] == "describe wrappers"
+            assert describe_wrappers_payload["discovery"]["publishedConsumerSurfacesIncluded"] is False
+            wrapper_schemas = [entry["description"]["wrapperSchema"] for entry in describe_wrappers_payload["wrappers"]]
+            assert package_config["wrapperSchema"] in wrapper_schemas
+            assert published_schema not in wrapper_schemas
         finally:
             con = connect()
             try:
+                con.execute(f'DROP SCHEMA IF EXISTS "{published_schema}" CASCADE')
                 if package_config is not None:
                     cleanup_package_schemas(con, package_config)
                 cleanup_named_workflow_schemas(con, workflow_name)
@@ -968,6 +1008,99 @@ def test_unified_cli_ingest_json_artifacts_are_structured() -> None:
         assert all(path.endswith(".parquet") for path in artifacts["parquetFiles"])
 
 
+def test_unified_cli_ingest_error_codes() -> None:
+    with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_ingest_errors_") as tmpdir:
+        tmp = Path(tmpdir)
+
+        invalid_json_path = tmp / "invalid.json"
+        invalid_json_path.write_text('{"bad": [1,}')
+        invalid_json = subprocess.run(
+            [
+                "python3",
+                str(CLI),
+                "ingest",
+                "--input",
+                str(invalid_json_path),
+                "--artifact-dir",
+                str(tmp / "invalid_artifacts"),
+                "--json",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        invalid_payload = json.loads(invalid_json.stdout)
+        assert invalid_json.returncode != 0
+        assert invalid_payload["errors"][0]["code"] == "INGEST-JSON-PARSE-ERROR"
+
+        unsupported_path = tmp / "unsupported.json"
+        unsupported_path.write_text("[1, 2, 3]\n")
+        unsupported_result = subprocess.run(
+            [
+                "python3",
+                str(CLI),
+                "ingest",
+                "--input",
+                str(unsupported_path),
+                "--artifact-dir",
+                str(tmp / "unsupported_artifacts"),
+                "--json",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        unsupported_payload = json.loads(unsupported_result.stdout)
+        assert unsupported_result.returncode != 0
+        assert unsupported_payload["errors"][0]["code"] == "INGEST-UNSUPPORTED-INPUT-FORMAT"
+
+        artifact_dir_file = tmp / "artifact_dir_file"
+        artifact_dir_file.write_text("not a directory")
+        filesystem_result = subprocess.run(
+            [
+                "python3",
+                str(CLI),
+                "ingest",
+                "--input",
+                str(unsupported_path),
+                "--artifact-dir",
+                str(artifact_dir_file),
+                "--json",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        filesystem_payload = json.loads(filesystem_result.stdout)
+        assert filesystem_result.returncode != 0
+        assert filesystem_payload["errors"][0]["code"] == "INGEST-LOCAL-FILESYSTEM-ERROR"
+
+        db_result = subprocess.run(
+            [
+                "python3",
+                str(CLI),
+                "ingest",
+                "--input",
+                str(unsupported_path),
+                "--artifact-dir",
+                str(tmp / "db_artifacts"),
+                "--exasol",
+                "exasol://sys:nottherightpassword@127.0.0.1:8563/JVS_BAD_AUTH?tls=1&validateservercertificate=0",
+                "--json",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        db_payload = json.loads(db_result.stdout)
+        assert db_result.returncode != 0
+        assert db_payload["errors"][0]["code"] == "INGEST-DATABASE-IMPORT-ERROR"
+
+
 def test_wrapper_generation_connection_ssl_options() -> None:
     captured: list[dict[str, object]] = []
     original_connect = wrapper_schema_support.pyexasol.connect
@@ -1032,6 +1165,7 @@ if __name__ == "__main__":
     test_unified_cli_json_failure_envelope()
     test_unified_cli_error_repro_redacts_password()
     test_unified_cli_ingest_json_artifacts_are_structured()
+    test_unified_cli_ingest_error_codes()
     test_wrapper_generation_connection_ssl_options()
     test_unified_cli_schema_ensure_propagates_certificate_validation()
     print("-- unified cli regression --")

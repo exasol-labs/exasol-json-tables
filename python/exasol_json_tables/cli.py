@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qsl, quote as url_quote, unquote, urlencode, urlparse, urlunparse
 
@@ -18,6 +19,7 @@ from .wrapper_schema_support import (
     ROOT,
     connect_for_generation,
     load_installed_wrapper_manifest,
+    load_installed_wrapper_manifests,
     quote_identifier,
 )
 
@@ -26,6 +28,17 @@ DEFAULT_ARTIFACT_DIR = ROOT / "dist" / "exasol-json-tables"
 DEFAULT_SCHEMA_PREFIX = "EJT"
 IDENTIFIER_TOKEN_RE = re.compile(r"[^A-Za-z0-9]+")
 JSON_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True)
+class CliCommandError(Exception):
+    code: str
+    message: str
+    hint: str | None = None
+    likely_fix: str | None = None
+
+    def __str__(self) -> str:
+        return self.message
 
 
 def _resolved(path: Path | None) -> Path | None:
@@ -252,6 +265,8 @@ def _command_label(args: argparse.Namespace) -> str:
 def _error_code_for_message(message: str, exc: BaseException | None = None) -> str:
     if message.startswith("JVS-"):
         return message.split(":", 1)[0]
+    if message.startswith("INGEST-"):
+        return message.split(":", 1)[0]
     if isinstance(exc, FileNotFoundError):
         return "FILE-NOT-FOUND"
     if isinstance(exc, subprocess.CalledProcessError):
@@ -351,6 +366,197 @@ def _describe_wrapper_manifest(
     return description
 
 
+def _wrapper_discovery_metadata(
+    *,
+    autodiscovered_helper_schema: bool,
+    autodiscovered_wrapper_schema: bool,
+    manifest: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "surfaceKind": "wrapperPackage",
+        "discoveryMethod": "helperSchemaMetadata",
+        "autodiscoveredHelperSchema": autodiscovered_helper_schema,
+        "autodiscoveredWrapperSchema": autodiscovered_wrapper_schema,
+        "discoveryScope": "wrapperPackagesOnly",
+        "publishedConsumerSurfacesIncluded": False,
+        "wrapperSchema": manifest["publicSchema"],
+        "helperSchema": manifest["helperSchema"],
+    }
+
+
+def _resolve_installed_wrapper_manifest(
+    con,
+    *,
+    wrapper_schema: str | None,
+    helper_schema: str | None,
+) -> tuple[dict[str, object], dict[str, object]]:
+    normalized_wrapper = (
+        None if wrapper_schema is None else validate_identifier("Wrapper schema", wrapper_schema)
+    )
+    normalized_helper = (
+        None if helper_schema is None else validate_identifier("Helper schema", helper_schema)
+    )
+    if normalized_helper is not None:
+        try:
+            manifest = load_installed_wrapper_manifest(con, normalized_helper)
+        except ValueError as exc:
+            raise CliCommandError(
+                code="WRAPPER-NOT-FOUND",
+                message=str(exc),
+                hint="Check that the helper schema exists and that it contains the installed wrapper metadata tables.",
+            ) from exc
+        if normalized_wrapper is not None and str(manifest["publicSchema"]).upper() != normalized_wrapper:
+            raise CliCommandError(
+                code="WRAPPER-DISCOVERY-MISMATCH",
+                message=(
+                    f'Helper schema {normalized_helper} describes wrapper schema {manifest["publicSchema"]}, '
+                    f"not {normalized_wrapper}."
+                ),
+                hint="Use the matching wrapper schema or omit --helper-schema and let the CLI discover it from metadata.",
+            )
+        return manifest, _wrapper_discovery_metadata(
+            autodiscovered_helper_schema=False,
+            autodiscovered_wrapper_schema=normalized_wrapper is None,
+            manifest=manifest,
+        )
+
+    manifests = load_installed_wrapper_manifests(
+        con,
+        wrapper_schemas=None if normalized_wrapper is None else [normalized_wrapper],
+    )
+    if not manifests:
+        if normalized_wrapper is not None:
+            raise CliCommandError(
+                code="WRAPPER-NOT-FOUND",
+                message=f"No installed wrapper metadata was found for wrapper schema {normalized_wrapper}.",
+                hint="Check that the wrapper package is installed and that the wrapper schema name is correct.",
+            )
+        raise CliCommandError(
+            code="WRAPPER-NOT-FOUND",
+            message="No installed wrapper metadata was found in the database.",
+            hint="Install a wrapper package first, or use `wrap deploy` / `wrap install` before running discovery.",
+        )
+    if len(manifests) > 1:
+        candidates = [
+            {
+                "wrapperSchema": manifest["publicSchema"],
+                "helperSchema": manifest["helperSchema"],
+            }
+            for manifest in manifests
+        ]
+        if normalized_wrapper is not None:
+            raise CliCommandError(
+                code="WRAPPER-DISCOVERY-AMBIGUOUS",
+                message=(
+                    f"Multiple helper schemas describe wrapper schema {normalized_wrapper}. "
+                    f"Candidates: {candidates}"
+                ),
+                hint="Supply --helper-schema to choose one installed wrapper surface explicitly.",
+            )
+        raise CliCommandError(
+            code="WRAPPER-DISCOVERY-AMBIGUOUS",
+            message=f"Multiple installed wrappers were found. Candidates: {candidates}",
+            hint="Supply --wrapper-schema to filter discovery to one installed wrapper surface.",
+        )
+    manifest = manifests[0]
+    return manifest, _wrapper_discovery_metadata(
+        autodiscovered_helper_schema=True,
+        autodiscovered_wrapper_schema=normalized_wrapper is None,
+        manifest=manifest,
+    )
+
+
+def _installed_wrapper_entry(
+    con,
+    manifest: dict[str, object],
+    *,
+    preprocessor: dict[str, object] | None = None,
+    discovery: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "surfaceKind": "wrapperPackage",
+        "discovery": discovery or _wrapper_discovery_metadata(
+            autodiscovered_helper_schema=False,
+            autodiscovered_wrapper_schema=False,
+            manifest=manifest,
+        ),
+        "description": _describe_wrapper_manifest(manifest, preprocessor=preprocessor),
+        "installedState": wrapper_package_tool.build_installed_metadata_summary(con, manifest),
+    }
+
+
+def _classify_ingest_failure(message: str, *, database_context: bool) -> tuple[str, str, str | None]:
+    normalized = message.lower()
+    if (
+        "input file is empty" in normalized
+        or "expected top-level json array" in normalized
+        or "is not an object" in normalized
+    ):
+        return (
+            "INGEST-UNSUPPORTED-INPUT-FORMAT",
+            "The ingest input must be a JSON array of objects or NDJSON with one object per line.",
+            "Convert the input to a top-level JSON array or NDJSON object stream and rerun ingest.",
+        )
+    if (
+        " at line " in normalized
+        or ("line " in normalized and "column" in normalized)
+        or "expected value" in normalized
+        or "trailing characters" in normalized
+        or "eof while parsing" in normalized
+        or "key must be a string" in normalized
+    ):
+        return (
+            "INGEST-JSON-PARSE-ERROR",
+            "The input file could not be parsed as valid JSON/NDJSON.",
+            "Validate the JSON syntax locally and rerun ingest.",
+        )
+    if (
+        "no such file or directory" in normalized
+        or "permission denied" in normalized
+        or "file exists" in normalized
+        or "not a directory" in normalized
+        or "is a directory" in normalized
+    ):
+        return (
+            "INGEST-LOCAL-FILESYSTEM-ERROR",
+            "The ingest workflow could not read or write a local file or staging path.",
+            "Check the input path, artifact directory, and staging directory permissions.",
+        )
+    if database_context or any(
+        token in normalized
+        for token in [
+            "connection refused",
+            "login failed",
+            "authentication",
+            "websocket",
+            "pyexasol",
+            "exasol",
+            "could not connect",
+            "timed out",
+        ]
+    ):
+        return (
+            "INGEST-DATABASE-IMPORT-ERROR",
+            "The ingest workflow could not create schemas or import data into Exasol.",
+            "Check the Exasol connection URL, credentials, TLS settings, and destination schema.",
+        )
+    return (
+        "INGEST-FAILED",
+        "The ingest workflow failed.",
+        "Run the same command without --json to inspect the full ingest logs on stderr.",
+    )
+
+
+def _raise_ingest_error(message: str, *, database_context: bool) -> None:
+    code, hint, likely_fix = _classify_ingest_failure(message, database_context=database_context)
+    raise CliCommandError(
+        code=code,
+        message=message,
+        hint=hint,
+        likely_fix=likely_fix,
+    )
+
+
 def add_json_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--json",
@@ -365,10 +571,25 @@ def add_describe_package_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def add_describe_wrapper_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--wrapper-schema", required=True, help="Installed public wrapper schema.")
-    parser.add_argument("--helper-schema", required=True, help="Installed helper schema that owns __JVS_* metadata tables.")
+    parser.add_argument("--wrapper-schema", default=None, help="Installed public wrapper schema. Optional when discovery is unambiguous.")
+    parser.add_argument(
+        "--helper-schema",
+        default=None,
+        help="Installed helper schema that owns __JVS_* metadata tables. Optional when it can be discovered from metadata.",
+    )
     parser.add_argument("--preprocessor-schema", default=None, help="Optional preprocessor schema for activation examples.")
     parser.add_argument("--preprocessor-script", default=None, help="Optional preprocessor script for activation examples.")
+    wrapper_package_tool.add_connection_arguments(parser)
+    add_json_argument(parser)
+
+
+def add_describe_wrappers_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--wrapper-schema",
+        action="append",
+        default=None,
+        help="Optional wrapper schema filter. Repeat to limit discovery to specific installed wrappers.",
+    )
     wrapper_package_tool.add_connection_arguments(parser)
     add_json_argument(parser)
 
@@ -763,6 +984,11 @@ def parse_args() -> argparse.Namespace:
         help="Describe an installed wrapper surface from its helper-schema metadata tables.",
     )
     add_describe_wrapper_arguments(describe_wrapper)
+    describe_wrappers = describe_subparsers.add_parser(
+        "wrappers",
+        help="List installed wrapper surfaces discovered from helper-schema metadata tables.",
+    )
+    add_describe_wrappers_arguments(describe_wrappers)
 
     validate_parser = subparsers.add_parser(
         "validate",
@@ -775,7 +1001,10 @@ def parse_args() -> argparse.Namespace:
 def command_ingest(args: argparse.Namespace) -> None:
     input_path = args.input.resolve()
     artifact_dir = args.artifact_dir.resolve()
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        _raise_ingest_error(str(exc), database_context=False)
     manifest_output = None
     if not args.no_source_manifest:
         manifest_output = _resolved(args.manifest_output) or _default_source_manifest_path(input_path, artifact_dir)
@@ -785,18 +1014,23 @@ def command_ingest(args: argparse.Namespace) -> None:
         output_dir = artifact_dir
 
     if args.exasol is not None:
-        parsed_exasol = _parse_exasol_url(args.exasol)
-        ingest_schema = parsed_exasol.get("schema")
-        ingest_user = str(parsed_exasol.get("user") or "")
-        ingest_password = str(parsed_exasol.get("password") or "")
-        if ingest_schema and ingest_user and ingest_password:
-            _ensure_schema_exists(
-                dsn=str(parsed_exasol["dsn"]),
-                user=ingest_user,
-                password=ingest_password,
-                schema=str(ingest_schema),
-                validate_server_certificate=bool(getattr(args, "validate_server_certificate", False)),
-            )
+        try:
+            parsed_exasol = _parse_exasol_url(args.exasol)
+            ingest_schema = parsed_exasol.get("schema")
+            ingest_user = str(parsed_exasol.get("user") or "")
+            ingest_password = str(parsed_exasol.get("password") or "")
+            if ingest_schema and ingest_user and ingest_password:
+                _ensure_schema_exists(
+                    dsn=str(parsed_exasol["dsn"]),
+                    user=ingest_user,
+                    password=ingest_password,
+                    schema=str(ingest_schema),
+                    validate_server_certificate=bool(getattr(args, "validate_server_certificate", False)),
+                )
+        except CliCommandError:
+            raise
+        except Exception as exc:
+            _raise_ingest_error(str(exc), database_context=True)
 
     command = [
         "cargo",
@@ -808,12 +1042,18 @@ def command_ingest(args: argparse.Namespace) -> None:
         str(input_path),
     ]
     if output_dir is not None:
-        output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            _raise_ingest_error(str(exc), database_context=False)
         command.extend(["--output-dir", str(output_dir)])
     if args.schema_sql:
         command.append("--schema-sql")
     if manifest_output is not None:
-        manifest_output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            manifest_output.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            _raise_ingest_error(str(exc), database_context=False)
         command.extend(["--manifest-output", str(manifest_output)])
     if args.exasol is not None:
         command.extend(["--exasol", args.exasol])
@@ -822,13 +1062,22 @@ def command_ingest(args: argparse.Namespace) -> None:
     if args.exasol_cleanup:
         command.append("--exasol-cleanup")
     capture_logs = bool(args.json) or bool(getattr(args, "_force_stderr_logs", False))
-    completed = subprocess.run(
-        command,
-        cwd=ROOT,
-        check=True,
-        capture_output=capture_logs,
-        text=capture_logs,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            check=True,
+            capture_output=capture_logs,
+            text=capture_logs,
+        )
+    except subprocess.CalledProcessError as exc:
+        details = []
+        if exc.stderr:
+            details.append(exc.stderr.strip())
+        if exc.stdout:
+            details.append(exc.stdout.strip())
+        message = "\n".join(part for part in details if part).strip() or str(exc)
+        _raise_ingest_error(message, database_context=args.exasol is not None)
     if capture_logs:
         if completed.stdout:
             print(completed.stdout, end="", file=sys.stderr)
@@ -1219,15 +1468,14 @@ def command_describe(args: argparse.Namespace) -> None:
             validate_certificate=bool(getattr(args, "validate_server_certificate", False)),
         )
         try:
-            manifest = load_installed_wrapper_manifest(con, args.helper_schema)
+            manifest, discovery = _resolve_installed_wrapper_manifest(
+                con,
+                wrapper_schema=args.wrapper_schema,
+                helper_schema=args.helper_schema,
+            )
+            wrapper_entry = _installed_wrapper_entry(con, manifest, preprocessor=None, discovery=discovery)
         finally:
             con.close()
-        expected_wrapper_schema = validate_identifier("Wrapper schema", args.wrapper_schema)
-        if str(manifest["publicSchema"]).upper() != expected_wrapper_schema:
-            raise SystemExit(
-                f'Helper schema {args.helper_schema} describes wrapper schema {manifest["publicSchema"]}, '
-                f"not {expected_wrapper_schema}."
-            )
         preprocessor = None
         warnings: list[str] = []
         if args.preprocessor_schema and args.preprocessor_script:
@@ -1244,7 +1492,7 @@ def command_describe(args: argparse.Namespace) -> None:
             warnings.append(
                 "Preprocessor schema/script not supplied, so the describe output cannot include activation SQL."
             )
-        description = _describe_wrapper_manifest(manifest, preprocessor=preprocessor)
+        wrapper_entry["description"] = _describe_wrapper_manifest(manifest, preprocessor=preprocessor)
         if args.json:
             _emit_json_summary(
                 _json_success_payload(
@@ -1255,13 +1503,65 @@ def command_describe(args: argparse.Namespace) -> None:
                         "helperSchema": manifest["helperSchema"],
                         "sourceSchema": manifest["sourceSchema"],
                     },
-                    description=description,
+                    discovery=wrapper_entry["discovery"],
+                    description=wrapper_entry["description"],
+                    installedState=wrapper_entry["installedState"],
                 )
             )
         else:
+            description = wrapper_entry["description"]
             print(f'Wrapper schema: {description["wrapperSchema"]}')
             print(f'Helper schema: {description["helperSchema"]}')
             print(f'Roots: {", ".join(root["publicView"] for root in description["roots"])}')
+    elif args.describe_command == "wrappers":
+        con = connect_for_generation(
+            args.dsn,
+            args.user,
+            args.password,
+            validate_certificate=bool(getattr(args, "validate_server_certificate", False)),
+        )
+        try:
+            manifests = load_installed_wrapper_manifests(con, wrapper_schemas=args.wrapper_schema)
+            wrappers = [
+                _installed_wrapper_entry(
+                    con,
+                    manifest,
+                    discovery=_wrapper_discovery_metadata(
+                        autodiscovered_helper_schema=False,
+                        autodiscovered_wrapper_schema=False,
+                        manifest=manifest,
+                    ),
+                )
+                for manifest in manifests
+            ]
+        finally:
+            con.close()
+        if args.json:
+            _emit_json_summary(
+                _json_success_payload(
+                    "describe wrappers",
+                    objects={
+                        "wrapperCount": len(wrappers),
+                        "wrapperSchemas": [wrapper["description"]["wrapperSchema"] for wrapper in wrappers],
+                    },
+                    discovery={
+                        "surfaceKind": "wrapperPackage",
+                        "discoveryMethod": "helperSchemaMetadata",
+                        "discoveryScope": "wrapperPackagesOnly",
+                        "publishedConsumerSurfacesIncluded": False,
+                    },
+                    wrappers=wrappers,
+                )
+            )
+        else:
+            if not wrappers:
+                print("No installed wrappers found.")
+            for wrapper in wrappers:
+                description = wrapper["description"]
+                print(
+                    f'{description["wrapperSchema"]} -> {description["helperSchema"]} '
+                    f'({description["rootCount"]} roots)'
+                )
     else:  # pragma: no cover - defensive
         raise SystemExit(f"Unknown describe command: {args.describe_command}")
 
@@ -1298,6 +1598,20 @@ def main() -> None:
             command_validate(args)
         else:  # pragma: no cover - defensive
             raise SystemExit(f"Unknown command: {args.command}")
+    except CliCommandError as exc:
+        if wants_json:
+            _emit_json_summary(
+                _json_error_payload(
+                    _command_label(args),
+                    code=exc.code,
+                    message=exc.message,
+                    hint=exc.hint,
+                    repro={"argv": _redacted_argv(sys.argv[1:])},
+                    likely_fix=exc.likely_fix,
+                )
+            )
+            raise SystemExit(1) from None
+        raise SystemExit(exc.message) from None
     except SystemExit as exc:
         if wants_json and exc.code not in (0, None):
             message = str(exc.code) if isinstance(exc.code, str) else "Command failed."

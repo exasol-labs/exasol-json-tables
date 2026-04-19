@@ -62,6 +62,9 @@ Verifies:
 - one-shot `ingest-and-wrap` with derived default names and per-run artifact layout
 - machine-readable `--json` summaries, validation reports, and failure envelopes
 - package and installed-wrapper discovery through `describe ... --json`
+- helper-schema autodiscovery for installed wrappers
+- installed wrapper inventory through `describe wrappers --json`
+- structured ingest error-code classification
 - unified `structured-results preview-json`
 
 ## Ingest Manifest Integration

@@ -949,12 +949,33 @@ def validate_package_files(config_path: Path, config: dict[str, Any], manifest_p
         load_result_family_manifest_and_validate(config, result_family_manifest_path)
 
 
-def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
-    wrapper_schema = config["wrapperSchema"]
-    helper_schema = config["helperSchema"]
-    roots = sorted(root["publicView"] for root in manifest["roots"])
-    public_tables = [
-        row[0] for row in con.execute(
+def expected_helper_object_names_for_manifest(manifest: dict[str, Any]) -> set[str]:
+    helper_schema = str(manifest["helperSchema"])
+    expected_helper_objects = {table["tableName"] for table in manifest["tables"]}
+    expected_helper_objects.update({"__JVS_ROOTS", "__JVS_RELATIONSHIPS", "__JVS_COLUMN_MEMBERS"})
+    expected_helper_objects.update(
+        root_names.view_name for root_names in json_export_root_names_from_wrapper_manifest(manifest, schema=helper_schema).values()
+    )
+    return expected_helper_objects
+
+
+def expected_json_export_script_names() -> set[str]:
+    return {
+        JSON_QUOTE_STRING_SCRIPT,
+        JSON_OBJECT_FROM_FRAGMENTS_SCRIPT,
+        JSON_ARRAY_FROM_JSON_SORTED_SCRIPT,
+        JSON_OBJECT_FROM_OPTIONAL_FRAGMENTS_SCRIPT,
+        JSON_OBJECT_FROM_NAME_VALUE_PAIRS_SCRIPT,
+    }
+
+
+def build_installed_metadata_summary(con, manifest: dict[str, Any]) -> dict[str, Any]:
+    wrapper_schema = str(manifest["publicSchema"])
+    helper_schema = str(manifest["helperSchema"])
+    expected_public_views = sorted(root["publicView"] for root in manifest["roots"])
+    public_views_present = [
+        row[0]
+        for row in con.execute(
             f"""
             SELECT DISTINCT COLUMN_TABLE
             FROM SYS.EXA_ALL_COLUMNS
@@ -963,10 +984,7 @@ def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, 
             """
         ).fetchall()
     ]
-    if public_tables != roots:
-        raise SystemExit(f"Installed public wrapper schema does not match manifest roots. Expected {roots}, got {public_tables}.")
-
-    helper_table_names = {
+    helper_object_names = {
         row[0]
         for row in con.execute(
             f"""
@@ -976,18 +994,63 @@ def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, 
             """
         ).fetchall()
     }
-    expected_helper_tables = {table["tableName"] for table in manifest["tables"]}
-    expected_helper_tables.update({"__JVS_ROOTS", "__JVS_RELATIONSHIPS", "__JVS_COLUMN_MEMBERS"})
-    expected_helper_tables.update(
-        root_names.view_name for root_names in json_export_root_names_from_wrapper_manifest(manifest, schema=helper_schema).values()
-    )
-    missing_helper_tables = sorted(expected_helper_tables - helper_table_names)
+    helper_script_names = {
+        row[0]
+        for row in con.execute(
+            f"""
+            SELECT SCRIPT_NAME
+            FROM SYS.EXA_ALL_SCRIPTS
+            WHERE SCRIPT_SCHEMA = '{helper_schema}'
+            """
+        ).fetchall()
+    }
+    metadata_table_names = ["__JVS_ROOTS", "__JVS_RELATIONSHIPS", "__JVS_COLUMN_MEMBERS"]
+    metadata_tables_present = {name: name in helper_object_names for name in metadata_table_names}
+
+    root_count = None
+    if metadata_tables_present["__JVS_ROOTS"]:
+        root_count = int(
+            con.execute(f'SELECT COUNT(*) FROM "{helper_schema}"."__JVS_ROOTS"').fetchone()[0]
+        )
+
+    expected_helper_objects = expected_helper_object_names_for_manifest(manifest)
+    expected_helper_scripts = expected_json_export_script_names()
+    missing_public_views = sorted(set(expected_public_views) - set(public_views_present))
+    missing_helper_objects = sorted(expected_helper_objects - helper_object_names)
+    missing_helper_scripts = sorted(expected_helper_scripts - helper_script_names)
+
+    return {
+        "catalog": {
+            "publicViewsPresent": public_views_present,
+            "helperObjectsPresent": sorted(helper_object_names),
+            "helperScriptsPresent": sorted(helper_script_names),
+            "metadataTablesPresent": metadata_tables_present,
+            "rootCountInMetadata": root_count,
+        },
+        "integrity": {
+            "publicViewsMatchManifest": public_views_present == expected_public_views,
+            "missingPublicViews": missing_public_views,
+            "missingHelperObjects": missing_helper_objects,
+            "missingHelperScripts": missing_helper_scripts,
+            "rootCountMatchesManifest": root_count == len(manifest["roots"]) if root_count is not None else False,
+        },
+    }
+
+
+def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    wrapper_schema = config["wrapperSchema"]
+    helper_schema = config["helperSchema"]
+    roots = sorted(root["publicView"] for root in manifest["roots"])
+    metadata_summary = build_installed_metadata_summary(con, manifest)
+    public_tables = list(metadata_summary["catalog"]["publicViewsPresent"])
+    if public_tables != roots:
+        raise SystemExit(f"Installed public wrapper schema does not match manifest roots. Expected {roots}, got {public_tables}.")
+
+    missing_helper_tables = list(metadata_summary["integrity"]["missingHelperObjects"])
     if missing_helper_tables:
         raise SystemExit(f"Installed helper schema is missing expected tables/views: {missing_helper_tables}")
 
-    root_count = con.execute(
-        f'SELECT COUNT(*) FROM "{helper_schema}"."__JVS_ROOTS"'
-    ).fetchone()[0]
+    root_count = metadata_summary["catalog"]["rootCountInMetadata"]
     if int(root_count) != len(manifest["roots"]):
         raise SystemExit(
             f'Installed "__JVS_ROOTS" count mismatch. Expected {len(manifest["roots"])}, got {root_count}.'
@@ -1006,24 +1069,7 @@ def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, 
     if script_rows is None or int(script_rows[0]) != 1:
         raise SystemExit(f"Installed preprocessor script {script_schema}.{script_name} was not found.")
 
-    helper_script_names = {
-        row[0]
-        for row in con.execute(
-            f"""
-            SELECT SCRIPT_NAME
-            FROM SYS.EXA_ALL_SCRIPTS
-            WHERE SCRIPT_SCHEMA = '{helper_schema}'
-            """
-        ).fetchall()
-    }
-    expected_helper_scripts = {
-        JSON_QUOTE_STRING_SCRIPT,
-        JSON_OBJECT_FROM_FRAGMENTS_SCRIPT,
-        JSON_ARRAY_FROM_JSON_SORTED_SCRIPT,
-        JSON_OBJECT_FROM_OPTIONAL_FRAGMENTS_SCRIPT,
-        JSON_OBJECT_FROM_NAME_VALUE_PAIRS_SCRIPT,
-    }
-    missing_helper_scripts = sorted(expected_helper_scripts - helper_script_names)
+    missing_helper_scripts = list(metadata_summary["integrity"]["missingHelperScripts"])
     if missing_helper_scripts:
         raise SystemExit(f"Installed helper schema is missing expected JSON export scripts: {missing_helper_scripts}")
 
@@ -1069,6 +1115,7 @@ def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, 
             "script": config["preprocessor"]["script"],
         },
         "roots": roots,
+        "metadata": metadata_summary,
         "capabilities": capabilities,
         "probes": executed_probes,
     }

@@ -103,18 +103,35 @@ The description includes:
 
 ### `describe wrapper --json`
 
-Use this when the wrapper is already installed and you want to inspect it through the helper metadata tables:
+Use this when the wrapper is already installed and you want to inspect it through the helper metadata tables.
+
+If the wrapper schema is known and the installed metadata is unambiguous, the CLI can now autodiscover the helper schema:
 
 ```bash
 exasol-json-tables describe wrapper \
   --wrapper-schema JSON_VIEW_CUSTOMER_EVENTS \
-  --helper-schema JSON_VIEW_CUSTOMER_EVENTS_INTERNAL \
   --preprocessor-schema JVS_CUSTOMER_EVENTS_PP \
   --preprocessor-script JSON_CUSTOMER_EVENTS_PREPROCESSOR \
   --json
 ```
 
+The response includes:
+
+- `discovery` metadata showing whether the helper schema was autodiscovered
+- `installedState` from live catalog metadata
+- the wrapped roots, fields, and example queries
+
 If you do not provide the preprocessor schema and script, the describe output still works, but it cannot emit `activationSql`.
+
+### `describe wrappers --json`
+
+Use this when you want an inventory of installed wrapper packages without any local package-config files:
+
+```bash
+exasol-json-tables describe wrappers --json
+```
+
+This inventory is intentionally limited to true wrapper packages discovered through `__JVS_*` helper metadata. Ordinary published consumer views are not included.
 
 ## Session Activation
 
@@ -154,6 +171,13 @@ That makes it practical to branch on:
 - `status`
 - the first error `code`
 - the provided `repro.argv`
+
+For ingest workflows, the main machine-readable error classes are now:
+
+- `INGEST-JSON-PARSE-ERROR`
+- `INGEST-UNSUPPORTED-INPUT-FORMAT`
+- `INGEST-LOCAL-FILESYSTEM-ERROR`
+- `INGEST-DATABASE-IMPORT-ERROR`
 
 ## Special Case: `structured-results preview-json`
 

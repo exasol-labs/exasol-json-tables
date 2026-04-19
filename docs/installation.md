@@ -123,6 +123,7 @@ Use the activation SQL emitted by:
 - `wrap deploy`
 - `validate --json`
 - `describe package --json`
+- `describe wrapper --json`
 
 The regression behind this pattern is [tests/test_access_modes.py](../tests/test_access_modes.py).
 
@@ -262,7 +263,13 @@ exasol-json-tables ingest-and-wrap \
 
 `structured-results preview-json` already returns JSON rows, so it does not need a separate summary envelope unless you add one in a higher-level wrapper. Treat that command as preview/validation. The primary durable final-output path is `TO_JSON(...)` on the installed wrapper or result wrapper.
 
-For package and installed-wrapper discovery, use `exasol-json-tables describe package --json` or `exasol-json-tables describe wrapper --json`. For a full automation-oriented walkthrough, see [automation.md](automation.md).
+For package and installed-wrapper discovery, use:
+
+- `exasol-json-tables describe package --json` when you have a local package config
+- `exasol-json-tables describe wrapper --json --wrapper-schema ...` when the wrapper is already installed and the helper schema should be autodiscovered
+- `exasol-json-tables describe wrappers --json` when you want an inventory of installed wrapper packages discovered from `__JVS_*` metadata
+
+That discovery surface is intentionally limited to wrapper packages. Ordinary published consumer views are not listed there. For a full automation-oriented walkthrough, see [automation.md](automation.md).
 
 ## Next Reading
 
