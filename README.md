@@ -205,6 +205,7 @@ For automation and autonomous agents, the major workflow commands also support `
 
 - Installation: [docs/installation.md](docs/installation.md)
 - Automation: [docs/automation.md](docs/automation.md)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
 - Ingest guide: [docs/ingest.md](docs/ingest.md)
 - Query surface reference: [docs/query-surface.md](docs/query-surface.md)
 - Structured results: [docs/structured-results.md](docs/structured-results.md)

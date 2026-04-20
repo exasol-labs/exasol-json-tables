@@ -17,7 +17,6 @@ from .wrapper_schema_support import (
     ROOT,
     TableModel,
     build_relationships,
-    build_root_families,
     build_table_models,
     choose_visible_member,
     fetch_source_columns,
@@ -33,6 +32,7 @@ from .wrapper_schema_support import (
 DEFAULT_OUTPUT = ROOT / "dist" / "exasol-json-tables" / "json_export_views.sql"
 DEFAULT_SCHEMA = "JVS_JSON_EXPORT_VIEWS"
 FULL_JSON_COLUMN = "__JVS_JSON_FULL"
+ROW_KEY_COLUMN = "__JVS_ROW_KEY"
 ID_COLUMN = "_id"
 
 
@@ -242,6 +242,18 @@ def _structural_key_columns(model: TableModel) -> list[str]:
     return [name for name in ("_id", "_parent", "_pos") if name in names]
 
 
+def _row_key_expr(model: TableModel, base_alias: str) -> str:
+    key_columns = _structural_key_columns(model)
+    if not key_columns:
+        raise AssertionError(f"Table {model.name} has no structural key columns")
+    parts = [
+        sql_literal(f"{column_name}=")
+        + f" || CAST({base_alias}.{quote_identifier(column_name)} AS VARCHAR(2000000))"
+        for column_name in key_columns
+    ]
+    return " || '|' || ".join(parts)
+
+
 def _root_groups(model: TableModel) -> list[tuple[str, str]]:
     groups: list[tuple[str, str]] = []
     for group in sorted(model.groups.values(), key=lambda item: item.base_name):
@@ -252,22 +264,19 @@ def _root_groups(model: TableModel) -> list[tuple[str, str]]:
     return groups
 
 
-def _build_root_export_select_sql(
+def _build_table_export_select_sql(
     *,
     source_schema: str,
-    root_table: str,
+    table_name: str,
     table_models: dict[str, TableModel],
     relationships: list[Any],
-    root_by_table: dict[str, str],
     udf_schema: str,
-    root_names: JsonExportRootNames,
+    export_names: JsonExportRootNames,
 ) -> str:
     udf_names = helper_names(udf_schema)
     relationships_by_parent: dict[str, list[Any]] = {}
     relationship_by_parent_segment_kind: dict[tuple[str, str, str], Any] = {}
     for relationship in relationships:
-        if root_by_table[relationship.parent_table] != root_table:
-            continue
         relationships_by_parent.setdefault(relationship.parent_table, []).append(relationship)
         relationship_by_parent_segment_kind[
             (relationship.parent_table, relationship.segment_name, relationship.relation_kind)
@@ -284,7 +293,7 @@ def _build_root_export_select_sql(
             visit(relationship.child_table)
         postorder.append(table_name)
 
-    visit(root_table)
+    visit(table_name)
 
     row_ctes: dict[str, str] = {}
     array_ctes: dict[str, str] = {}
@@ -381,10 +390,6 @@ def _build_root_export_select_sql(
     WHERE {null_mask_expr} IS TRUE""".strip()
                         )
                     if object_child_relation is not None:
-                        if "_id" not in key_columns:
-                            raise AssertionError(
-                                f"Object relation parent {table_name} is missing _id for {value_group.base_name}"
-                            )
                         child_cte = row_ctes[object_child_relation.child_table]
                         marker_expr = f'base.{quote_identifier(value_group.base_name + "|object")}'
                         fragment_selects.append(
@@ -528,10 +533,6 @@ def _build_root_export_select_sql(
     WHERE {null_mask_expr} IS TRUE""".strip()
                     )
                 if object_relation is not None:
-                    if "_id" not in key_columns:
-                        raise AssertionError(
-                            f"Object relation parent {table_name} is missing _id for {group.base_name}"
-                        )
                     child_cte = row_ctes[object_relation.child_table]
                     marker_expr = f'base.{quote_identifier(group.base_name + "|object")}'
                     fragment_selects.append(
@@ -648,75 +649,96 @@ def _build_root_export_select_sql(
 )""".strip()
             )
 
-    root_model = table_models[root_table]
-    if ID_COLUMN not in {column.name for column in root_model.columns}:
-        raise AssertionError(f"Root table {root_table} must expose {ID_COLUMN} for JSON export views.")
-
-    root_source_qtable = quote_qualified(source_schema, root_table)
-    root_row_cte = row_ctes[root_table]
-    root_fragment_cte = fragment_ctes.get(root_table)
-    top_fragments_cte = _cte_name("topfrags", root_table)
-    export_cte = _cte_name("export", root_table)
+    target_model = table_models[table_name]
+    target_key_columns = _structural_key_columns(target_model)
+    target_source_qtable = quote_qualified(source_schema, table_name)
+    target_row_cte = row_ctes[table_name]
+    target_fragment_cte = fragment_ctes.get(table_name)
+    top_fragments_cte = _cte_name("topfrags", table_name)
+    export_cte = _cte_name("export", table_name)
 
     fragment_columns = [
         f'MAX(CASE WHEN frag.frag_key = {sql_literal(fragment.base_name)} THEN frag.frag END) '
         f'AS {quote_identifier(fragment.column_name)}'
-        for fragment in root_names.fragments
+        for fragment in export_names.fragments
     ]
-    root_fragment_select_lines = [f'base.{quote_identifier(ID_COLUMN)} AS {quote_identifier(ID_COLUMN)}']
-    root_fragment_select_lines.extend(fragment_columns)
-    root_fragment_select_sql = ",\n      ".join(root_fragment_select_lines)
+    target_fragment_select_lines = [
+        f'base.{quote_identifier(column_name)} AS {quote_identifier(column_name)}'
+        for column_name in target_key_columns
+    ]
+    target_fragment_select_lines.append(f'{_row_key_expr(target_model, "base")} AS {quote_identifier(ROW_KEY_COLUMN)}')
+    target_fragment_select_lines.extend(fragment_columns)
+    target_fragment_select_sql = ",\n      ".join(target_fragment_select_lines)
 
     top_fragments_sql = (
         f"""
 {top_fragments_cte} AS (
     SELECT
-      {root_fragment_select_sql}
-    FROM {root_source_qtable} base
-    LEFT JOIN {root_fragment_cte} frag
-      ON frag.{quote_identifier(ID_COLUMN)} = base.{quote_identifier(ID_COLUMN)}
-    GROUP BY base.{quote_identifier(ID_COLUMN)}
+      {target_fragment_select_sql}
+    FROM {target_source_qtable} base
+    LEFT JOIN {target_fragment_cte} frag
+      ON {" AND ".join(
+          f'frag.{quote_identifier(column_name)} = base.{quote_identifier(column_name)}'
+          for column_name in target_key_columns
+      )}
+    GROUP BY {", ".join(f'base.{quote_identifier(column_name)}' for column_name in target_key_columns)}
 )""".strip()
-        if root_fragment_cte is not None
+        if target_fragment_cte is not None
         else f"""
 {top_fragments_cte} AS (
     SELECT
-      base.{quote_identifier(ID_COLUMN)} AS {quote_identifier(ID_COLUMN)}
-    FROM {root_source_qtable} base
+      {", ".join(
+          [f'base.{quote_identifier(column_name)} AS {quote_identifier(column_name)}' for column_name in target_key_columns]
+          + [f'{_row_key_expr(target_model, "base")} AS {quote_identifier(ROW_KEY_COLUMN)}']
+          + [f'CAST(NULL AS VARCHAR(2000000)) AS {quote_identifier(fragment.column_name)}' for fragment in export_names.fragments]
+      )}
+    FROM {target_source_qtable} base
 )""".strip()
     )
     ctes.append(top_fragments_sql)
 
     export_select_columns = [
-        f'root_row.{quote_identifier(ID_COLUMN)} AS {quote_identifier(ID_COLUMN)}',
-        f'root_row.j AS {quote_identifier(FULL_JSON_COLUMN)}',
+        f'target_row.{quote_identifier(column_name)} AS {quote_identifier(column_name)}'
+        for column_name in target_key_columns
     ]
     export_select_columns.extend(
+        [
+            f'frag.{quote_identifier(ROW_KEY_COLUMN)} AS {quote_identifier(ROW_KEY_COLUMN)}',
+            f'target_row.j AS {quote_identifier(FULL_JSON_COLUMN)}',
+        ]
+    )
+    export_select_columns.extend(
         f'frag.{quote_identifier(fragment.column_name)} AS {quote_identifier(fragment.column_name)}'
-        for fragment in root_names.fragments
+        for fragment in export_names.fragments
     )
     ctes.append(
         f"""
 {export_cte} AS (
     SELECT
       {", ".join(export_select_columns)}
-    FROM {root_row_cte} root_row
+    FROM {target_row_cte} target_row
     LEFT JOIN {top_fragments_cte} frag
-      ON frag.{quote_identifier(ID_COLUMN)} = root_row.{quote_identifier(ID_COLUMN)}
+      ON {" AND ".join(
+          f'frag.{quote_identifier(column_name)} = target_row.{quote_identifier(column_name)}'
+          for column_name in target_key_columns
+      )}
 )""".strip()
     )
 
-    final_columns = [
-        quote_identifier(ID_COLUMN),
-        quote_identifier(FULL_JSON_COLUMN),
-    ]
-    final_columns.extend(quote_identifier(fragment.column_name) for fragment in root_names.fragments)
+    final_columns = [quote_identifier(column_name) for column_name in target_key_columns]
+    final_columns.extend(
+        [
+            quote_identifier(ROW_KEY_COLUMN),
+            quote_identifier(FULL_JSON_COLUMN),
+        ]
+    )
+    final_columns.extend(quote_identifier(fragment.column_name) for fragment in export_names.fragments)
     final_column_sql = ",\n  ".join(final_columns)
     return "WITH\n" + ",\n".join(ctes) + f"""
 SELECT
   {final_column_sql}
 FROM {export_cte}
-ORDER BY {quote_identifier(ID_COLUMN)}
+ORDER BY {", ".join(quote_identifier(column_name) for column_name in target_key_columns)}
 """
 
 
@@ -734,25 +756,36 @@ def generate_json_export_artifacts_from_source_columns(
     table_models = build_table_models(source_columns)
     relationships = build_relationships(table_models)
     root_tables = tuple(find_root_tables(table_models, relationships))
-    root_by_table = build_root_families(list(root_tables), relationships)
     root_names: dict[str, JsonExportRootNames] = {}
     select_sql_by_root: dict[str, str] = {}
     statements: list[str] = [f"CREATE SCHEMA IF NOT EXISTS {validated_schema}"]
+    table_export_names = {
+        table_name: _build_root_names(table_name, validated_schema, _root_groups(model))
+        for table_name, model in sorted(table_models.items())
+    }
+
+    for table_name in sorted(table_models):
+        statements.append(
+            f"CREATE OR REPLACE VIEW {table_export_names[table_name].qualified_view} AS\n"
+            + _build_table_export_select_sql(
+                source_schema=validated_source_schema,
+                table_name=table_name,
+                table_models=table_models,
+                relationships=relationships,
+                udf_schema=validated_udf_schema,
+                export_names=table_export_names[table_name],
+            )
+        )
 
     for root_table in root_tables:
-        root_model = table_models[root_table]
-        root_names[root_table] = _build_root_names(root_table, validated_schema, _root_groups(root_model))
-        select_sql_by_root[root_table] = _build_root_export_select_sql(
+        root_names[root_table] = table_export_names[root_table]
+        select_sql_by_root[root_table] = _build_table_export_select_sql(
             source_schema=validated_source_schema,
-            root_table=root_table,
+            table_name=root_table,
             table_models=table_models,
             relationships=relationships,
-            root_by_table=root_by_table,
             udf_schema=validated_udf_schema,
-            root_names=root_names[root_table],
-        )
-        statements.append(
-            f"CREATE OR REPLACE VIEW {root_names[root_table].qualified_view} AS\n{select_sql_by_root[root_table]}"
+            export_names=root_names[root_table],
         )
 
     return JsonExportArtifacts(

@@ -7,7 +7,13 @@ import json
 from pathlib import Path
 
 from .generate_json_export_helper_sql import helper_names
-from .generate_json_export_views_sql import json_export_root_names_from_wrapper_manifest
+from .generate_json_export_views_sql import (
+    FULL_JSON_COLUMN,
+    ROW_KEY_COLUMN,
+    json_export_fragment_column_name,
+    json_export_root_names_from_wrapper_manifest,
+    json_export_view_name,
+)
 from .generate_preprocessor_sql import render_sql, validate_identifier
 
 
@@ -262,10 +268,55 @@ def _build_to_json_config(manifests: list[dict]) -> dict[str, dict[str, dict[str
         public_schema = validate_identifier("Manifest public schema", manifest["publicSchema"])
         helper_schema = validate_identifier("Manifest helper schema", manifest["helperSchema"])
         public_schema_tables = config.setdefault(public_schema, {})
+        helper_schema_tables = config.setdefault(helper_schema, {})
         helper_udf_names = helper_names(helper_schema)
         export_root_names = json_export_root_names_from_wrapper_manifest(manifest, schema=helper_schema)
 
         roots_by_table = {str(root["tableName"]).upper(): root for root in manifest["roots"]}
+        root_table_names = set(roots_by_table)
+        relation_kind_by_child_table: dict[str, str] = {}
+        for root in manifest["roots"]:
+            for relationship in root["relationships"]:
+                relation_kind_by_child_table[str(relationship["childTable"]).upper()] = str(relationship["relationKind"])
+
+        for table in manifest["tables"]:
+            table_name = validate_identifier("Manifest table name", table["tableName"])
+            argument_to_fragment: dict[str, str] = {}
+            display_name_by_argument: dict[str, str] = {}
+            for group in table["groups"]:
+                visible_name = group["visibleName"]
+                if visible_name is None:
+                    continue
+                base_name = str(group["baseName"])
+                fragment_column = json_export_fragment_column_name(base_name)
+                normalized_base_name = base_name.upper()
+                argument_to_fragment[normalized_base_name] = fragment_column
+                display_name_by_argument[normalized_base_name] = base_name
+
+                normalized_visible_name = str(visible_name).upper()
+                argument_to_fragment[normalized_visible_name] = fragment_column
+                display_name_by_argument[normalized_visible_name] = str(visible_name)
+
+            row_key_source_columns = ["_id"]
+            if table_name not in root_table_names:
+                if relation_kind_by_child_table.get(table_name) == "array":
+                    row_key_source_columns = ["_parent", "_pos"]
+                else:
+                    row_key_source_columns = ["_id"]
+
+            helper_schema_tables[table_name] = {
+                "rootTable": table_name,
+                "exportViewQualified": (
+                    f'"{helper_schema}"."{json_export_view_name(table_name)}"'
+                ),
+                "rowKeyColumn": ROW_KEY_COLUMN,
+                "rowKeySourceColumns": row_key_source_columns,
+                "fullJsonColumn": FULL_JSON_COLUMN,
+                "optionalFragmentsFunction": helper_udf_names.json_object_from_optional_fragments,
+                "fragmentColumnByArgumentName": argument_to_fragment,
+                "displayNameByArgumentName": display_name_by_argument,
+            }
+
         for root_table, root_names in export_root_names.items():
             root = roots_by_table[root_table]
             argument_to_fragment: dict[str, str] = {}
@@ -282,7 +333,8 @@ def _build_to_json_config(manifests: list[dict]) -> dict[str, dict[str, dict[str
             public_schema_tables[validate_identifier("Manifest public view", root["publicView"])] = {
                 "rootTable": root_table,
                 "exportViewQualified": root_names.qualified_view,
-                "idColumn": root_names.id_column,
+                "rowKeyColumn": ROW_KEY_COLUMN,
+                "rowKeySourceColumns": ["_id"],
                 "fullJsonColumn": root_names.full_json_column,
                 "optionalFragmentsFunction": helper_udf_names.json_object_from_optional_fragments,
                 "fragmentColumnByArgumentName": argument_to_fragment,

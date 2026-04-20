@@ -9,6 +9,7 @@ from pathlib import Path
 import _bootstrap  # noqa: F401
 
 from _fixture_expected_json import sample_fixture_documents
+from generate_json_export_views_sql import json_export_view_name
 from nano_support import ROOT, connect, install_source_fixture
 
 
@@ -270,7 +271,9 @@ def main() -> None:
                 """
             ).fetchall()
         }
-        expected_helper_views = {"__JVS_JSON_EXPORT_SAMPLE", "__JVS_JSON_EXPORT_DEEPDOC"}
+        manifest_path = (PACKAGE_CONFIG_PATH.parent / package_config["generatedFiles"]["manifest"]).resolve()
+        manifest = json.loads(manifest_path.read_text())
+        expected_helper_views = {json_export_view_name(str(table["tableName"])) for table in manifest["tables"]}
         missing_helper_views = expected_helper_views - helper_view_names
         if missing_helper_views:
             raise AssertionError(f"installed package should materialize hidden export views; missing {sorted(missing_helper_views)}")

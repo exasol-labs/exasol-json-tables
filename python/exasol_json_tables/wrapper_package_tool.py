@@ -16,7 +16,7 @@ from .generate_json_export_helper_sql import (
     install_json_export_helpers,
 )
 from .generate_json_export_views_sql import install_json_export_views
-from .generate_json_export_views_sql import json_export_root_names_from_wrapper_manifest
+from .generate_json_export_views_sql import json_export_view_name
 from .generate_preprocessor_sql import validate_identifier
 from .generate_wrapper_preprocessor_sql import (
     DEFAULT_EXPLICIT_NULL_FUNCTION_NAMES,
@@ -169,9 +169,29 @@ def parse_args() -> argparse.Namespace:
 
 
 def add_connection_arguments(parser: argparse.ArgumentParser, *, required: bool = False) -> None:
-    parser.add_argument("--dsn", default="127.0.0.1:8563" if not required else None, help="Exasol DSN.")
-    parser.add_argument("--user", default="sys" if not required else None, help="Exasol user.")
-    parser.add_argument("--password", default="exasol" if not required else None, help="Exasol password.")
+    if "--dsn" not in parser._option_string_actions:
+        parser.add_argument("--dsn", default="127.0.0.1:8563" if not required else None, help="Exasol DSN.")
+    if "--user" not in parser._option_string_actions:
+        parser.add_argument("--user", default="sys" if not required else None, help="Exasol user.")
+    if "--password" not in parser._option_string_actions:
+        parser.add_argument("--password", default="exasol" if not required else None, help="Exasol password.")
+    if "--validate-server-certificate" not in parser._option_string_actions:
+        parser.add_argument(
+            "--validate-server-certificate",
+            action="store_true",
+            default=False,
+            help="Validate the Exasol server certificate. Default: disabled.",
+        )
+    if "--no-tls" not in parser._option_string_actions:
+        parser.add_argument(
+            "--no-tls",
+            action="store_true",
+            default=False,
+            help=(
+                "Accepted for CLI consistency with ingest commands. Python-side database connections do not validate "
+                "server certificates unless --validate-server-certificate is supplied."
+            ),
+        )
 
 
 def add_package_config_argument(parser: argparse.ArgumentParser) -> None:
@@ -950,12 +970,9 @@ def validate_package_files(config_path: Path, config: dict[str, Any], manifest_p
 
 
 def expected_helper_object_names_for_manifest(manifest: dict[str, Any]) -> set[str]:
-    helper_schema = str(manifest["helperSchema"])
     expected_helper_objects = {table["tableName"] for table in manifest["tables"]}
     expected_helper_objects.update({"__JVS_ROOTS", "__JVS_RELATIONSHIPS", "__JVS_COLUMN_MEMBERS"})
-    expected_helper_objects.update(
-        root_names.view_name for root_names in json_export_root_names_from_wrapper_manifest(manifest, schema=helper_schema).values()
-    )
+    expected_helper_objects.update(json_export_view_name(str(table["tableName"])) for table in manifest["tables"])
     return expected_helper_objects
 
 

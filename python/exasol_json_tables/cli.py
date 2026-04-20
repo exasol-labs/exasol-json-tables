@@ -167,6 +167,7 @@ def _build_wrapper_summary_from_config_path(config_path: Path) -> dict[str, obje
         }
     if manifest_path.exists():
         manifest = wrapper_package_tool.load_manifest_and_validate(config, manifest_path)
+        summary["publicViews"] = [str(root["publicView"]) for root in sorted(manifest["roots"], key=lambda item: item["publicView"])]
         summary["smokeTestSql"] = wrapper_package_tool.build_smoke_test_query(config, manifest)
     return summary
 
@@ -187,13 +188,16 @@ def _build_wrapper_artifacts(summary: dict[str, object]) -> dict[str, object]:
 
 
 def _build_wrapper_objects(summary: dict[str, object]) -> dict[str, object]:
-    return {
+    objects = {
         "sourceSchema": summary["sourceSchema"],
         "wrapperSchema": summary["wrapperSchema"],
         "helperSchema": summary["helperSchema"],
         "preprocessorSchema": summary["preprocessor"]["schema"],
         "preprocessorScript": summary["preprocessor"]["script"],
     }
+    if "publicViews" in summary:
+        objects["publicViews"] = summary["publicViews"]
+    return objects
 
 
 def _build_wrapper_next_actions(summary: dict[str, object]) -> dict[str, object]:
@@ -201,6 +205,8 @@ def _build_wrapper_next_actions(summary: dict[str, object]) -> dict[str, object]
         "activationSql": summary["preprocessor"]["activationSql"],
         "activationRequired": summary["preprocessor"]["activationRequired"],
     }
+    if "publicViews" in summary:
+        next_actions["publicViews"] = summary["publicViews"]
     if "smokeTestSql" in summary:
         next_actions["smokeTestSql"] = summary["smokeTestSql"]
     return next_actions
@@ -1251,6 +1257,7 @@ def command_ingest_and_wrap(args: argparse.Namespace) -> None:
         )
         _emit_json_summary(summary)
     else:
+        wrapper_summary = _build_wrapper_summary_from_config_path(package_config_path)
         print("Unified CLI completed ingest-and-wrap workflow.")
         print(f"Workflow name: {workflow['workflowName']}")
         print(f"Run artifact directory: {run_artifact_dir}")
@@ -1260,6 +1267,8 @@ def command_ingest_and_wrap(args: argparse.Namespace) -> None:
             f"{workflow['sourceSchema']} -> {workflow['wrapperSchema']} / {workflow['helperSchema']} "
             f"with {workflow['preprocessorSchema']}.{workflow['preprocessorScript']}"
         )
+        if "publicViews" in wrapper_summary:
+            print(f'Public views: {", ".join(wrapper_summary["publicViews"])}')
 
 
 def _resolve_wrap_generation_args(args: argparse.Namespace) -> argparse.Namespace:
@@ -1502,10 +1511,16 @@ def command_describe(args: argparse.Namespace) -> None:
                         "wrapperSchema": manifest["publicSchema"],
                         "helperSchema": manifest["helperSchema"],
                         "sourceSchema": manifest["sourceSchema"],
+                        "publicViews": [root["publicView"] for root in wrapper_entry["description"]["roots"]],
                     },
                     discovery=wrapper_entry["discovery"],
                     description=wrapper_entry["description"],
                     installedState=wrapper_entry["installedState"],
+                    nextActions={
+                        "activationRequired": preprocessor is not None,
+                        "activationSql": None if preprocessor is None else preprocessor["activationSql"],
+                        "publicViews": [root["publicView"] for root in wrapper_entry["description"]["roots"]],
+                    },
                 )
             )
         else:
@@ -1550,7 +1565,16 @@ def command_describe(args: argparse.Namespace) -> None:
                         "discoveryScope": "wrapperPackagesOnly",
                         "publishedConsumerSurfacesIncluded": False,
                     },
-                    wrappers=wrappers,
+                    wrappers=[
+                        {
+                            **wrapper,
+                            "wrapperSchema": wrapper["description"]["wrapperSchema"],
+                            "helperSchema": wrapper["description"]["helperSchema"],
+                            "sourceSchema": wrapper["description"]["sourceSchema"],
+                            "publicViews": [root["publicView"] for root in wrapper["description"]["roots"]],
+                        }
+                        for wrapper in wrappers
+                    ],
                 )
             )
         else:

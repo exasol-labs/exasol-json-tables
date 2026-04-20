@@ -73,6 +73,8 @@ That command:
 
 If you do not pass explicit connection arguments, this path assumes the local Nano-style defaults described below. For other environments, provide `--dsn`, `--user`, `--password`, or an explicit ingest `--exasol` URL.
 
+`--name` controls the derived schema/package names for the workflow. The installed public view names still come from the ingested root tables. The command's JSON output, smoke-test SQL, and `describe ... --json` responses all report those actual public view names explicitly.
+
 After installation, activate the wrapper syntax in the SQL session where you want to query the data:
 
 ```sql

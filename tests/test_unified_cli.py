@@ -713,8 +713,11 @@ def test_unified_cli_ingest_and_wrap_json_summary() -> None:
             assert any("wrapper schemas only" in warning for warning in wrapper["warnings"])
             assert payload["nextActions"]["activationSql"] == wrapper["preprocessor"]["activationSql"]
             assert payload["nextActions"]["smokeTestSql"] == wrapper["smokeTestSql"]
+            assert payload["nextActions"]["publicViews"] == ["NESTED"]
             assert payload["artifacts"]["packageConfig"] == wrapper["packageConfig"]
             assert payload["objects"]["wrapperSchema"] == wrapper["wrapperSchema"]
+            assert payload["objects"]["publicViews"] == ["NESTED"]
+            assert wrapper["publicViews"] == ["NESTED"]
 
             validation = payload["validation"]
             assert validation["checkedInstalled"] is True
@@ -726,6 +729,49 @@ def test_unified_cli_ingest_and_wrap_json_summary() -> None:
 
             package_config_path = Path(wrapper["packageConfig"])
             package_config = json.loads(package_config_path.read_text())
+
+            validate_no_tls_result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "validate",
+                    "--package-config",
+                    str(package_config_path),
+                    "--check-installed",
+                    "--no-tls",
+                    "--json",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            validate_no_tls_payload = json.loads(validate_no_tls_result.stdout)
+            assert validate_no_tls_payload["status"] == "ok"
+            assert validate_no_tls_payload["command"] == "validate"
+
+            wrap_install_no_tls_result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "wrap",
+                    "install",
+                    "--package-config",
+                    str(package_config_path),
+                    "--skip-views",
+                    "--skip-source-family",
+                    "--skip-preprocessor",
+                    "--no-tls",
+                    "--json",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            wrap_install_no_tls_payload = json.loads(wrap_install_no_tls_result.stdout)
+            assert wrap_install_no_tls_payload["status"] == "ok"
+            assert wrap_install_no_tls_payload["command"] == "wrap install"
 
             con = connect()
             try:
@@ -887,6 +933,12 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
             assert describe_wrapper_payload["discovery"]["autodiscoveredHelperSchema"] is True
             assert describe_wrapper_payload["discovery"]["surfaceKind"] == "wrapperPackage"
             assert describe_wrapper_payload["installedState"]["integrity"]["publicViewsMatchManifest"] is True
+            assert describe_wrapper_payload["nextActions"]["activationRequired"] is True
+            assert describe_wrapper_payload["nextActions"]["publicViews"] == ["NESTED"]
+            assert (
+                describe_wrapper_payload["nextActions"]["activationSql"]
+                == wrap_payload["wrapper"]["preprocessor"]["activationSql"]
+            )
             assert (
                 describe_wrapper_payload["description"]["preprocessor"]["activationSql"]
                 == wrap_payload["wrapper"]["preprocessor"]["activationSql"]
@@ -912,10 +964,174 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
             wrapper_schemas = [entry["description"]["wrapperSchema"] for entry in describe_wrappers_payload["wrappers"]]
             assert package_config["wrapperSchema"] in wrapper_schemas
             assert published_schema not in wrapper_schemas
+            matching_entry = next(
+                entry
+                for entry in describe_wrappers_payload["wrappers"]
+                if entry["wrapperSchema"] == package_config["wrapperSchema"]
+            )
+            assert matching_entry["helperSchema"] == package_config["helperSchema"]
+            assert matching_entry["sourceSchema"] == package_config["sourceSchema"]
+            assert matching_entry["publicViews"] == ["NESTED"]
         finally:
             con = connect()
             try:
                 con.execute(f'DROP SCHEMA IF EXISTS "{published_schema}" CASCADE')
+                if package_config is not None:
+                    cleanup_package_schemas(con, package_config)
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
+
+def test_unified_cli_ingest_and_wrap_supports_object_fields_inside_array_items() -> None:
+    with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_array_object_") as tmpdir:
+        tmp = Path(tmpdir)
+        artifact_root = tmp / "artifacts"
+        staging_dir = tmp / "staging"
+        input_path = tmp / "V2BUG1_INPUT.json"
+        input_documents = [
+            {
+                "id": "1",
+                "reviews": [
+                    {
+                        "user": "alice",
+                        "rating": 5,
+                        "date": {"$date": "2026-01-01T00:00:00Z"},
+                    }
+                ],
+            }
+        ]
+        input_path.write_text(json.dumps(input_documents))
+
+        workflow_name = "v2bug1_arrobj"
+        package_config: Optional[dict[str, object]] = None
+
+        try:
+            con = connect()
+            try:
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "ingest-and-wrap",
+                    "--input",
+                    str(input_path),
+                    "--name",
+                    workflow_name,
+                    "--artifact-dir",
+                    str(artifact_root),
+                    "--exasol-temp-dir",
+                    str(staging_dir),
+                    "--exasol-cleanup",
+                    "--no-tls",
+                    "--json",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            payload = json.loads(result.stdout)
+            assert payload["status"] == "ok"
+            assert payload["wrapper"]["publicViews"] == ["V2BUG1_INPUT"]
+            package_config = json.loads(Path(payload["wrapper"]["packageConfig"]).read_text())
+
+            con = connect()
+            try:
+                con.execute(payload["wrapper"]["preprocessor"]["activationSql"].rstrip(";"))
+                rows = con.execute(
+                    f'''
+                    SELECT TO_JSON(*)
+                    FROM "{package_config["wrapperSchema"]}"."V2BUG1_INPUT"
+                    ORDER BY "_id"
+                    '''
+                ).fetchall()
+            finally:
+                con.close()
+
+            assert [json.loads(row[0]) for row in rows] == input_documents
+        finally:
+            con = connect()
+            try:
+                if package_config is not None:
+                    cleanup_package_schemas(con, package_config)
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
+
+def test_unified_cli_supports_to_json_on_iterator_row_aliases() -> None:
+    fixture_path = ROOT / "crates" / "json_tables_ingest" / "tests" / "fixtures" / "arrays.json"
+    with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_iterator_to_json_") as tmpdir:
+        tmp = Path(tmpdir)
+        artifact_root = tmp / "artifacts"
+        staging_dir = tmp / "staging"
+        input_path = tmp / "ARRAYS.json"
+        shutil.copyfile(fixture_path, input_path)
+
+        workflow_name = "v2bug6_iterjson"
+        package_config: Optional[dict[str, object]] = None
+
+        try:
+            con = connect()
+            try:
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "ingest-and-wrap",
+                    "--input",
+                    str(input_path),
+                    "--name",
+                    workflow_name,
+                    "--artifact-dir",
+                    str(artifact_root),
+                    "--exasol-temp-dir",
+                    str(staging_dir),
+                    "--exasol-cleanup",
+                    "--json",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            payload = json.loads(result.stdout)
+            assert payload["status"] == "ok"
+            package_config = json.loads(Path(payload["wrapper"]["packageConfig"]).read_text())
+
+            con = connect()
+            try:
+                con.execute(payload["wrapper"]["preprocessor"]["activationSql"].rstrip(";"))
+                rows = con.execute(
+                    f'''
+                    SELECT
+                      CAST(s."id" AS VARCHAR(10)),
+                      TO_JSON(item.*)
+                    FROM "{package_config["wrapperSchema"]}"."ARRAYS" s
+                    JOIN item IN s."objs"
+                    ORDER BY s."_id", item._index
+                    '''
+                ).fetchall()
+            finally:
+                con.close()
+
+            assert [(row[0], json.loads(row[1])) for row in rows] == [
+                ("1", {"x": 1}),
+                ("1", {"x": 2, "y": "a"}),
+                ("3", {"x": 3.14, "inner": [{"z": True}, {"z": False}]}),
+            ]
+        finally:
+            con = connect()
+            try:
                 if package_config is not None:
                     cleanup_package_schemas(con, package_config)
                 cleanup_named_workflow_schemas(con, workflow_name)

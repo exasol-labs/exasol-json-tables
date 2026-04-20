@@ -14,6 +14,7 @@ from generate_json_export_views_sql import (
     generate_json_export_artifacts,
     install_json_export_views,
     json_export_root_names_from_wrapper_manifest,
+    json_export_view_name,
 )
 from nano_support import ROOT, connect, install_source_fixture, install_wrapper_views
 from wrapper_schema_support import quote_identifier
@@ -133,12 +134,13 @@ def main() -> None:
             ORDER BY OBJECT_TYPE, OBJECT_NAME
             """
         ).fetchall()
+        expected_view_names = sorted(
+            (json_export_view_name(str(table["tableName"])), "VIEW")
+            for table in manifest["tables"]
+        )
         assert_equal(
             installed_objects,
-            [
-                ("__JVS_JSON_EXPORT_DEEPDOC", "VIEW"),
-                ("__JVS_JSON_EXPORT_SAMPLE", "VIEW"),
-            ],
+            expected_view_names,
             "installed export views",
         )
 

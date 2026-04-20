@@ -49,6 +49,8 @@ The JSON summary includes:
 - `validation`
   The installed-package validation report when validation ran
 
+For wrapper-installing workflows, `objects.publicViews`, `nextActions.publicViews`, and `wrapper.publicViews` expose the actual public view names created inside the wrapper schema. `--name` controls the derived schema/package names, not the public view names themselves.
+
 ### `validate --json`
 
 Use this when an automation step needs a trustworthy capability signal:

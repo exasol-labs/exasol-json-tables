@@ -100,26 +100,38 @@ def lua_quote_string(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def render_lua_string_table(mapping: dict[str, object], indent: int = 0) -> str:
+def render_lua_value(value: object, indent: int = 0) -> str:
     indentation = " " * indent
     child_indentation = " " * (indent + 4)
-    if not mapping:
-        return "{}"
-    lines = ["{"]
-    for key in sorted(mapping):
-        value = mapping[key]
-        rendered_key = f"[{lua_quote_string(key)}]"
-        if isinstance(value, dict):
-            rendered_value = render_lua_string_table(value, indent + 4)
-        elif value is True:
-            rendered_value = "true"
-        elif value is False or value is None:
-            rendered_value = "false"
-        else:
-            rendered_value = lua_quote_string(str(value))
-        lines.append(f"{child_indentation}{rendered_key} = {rendered_value},")
-    lines.append(f"{indentation}}}")
-    return "\n".join(lines)
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        lines = ["{"]
+        for key in sorted(value):
+            rendered_key = f"[{lua_quote_string(key)}]"
+            rendered_value = render_lua_value(value[key], indent + 4)
+            lines.append(f"{child_indentation}{rendered_key} = {rendered_value},")
+        lines.append(f"{indentation}}}")
+        return "\n".join(lines)
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "{}"
+        lines = ["{"]
+        for item in value:
+            lines.append(f"{child_indentation}{render_lua_value(item, indent + 4)},")
+        lines.append(f"{indentation}}}")
+        return "\n".join(lines)
+    if value is True:
+        return "true"
+    if value is False or value is None:
+        return "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return lua_quote_string(str(value))
+
+
+def render_lua_string_table(mapping: dict[str, object], indent: int = 0) -> str:
+    return render_lua_value(mapping, indent)
 
 
 COMMON_LUA = """
@@ -2078,15 +2090,16 @@ ARRAY_ITERATION_LUA = """
     end
 
     local function build_iterator_binding(iterator_source, root_binding, array_child_table_name)
+        local iterator_schema_name = root_binding.helper_schema_name or root_binding.schema_name
         return {
             alias_name = iterator_source.alias_name,
             reference_sql = iterator_source.reference_sql,
             kind = iterator_source.is_value and "iterator_value" or "iterator_row",
             table_name = array_child_table_name,
-            schema_name = root_binding.schema_name,
+            schema_name = iterator_schema_name,
             catalog_name = root_binding.catalog_name,
             has_row_id = not iterator_source.is_value,
-            helper_schema_name = root_binding.helper_schema_name
+            helper_schema_name = iterator_schema_name
         }
     end
 
@@ -3327,6 +3340,11 @@ ORDER BY COLUMN_ORDINAL_POSITION
         if column_names == nil or #column_names == 0 then
             raise_function_error("TO_JSON", "Internal error: missing export projection columns.")
         end
+        local row_key_column = root_config.rowKeyColumn
+        local row_key_source_columns = root_config.rowKeySourceColumns or {}
+        if row_key_column == nil or row_key_column == "" or #row_key_source_columns == 0 then
+            raise_function_error("TO_JSON", "Internal error: missing export row-key metadata.")
+        end
 
         local join_key = normalize_identifier_value(table_reference.alias_name or table_reference.table_name)
                 .. "|" .. normalize_identifier_value(root_config.exportViewQualified)
@@ -3342,11 +3360,11 @@ ORDER BY COLUMN_ORDINAL_POSITION
         to_json_state.next_alias_id = to_json_state.next_alias_id + 1
         local alias_ref = encode_quoted_identifier(alias_name)
         local projected_alias_by_name = {}
-        local row_id_alias = "__jvs_row_id"
+        local row_key_alias = "__jvs_row_key"
         local helper_reference = build_helper_reference(alias_ref, projected_alias_by_name)
         to_json_state.alias_by_key[join_key] = helper_reference
         local projected_columns = {
-            encode_quoted_identifier(root_config.idColumn) .. " AS " .. encode_quoted_identifier(row_id_alias)
+            encode_quoted_identifier(row_key_column) .. " AS " .. encode_quoted_identifier(row_key_alias)
         }
         for column_index, column_name in ipairs(column_names) do
             local projected_alias = "__jvs_col_" .. tostring(column_index)
@@ -3354,14 +3372,22 @@ ORDER BY COLUMN_ORDINAL_POSITION
             projected_columns[#projected_columns + 1] = encode_quoted_identifier(column_name)
                     .. " AS " .. encode_quoted_identifier(projected_alias)
         end
+        local row_key_expr_parts = {}
+        for _, source_column_name in ipairs(row_key_source_columns) do
+            row_key_expr_parts[#row_key_expr_parts + 1] =
+                    encode_string_literal(source_column_name .. "=")
+                    .. " || CAST("
+                    .. table_reference_sql(table_reference) .. "." .. encode_quoted_identifier(source_column_name)
+                    .. " AS VARCHAR(2000000))"
+        end
+        local row_key_expr = table.concat(row_key_expr_parts, " || '|' || ")
         add_join_insertion(
             to_json_state.join_insertions,
             table_reference.insert_after_index,
             " LEFT OUTER JOIN (SELECT " .. table.concat(projected_columns, ", ")
                     .. " FROM " .. root_config.exportViewQualified .. ") " .. alias_ref
-                    .. " ON (" .. table_reference_sql(table_reference) .. "."
-                    .. encode_quoted_identifier(root_config.idColumn) .. " = "
-                    .. alias_ref .. "." .. encode_quoted_identifier(row_id_alias) .. ")"
+                    .. " ON (" .. row_key_expr .. " = "
+                    .. alias_ref .. "." .. encode_quoted_identifier(row_key_alias) .. ")"
         )
         return helper_reference
     end
@@ -3446,12 +3472,6 @@ ORDER BY COLUMN_ORDINAL_POSITION
                     'TO_JSON is not supported on VALUE iterators yet. Use plain SQL on the scalar iterator value instead.'
                 )
             end
-            if base_table.kind == "iterator_row" then
-                raise_function_error(
-                    function_name,
-                    'TO_JSON is not supported on iterator-row aliases yet. Use the wrapper root row instead.'
-                )
-            end
             return base_table
         end
 
@@ -3479,12 +3499,6 @@ ORDER BY COLUMN_ORDINAL_POSITION
             raise_function_error(
                 function_name,
                 'TO_JSON is not supported on VALUE iterators yet. Use plain SQL on the scalar iterator value instead.'
-            )
-        end
-        if table_reference.kind == "iterator_row" then
-            raise_function_error(
-                function_name,
-                'TO_JSON is not supported on iterator-row aliases yet. Use the wrapper root row instead.'
             )
         end
         return table_reference
@@ -3545,12 +3559,6 @@ ORDER BY COLUMN_ORDINAL_POSITION
                     'TO_JSON is not supported on VALUE iterators yet. Use plain SQL on the scalar iterator value instead.'
                 )
             end
-            if base_table.kind == "iterator_row" then
-                raise_function_error(
-                    function_name,
-                    'TO_JSON is not supported on iterator-row aliases yet. Use the wrapper root row instead.'
-                )
-            end
             table_reference = base_table
         elseif #identifier_parts == 2 then
             local qualifier_name = identifier_parts[1]
@@ -3578,12 +3586,6 @@ ORDER BY COLUMN_ORDINAL_POSITION
                 raise_function_error(
                     function_name,
                     'TO_JSON is not supported on VALUE iterators yet. Use plain SQL on the scalar iterator value instead.'
-                )
-            end
-            if table_reference.kind == "iterator_row" then
-                raise_function_error(
-                    function_name,
-                    'TO_JSON is not supported on iterator-row aliases yet. Use the wrapper root row instead.'
                 )
             end
         else
