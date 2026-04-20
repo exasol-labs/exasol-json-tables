@@ -64,6 +64,43 @@ def main() -> None:
         pass_through_rows = con.execute("SELECT 'plain-sql-path'").fetchall()
         assert_equal(pass_through_rows, [("plain-sql-path",)], "unrelated SQL pass-through")
 
+        quoted_source_rows = con.execute(
+            f'SELECT CAST("id" AS VARCHAR(10)) FROM "{SOURCE_SCHEMA}"."SAMPLE" WHERE "id" IN (1, 2) ORDER BY "id"'
+        ).fetchall()
+        assert_equal(quoted_source_rows, [("1",), ("2",)], "quoted source query after early-out")
+
+        wrapper_plain_rows = con.execute(
+            f'SELECT CAST("id" AS VARCHAR(10)) FROM "{WRAPPER_SCHEMA}"."SAMPLE" ORDER BY "id"'
+        ).fetchall()
+        assert_equal(wrapper_plain_rows, [("1",), ("2",), ("3",)], "plain wrapper query after early-out")
+
+        helper_rows = con.execute(
+            f"""
+            SELECT COALESCE(JSON_AS_VARCHAR(s."name"), 'NULL')
+            FROM {WRAPPER_SCHEMA}.SAMPLE s
+            ORDER BY s."_id"
+            """
+        ).fetchall()
+        assert_equal(helper_rows, [("alpha",), ("beta",), ("gamma",)], "helper-name fast path rewrite")
+
+        dotted_path_rows = con.execute(
+            f"""
+            SELECT COALESCE("meta.info.note", 'NULL')
+            FROM "{WRAPPER_SCHEMA}"."SAMPLE"
+            ORDER BY "id"
+            """
+        ).fetchall()
+        assert_equal(dotted_path_rows, [("deep",), ("NULL",), ("NULL",)], "quoted dotted path rewrite")
+
+        bracket_path_rows = con.execute(
+            f"""
+            SELECT COALESCE("items[LAST].value", 'NULL')
+            FROM "{WRAPPER_SCHEMA}"."SAMPLE"
+            ORDER BY "id"
+            """
+        ).fetchall()
+        assert_equal(bracket_path_rows, [("second",), ("only",), ("NULL",)], "quoted bracket path rewrite")
+
         correlated_rowset_rows = con.execute(
             f"""
             SELECT CAST(s."id" AS VARCHAR(10))
@@ -102,4 +139,7 @@ def main() -> None:
 if __name__ == "__main__":
     main()
     print("-- preprocessor early-out regression --")
-    print("validated unrelated SQL pass-through, correlated rowset rewrite, and regular-table TO_JSON under stage-0 detection")
+    print(
+        "validated helper-name, dotted-path, bracket-path, iterator-rowset, and regular-table TO_JSON handling "
+        "under stage-0 detection"
+    )

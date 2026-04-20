@@ -131,58 +131,80 @@ HELPER_CORE_LUA = """
 
 
 RUNTIME_PIPELINE_LUA = """
-    local function raw_tokens_reference_known_helper(raw_tokens)
-        local index = 1
-        while index <= #raw_tokens do
-            local call = read_call(raw_tokens, index)
-            if call ~= nil then
-                if HELPER_KIND_BY_NAME[call.last_identifier] ~= nil or BLOCKED_FUNCTIONS[call.last_identifier] then
-                    return true
-                end
-                index = call.opening_paren + 1
-            else
-                index = index + 1
+    local function raw_text_reference_known_helper(raw_sqltext_upper)
+        if string.find(raw_sqltext_upper, "TO_JSON", 1, true) ~= nil then
+            return true
+        end
+        for function_name in pairs(HELPER_KIND_BY_NAME) do
+            if string.find(raw_sqltext_upper, function_name, 1, true) ~= nil then
+                return true
             end
         end
-        return false
-    end
-
-    local function canonical_text_might_need_path_rewrite(canonical_sqltext)
-        if not REWRITE_PATH_IDENTIFIERS then
-            return false
-        end
-        if string.find(canonical_sqltext, '"', 1, true) == nil then
-            return false
-        end
-        if string.find(canonical_sqltext, "[", 1, true) ~= nil then
-            return true
-        end
-        if string.find(canonical_sqltext, ".", 1, true) ~= nil then
-            return true
-        end
-        return false
-    end
-
-    local function raw_tokens_might_need_iterator_rewrite(raw_tokens)
-        for _, token in ipairs(raw_tokens) do
-            local normalized = normalize(token)
-            if normalized == "IN" then
+        for function_name in pairs(BLOCKED_FUNCTIONS) do
+            if string.find(raw_sqltext_upper, function_name, 1, true) ~= nil then
                 return true
             end
         end
         return false
     end
 
+    local function quoted_identifier_contains_path_syntax(raw_sqltext)
+        local index = 1
+        while true do
+            local start_index = string.find(raw_sqltext, '"', index, true)
+            if start_index == nil then
+                return false
+            end
+            local current = start_index + 1
+            while current <= #raw_sqltext do
+                local ch = string.sub(raw_sqltext, current, current)
+                if ch == '"' then
+                    if string.sub(raw_sqltext, current + 1, current + 1) == '"' then
+                        current = current + 2
+                    else
+                        local identifier_text = string.sub(raw_sqltext, start_index + 1, current - 1)
+                        if string.find(identifier_text, ".", 1, true) ~= nil
+                                or string.find(identifier_text, "[", 1, true) ~= nil then
+                            return true
+                        end
+                        index = current + 1
+                        break
+                    end
+                else
+                    current = current + 1
+                end
+            end
+            if current > #raw_sqltext then
+                return false
+            end
+        end
+    end
+
+    local function raw_text_might_need_iterator_rewrite(raw_sqltext)
+        if string.find(raw_sqltext, '"', 1, true) == nil then
+            return false
+        end
+        if string.find(raw_sqltext, ' IN "', 1, true) ~= nil then
+            return true
+        end
+        return string.find(raw_sqltext, '%f[%w]IN%f[%W]%s*[A-Za-z_][A-Za-z0-9_]*%s*%.%s*"', 1) ~= nil
+    end
+
     local function query_might_need_runtime_rewrite(raw_sqltext)
-        local raw_tokens = sqlparsing.tokenize(raw_sqltext)
-        local canonical_sqltext = table.concat(raw_tokens)
-        if raw_tokens_reference_known_helper(raw_tokens) then
+        local raw_sqltext_upper = string.upper(raw_sqltext)
+        if raw_text_reference_known_helper(raw_sqltext_upper) then
             return true
         end
-        if canonical_text_might_need_path_rewrite(canonical_sqltext) then
+        if string.find(raw_sqltext, '"', 1, true) == nil then
+            return false
+        end
+        if string.find(raw_sqltext, "[", 1, true) ~= nil then
             return true
         end
-        if raw_tokens_might_need_iterator_rewrite(raw_tokens) then
+        if quoted_identifier_contains_path_syntax(raw_sqltext) then
+            return true
+        end
+        if raw_text_might_need_iterator_rewrite(raw_sqltext) then
             return true
         end
         return false
@@ -238,6 +260,24 @@ def _format_module_block(module: LibraryModule) -> str:
     return f"-- [module: {module.name}]\n{module.body.strip(chr(10))}"
 
 
+def compact_lua_body(body: str) -> str:
+    compact_lines: list[str] = []
+    last_blank = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("--"):
+            continue
+        if stripped == "":
+            if last_blank:
+                continue
+            last_blank = True
+            compact_lines.append("")
+            continue
+        last_blank = False
+        compact_lines.append(stripped)
+    return "\n".join(compact_lines).strip() + "\n"
+
+
 def iter_preprocessor_library_modules() -> tuple[LibraryModule, ...]:
     return (
         LibraryModule("parser_core", "__PARSER_CORE_LUA__", COMMON_LUA),
@@ -275,8 +315,11 @@ def iter_preprocessor_library_modules() -> tuple[LibraryModule, ...]:
     )
 
 
-def generate_preprocessor_library_body() -> str:
+def generate_preprocessor_library_body(*, compact: bool = False) -> str:
     template = LIBRARY_TEMPLATE_PATH.read_text()
     for module in iter_preprocessor_library_modules():
         template = template.replace(module.placeholder, _format_module_block(module))
-    return template.strip() + "\n"
+    rendered = template.strip() + "\n"
+    if compact:
+        return compact_lua_body(rendered)
+    return rendered
