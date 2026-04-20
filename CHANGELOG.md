@@ -18,6 +18,7 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
   - `describe wrapper --json`
   - `describe wrappers --json`
 - Added support for `TO_JSON(item.*)` on object-array iterator rows, so joined array items can now be serialized directly from the wrapper surface.
+- Added [docs/identifier-conventions.md](docs/identifier-conventions.md) and aligned the agent skills with explicit guidance for quoted wrapper references, uppercase durable aliases, and reserved-word avoidance.
 
 ### Changed
 

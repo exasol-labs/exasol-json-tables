@@ -21,6 +21,8 @@ On failure, `status` becomes `"error"` and `errors` contains a structured machin
 
 Human-oriented progress logs still go to stderr.
 
+If your automation generates durable views or tables for downstream SQL consumers, also follow the aliasing rules in [identifier-conventions.md](identifier-conventions.md). The short version is: keep wrapper property references quoted, but prefer uppercase SQL-safe aliases on exported objects.
+
 ## Main Commands
 
 ### `ingest-and-wrap --json`

@@ -155,6 +155,14 @@ Important semantics:
 - on ordinary tables or views, `TO_JSON` is a flat row serializer; nested output still comes from materializing a family first
 - `structured-results preview-json` remains useful for one-shot validation, but it is no longer a separate output model; it now exercises the same wrapped `TO_JSON(*)` path as the primary SQL surface
 
+For durable flat exports built on top of structured results, use the same identifier conventions as other published SQL objects:
+
+- prefer uppercase aliases for columns that will be queried later without quotes
+- avoid reserved-word aliases such as `source`, `schema`, `value`, or `type`
+- keep natural property names inside `TO_JSON(...)` output rather than forcing SQL-style uppercase into the JSON payload
+
+See [identifier-conventions.md](identifier-conventions.md) for the recommended defaults.
+
 ## Quickstart Example
 
 This is the end-to-end generated-package path:

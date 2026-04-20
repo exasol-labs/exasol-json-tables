@@ -32,6 +32,7 @@ Do not use this skill for generic JSON querying unless the problem is specifical
 In this repository, inspect first:
 
 - `README.md`
+- `docs/identifier-conventions.md`
 - `structured-result-materialization-study.md`
 - `user-studies/mongodb-focused/README.md`
 - `tests/test_wrapper_surface.py`
@@ -176,6 +177,21 @@ If present locally:
 
 ## Known Boundaries To Tell The User Early
 
+### Source-document preparation matters
+
+Tell MongoDB users early that migration is not only about query translation. It is also about preparing the exported documents so they map cleanly into the Exasol JSON Tables contract.
+
+Default preparation guidance:
+
+- normalize EJSON before ingest:
+  - `$oid` -> plain string
+  - `$date` -> ISO string or another deliberate scalar representation
+  - `$numberLong` -> plain JSON number or string, depending on the chosen contract
+- rename MongoDB `_id` to a business-facing field such as `DOC_ID` or `PRODUCT_ID`
+- when publishing durable analytical outputs, prefer uppercase SQL-safe aliases for downstream SQL
+
+Do not assume MongoDB field names are automatically safe as SQL-facing aliases. Names such as `source`, `type`, or `value` often need safer aliases on published tables or views.
+
 ### Result shape divergence
 
 MongoDB often returns nested arrays/documents from aggregation stages.
@@ -253,6 +269,13 @@ When a Mongo user asks for the **same nested output shape**:
 - use the one-shot preview tool to validate the shape quickly
 - once the shape is installed, make `TO_JSON(*)` the default final outlet
 - only drop to low-level `synthesized_family` if the shape needs exact table-family control
+
+When an agent is generating downstream SQL objects for Mongo migrations:
+
+- keep wrapper property references quoted
+- use uppercase SQL-safe aliases for durable exported tables or views
+- avoid reserved-word aliases by default
+- keep natural property names only in the final `TO_JSON(...)` output
 
 ## What To Validate On Nano
 

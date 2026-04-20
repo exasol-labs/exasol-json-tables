@@ -38,6 +38,7 @@ Start with:
 - `README.md`
 - `docs/query-surface.md`
 - `docs/installation.md`
+- `docs/identifier-conventions.md`
 - `python/exasol_json_tables/generate_preprocessor_sql.py`
 - `python/exasol_json_tables/generate_wrapper_preprocessor_sql.py`
 - `python/exasol_json_tables/generate_wrapper_views_sql.py`
@@ -167,6 +168,11 @@ Run Nano-backed tests sequentially when they rebuild the same schemas.
 
 - Treat the wrapper surface as a product contract, not an internal convenience layer.
 - Treat `TO_JSON(...)` as part of that product contract, not as a secondary helper.
+- Keep wrapper property references quoted exactly as required by the surface, for example `"meta.info.note"` or `item."nested.value"`.
+- When generating a durable published view or export table for downstream SQL, prefer uppercase SQL-safe aliases by default.
+- Avoid reserved-word aliases such as `source`, `schema`, `value`, `type`, `table`, or `timestamp` unless the user explicitly wants quoted identifiers.
+- If an alias would naturally collide with a reserved word, pick a descriptive replacement such as `SOURCE_SITE`, `VALUE_TEXT`, `EVENT_TYPE`, or `ORDER_TS`.
+- Separate SQL-facing alias ergonomics from JSON payload ergonomics: use uppercase aliases for durable SQL objects, but keep natural property names inside `TO_JSON(...)` output.
 - Prefer explicit `JVS-*` errors over leaking raw SQL resolution failures when misuse is predictable.
 - Be careful about scope:
   - helper/path syntax should only activate on allowed wrapper schemas
@@ -177,6 +183,10 @@ Run Nano-backed tests sequentially when they rebuild the same schemas.
 - Keep install/activation guidance aligned with package-tool behavior.
 - Prefer `--json` for wrapper lifecycle commands instead of scraping printed next-step text.
 - Treat `validate --json` as the authoritative capability signal for automation, not a generic green/no-green string.
+- When a user complains about quoting friction, first decide whether they need:
+  - a wrapper query in the current session
+  - or a durable published SQL object
+  The fix is often alias strategy, not query-surface behavior.
 
 ## Current Boundaries
 

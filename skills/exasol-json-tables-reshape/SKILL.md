@@ -36,6 +36,7 @@ Start with:
 - `README.md`
 - `docs/structured-results.md`
 - `docs/query-surface.md`
+- `docs/identifier-conventions.md`
 - `python/exasol_json_tables/result_family_materializer.py`
 - `python/exasol_json_tables/generate_preprocessor_sql.py`
 - `python/exasol_json_tables/structured_result_tool.py`
@@ -198,6 +199,9 @@ If the task touches the unified CLI path too, also run:
   - session-local
   - for further querying
   - for final `TO_JSON(...)`
+- When shaping durable SQL-facing objects around structured results, prefer uppercase SQL-safe aliases for columns that downstream users will query later.
+- Do not force uppercase alias conventions into the JSON payload itself. `TO_JSON(...)` output should usually preserve the natural property names the user expects.
+- Avoid reserved-word aliases such as `source`, `schema`, `value`, or `type` on durable published objects unless the user explicitly wants quoted identifiers.
 
 ## Current Boundaries
 

@@ -22,6 +22,48 @@ ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSO
 
 Without that activation, the wrapper views still exist, but the extra JSON syntax sugar such as dotted paths and bracket access will not be rewritten.
 
+## Identifier Discipline
+
+There are two different naming concerns on the wrapper surface:
+
+- wrapper expressions and JSON property references
+- durable SQL-facing column aliases for published views or export tables
+
+Keep wrapper expressions quoted:
+
+```sql
+SELECT
+  "child.value",
+  "meta.info.note",
+  "tags[LAST]"
+FROM JSON_VIEW.SAMPLE;
+```
+
+But when you publish a durable view or table for downstream SQL, prefer uppercase SQL-safe aliases:
+
+```sql
+CREATE VIEW ANALYTICS.SAMPLE_EXPORT AS
+SELECT
+  CAST("id" AS VARCHAR(20)) AS DOC_ID,
+  CAST("meta.info.note" AS VARCHAR(200)) AS DEEP_NOTE,
+  CAST("tags[LAST]" AS VARCHAR(50)) AS LAST_TAG
+FROM JSON_VIEW.SAMPLE;
+```
+
+That keeps downstream queries simple:
+
+```sql
+SELECT DOC_ID, DEEP_NOTE
+FROM ANALYTICS.SAMPLE_EXPORT
+ORDER BY DOC_ID;
+```
+
+If you instead publish lowercase quoted aliases such as `"doc_id"`, later SQL must keep quoting them.
+
+Also treat names such as `source`, `schema`, `value`, and `type` as risky durable aliases. They may work when quoted, but a safer default is a SQL-friendly alias such as `SOURCE_SITE`, `VALUE_TEXT`, or `EVENT_TYPE`.
+
+For a fuller set of conventions, see [identifier-conventions.md](identifier-conventions.md).
+
 ## Supported Surface
 
 ### Helper Functions

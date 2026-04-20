@@ -150,6 +150,8 @@ FROM JSON_VIEW.SAMPLE;
 
 After the view is created, other sessions can query `ANALYTICS.SAMPLE_PUBLISHED` without activating the JSON Tables preprocessor.
 
+When you create published objects for downstream SQL, BI, or pandas-style access, prefer uppercase aliases so later queries do not need quoted lowercase identifiers everywhere. See [identifier-conventions.md](identifier-conventions.md).
+
 Use a published view when:
 
 - you want a permanent read surface
@@ -161,6 +163,8 @@ Use a published table when:
 - you want a stable snapshot
 - you want to hand off a precomputed result
 - you are comfortable rebuilding or refreshing it when the source changes
+
+Also avoid exposing reserved-word aliases such as `source`, `schema`, `value`, or `type` on durable published objects unless you quote them intentionally. In most cases, a SQL-safe alias such as `SOURCE_SITE`, `VALUE_TEXT`, or `EVENT_TYPE` is a better default.
 
 The regression behind the published-view pattern is also [tests/test_access_modes.py](../tests/test_access_modes.py).
 
