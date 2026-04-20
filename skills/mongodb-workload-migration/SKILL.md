@@ -27,7 +27,11 @@ Do not use this skill for generic JSON querying unless the problem is specifical
 2. Decide whether the migration target is:
    - normalized analytical SQL
    - result-shape parity with MongoDB
-3. Test one representative query on Nano before making broad claims about portability.
+3. Inspect the exported MongoDB documents before talking about query translation:
+   - are they plain JSON or Extended JSON (EJSON)?
+   - does the payload still use MongoDB `_id` as a user-facing field?
+   - do timestamp, ObjectId, and 64-bit integer values still appear as nested wrappers such as `$date`, `$oid`, or `$numberLong`?
+4. Test one representative query on Nano before making broad claims about portability.
 
 In this repository, inspect first:
 
@@ -192,6 +196,57 @@ Default preparation guidance:
 
 Do not assume MongoDB field names are automatically safe as SQL-facing aliases. Names such as `source`, `type`, or `value` often need safer aliases on published tables or views.
 
+### Pre-Ingest Checklist For Agents
+
+Before generating SQL or recommending `ingest-and-wrap`, agents should walk this checklist explicitly:
+
+1. Is the export plain JSON?
+   - if not, normalize EJSON first
+2. Does the document still expose MongoDB `_id`?
+   - if yes, rename it to a business-facing field before ingest
+3. Are there obvious reserved-word field names that will later become durable SQL aliases?
+   - if yes, plan safer SQL-facing aliases for published views/tables
+4. Is the user asking for analytics only, or for Mongo-like nested output as well?
+   - if nested output matters, plan the structured-results-plus-`TO_JSON(...)` path early
+
+### Concrete Preparation Examples
+
+Treat this kind of source export:
+
+```json
+{
+  "_id": {"$oid": "507f1f77bcf86cd799439011"},
+  "created_at": {"$date": "2026-01-01T00:00:00Z"},
+  "visits": {"$numberLong": "42"}
+}
+```
+
+as migration input that still needs normalization.
+
+Preferred normalized form:
+
+```json
+{
+  "doc_id": "507f1f77bcf86cd799439011",
+  "created_at": "2026-01-01T00:00:00Z",
+  "visits": 42
+}
+```
+
+That is the shape agents should prefer before recommending `ingest-and-wrap`.
+
+### Agent Default Recommendations For MongoDB Prep
+
+When the user says “I exported this from MongoDB, what should I do first?”, the default answer should be:
+
+1. convert EJSON wrappers to plain JSON scalars
+2. rename `_id` to a business-facing field name
+3. ingest that normalized JSON
+4. use wrapper SQL for analytics
+5. use structured results plus `TO_JSON(...)` only when final nested output must be rebuilt
+
+Agents should not jump directly into query translation until steps 1 and 2 are settled.
+
 ### Result shape divergence
 
 MongoDB often returns nested arrays/documents from aggregation stages.
@@ -235,19 +290,23 @@ Move those expressions into the inner `SELECT` or query the wrapper view directl
 
 ## Recommended Migration Workflow
 
-1. Start from the business intent, not the Mongo syntax.
-2. Decide if the port should preserve:
+1. Normalize the exported documents first:
+   - convert EJSON wrappers to plain scalars
+   - rename MongoDB `_id`
+   - decide whether any SQL-facing published aliases should avoid reserved words
+2. Start from the business intent, not the Mongo syntax.
+3. Decide if the port should preserve:
    - same-element semantics
    - array cardinality
    - document-shaped output
-3. Translate arrays first:
+4. Translate arrays first:
    - single element -> bracket access
    - any/same element -> correlated `EXISTS`
    - full traversal -> `JOIN ... IN ...`
-4. Translate joins second:
+5. Translate joins second:
    - normalize array side into rows
    - use ordinary SQL joins for collection-to-collection logic
-5. Translate output shape last.
+6. Translate output shape last.
    - if rows are acceptable, stop there
    - if nested output is required, switch to the structured-results workflow and plan to emit the final payload with `TO_JSON(...)`
 
@@ -276,6 +335,17 @@ When an agent is generating downstream SQL objects for Mongo migrations:
 - use uppercase SQL-safe aliases for durable exported tables or views
 - avoid reserved-word aliases by default
 - keep natural property names only in the final `TO_JSON(...)` output
+- explicitly surface the normalized ingested field names back to the user when `_id` or EJSON wrappers were rewritten upstream
+
+## What Agents Should Say Early
+
+For MongoDB migration tasks, agents should proactively tell the user:
+
+- Mongo query translation is only half the job; document preparation matters first
+- EJSON is not the desired ingest shape; plain JSON is
+- MongoDB `_id` should usually become a business-facing field such as `doc_id`
+- wrapper SQL is usually a strong destination for analytics
+- if the user still needs nested Mongo-like payloads, the supported final-output path is structured results plus `TO_JSON(...)`
 
 ## What To Validate On Nano
 
