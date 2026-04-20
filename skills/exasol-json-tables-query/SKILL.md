@@ -60,7 +60,7 @@ Most important tests:
 - `tests/test_unified_cli.py`
 - `tests/test_wrapper_variant_semantics.py`
 
-For agented workflow commands such as `ingest-and-wrap`, `wrap generate`, `wrap install`, `wrap deploy`, and `validate`, prefer `--json`. The JSON summary includes package paths, activation SQL, smoke-test SQL, schema names, wrapper-scope warnings, and installed validation probes. Use `describe package --json` or `describe wrapper --json` when you need to inspect the available roots and example queries.
+For agented workflow commands such as `ingest-and-wrap`, `wrap generate`, `wrap install`, `wrap deploy`, and `validate`, prefer `--json`. The JSON summary includes package paths, activation SQL, smoke-test SQL, schema names, wrapper-scope warnings, and installed validation probes. Use `describe package --json` or `describe wrapper --json` when you need to inspect the available roots and example queries. `describe wrapper --json` now also includes recursive `fieldTree` data and per-root `familyTables`, so agents should use that instead of guessing nested field names.
 
 ## Mental Model
 
@@ -111,6 +111,8 @@ The preprocessor is not optional sugar from a product perspective. It is part of
 
 - use `JSON_TYPEOF(...)` and `JSON_AS_*`
 - built-in `TYPEOF(...)` and plain `CAST(...)` reflect wrapper SQL types, not per-row JSON type contract
+- use `JSON_TYPEOF(...)` mainly on variant-style fields where the per-row JSON type can change
+- for structural wrapper branches backed by fixed object/array markers, traverse them, expand them, or serialize them with `TO_JSON(...)` instead of treating them like late-bound runtime `VARIANT`
 
 ### Array semantics
 
@@ -119,6 +121,7 @@ The preprocessor is not optional sugar from a product perspective. It is part of
 - use `[SIZE]` for array length without unnesting
 - use `[field_name]` for current-row dynamic selectors such as `"items[id]"`
 - use `[?]` for placeholder-based dynamic selectors
+- treat `[PARAM]` as a prepared-statement-only spelling; plain Python string execution does not make it work
 - use `JOIN ... IN ...` for rowset semantics
 - arbitrary SQL expressions inside brackets are intentionally rejected
 - do not allow Mongo-style `"items.value"` style traversal through arrays; it should fail with guidance

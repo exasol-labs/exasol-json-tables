@@ -890,9 +890,26 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
             assert describe_package_payload["description"]["wrapperSchema"] == package_config["wrapperSchema"]
             assert describe_package_payload["description"]["rootCount"] == 1
             root_description = describe_package_payload["description"]["roots"][0]
+            root_field_tree = {entry["name"]: entry for entry in root_description["fieldTree"]}
+            family_tables = {
+                entry["tableName"]: entry for entry in root_description["familyTables"]
+            }
             assert root_description["publicView"] == "NESTED"
             assert "toJsonAll" in root_description["exampleQueries"]
             assert "qualifiedHelper" in root_description["exampleQueries"]
+            assert root_field_tree["child"]["kind"] == "object"
+            assert root_field_tree["child"]["childTable"] == "NESTED_child"
+            assert {entry["name"] for entry in root_field_tree["child"]["fields"]} == {"a", "b", "c"}
+            assert root_field_tree["meta"]["kind"] == "object"
+            assert root_field_tree["meta"]["childTable"] == "NESTED_meta"
+            meta_field_tree = {entry["name"]: entry for entry in root_field_tree["meta"]["fields"]}
+            assert meta_field_tree["info"]["kind"] == "object"
+            assert meta_field_tree["info"]["childTable"] == "NESTED_meta_info"
+            assert {entry["name"] for entry in meta_field_tree["info"]["fields"]} == {"note"}
+            assert family_tables["NESTED"]["tableKind"] == "root"
+            assert family_tables["NESTED"]["pathFromRoot"] is None
+            assert family_tables["NESTED_meta"]["pathFromRoot"] == "meta"
+            assert family_tables["NESTED_meta_info"]["pathFromRoot"] == "meta.info"
 
             con = connect()
             try:
@@ -943,6 +960,13 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
                 describe_wrapper_payload["description"]["preprocessor"]["activationSql"]
                 == wrap_payload["wrapper"]["preprocessor"]["activationSql"]
             )
+            described_root = describe_wrapper_payload["description"]["roots"][0]
+            described_field_tree = {entry["name"]: entry for entry in described_root["fieldTree"]}
+            described_family_tables = {
+                entry["tableName"]: entry for entry in described_root["familyTables"]
+            }
+            assert described_field_tree["meta"]["childTable"] == "NESTED_meta"
+            assert described_family_tables["NESTED_meta_info"]["pathFromRoot"] == "meta.info"
 
             describe_wrappers_result = subprocess.run(
                 [
@@ -1129,6 +1153,124 @@ def test_unified_cli_supports_to_json_on_iterator_row_aliases() -> None:
                 ("1", {"x": 2, "y": "a"}),
                 ("3", {"x": 3.14, "inner": [{"z": True}, {"z": False}]}),
             ]
+        finally:
+            con = connect()
+            try:
+                if package_config is not None:
+                    cleanup_package_schemas(con, package_config)
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
+
+def test_unified_cli_supports_to_json_on_scalar_iterator_rows_and_ctes() -> None:
+    fixture_path = ROOT / "crates" / "json_tables_ingest" / "tests" / "fixtures" / "orders.json"
+    input_documents = json.loads(fixture_path.read_text())
+    expected_item_rows: list[tuple[str, dict[str, object]]] = []
+    expected_subset_rows: list[tuple[str, dict[str, object]]] = []
+    for order in input_documents:
+        order_id = str(order["order_id"])
+        for item in order["items"]:
+            expected_item_rows.append((order_id, item))
+            expected_subset_rows.append(
+                (
+                    order_id,
+                    {
+                        "sku": item["sku"],
+                        "name": item["name"],
+                        "unit_price": item["unit_price"],
+                    },
+                )
+            )
+
+    with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_iterator_order_items_") as tmpdir:
+        tmp = Path(tmpdir)
+        artifact_root = tmp / "artifacts"
+        staging_dir = tmp / "staging"
+        input_path = tmp / "ORDERS.json"
+        shutil.copyfile(fixture_path, input_path)
+
+        workflow_name = "v3bug1_orders"
+        package_config: Optional[dict[str, object]] = None
+
+        try:
+            con = connect()
+            try:
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "ingest-and-wrap",
+                    "--input",
+                    str(input_path),
+                    "--name",
+                    workflow_name,
+                    "--artifact-dir",
+                    str(artifact_root),
+                    "--exasol-temp-dir",
+                    str(staging_dir),
+                    "--exasol-cleanup",
+                    "--json",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            payload = json.loads(result.stdout)
+            assert payload["status"] == "ok"
+            package_config = json.loads(Path(payload["wrapper"]["packageConfig"]).read_text())
+
+            con = connect()
+            try:
+                con.execute(payload["wrapper"]["preprocessor"]["activationSql"].rstrip(";"))
+                star_rows = con.execute(
+                    f'''
+                    SELECT
+                      o."order_id",
+                      TO_JSON(i.*)
+                    FROM "{package_config["wrapperSchema"]}"."orders" o
+                    JOIN i IN o."items"
+                    ORDER BY o."_id", i._index
+                    '''
+                ).fetchall()
+                subset_rows = con.execute(
+                    f'''
+                    SELECT
+                      o."order_id",
+                      TO_JSON(i."sku", i."name", i."unit_price")
+                    FROM "{package_config["wrapperSchema"]}"."orders" o
+                    JOIN i IN o."items"
+                    ORDER BY o."_id", i._index
+                    '''
+                ).fetchall()
+                cte_rows = con.execute(
+                    f'''
+                    WITH expanded AS (
+                      SELECT
+                        o."order_id" AS order_id,
+                        TO_JSON(i.*) AS item_doc
+                      FROM "{package_config["wrapperSchema"]}"."orders" o
+                      JOIN i IN o."items"
+                    )
+                    SELECT order_id, item_doc
+                    FROM expanded
+                    ORDER BY order_id, item_doc
+                    '''
+                ).fetchall()
+            finally:
+                con.close()
+
+            assert [(row[0], json.loads(row[1])) for row in star_rows] == expected_item_rows
+            assert [(row[0], json.loads(row[1])) for row in subset_rows] == expected_subset_rows
+            assert sorted(
+                [(row[0], json.loads(row[1])) for row in cte_rows],
+                key=lambda row: (row[0], json.dumps(row[1], sort_keys=True)),
+            ) == sorted(expected_item_rows, key=lambda row: (row[0], json.dumps(row[1], sort_keys=True)))
         finally:
             con = connect()
             try:

@@ -114,6 +114,24 @@ def main() -> None:
         )
         assert_query_error(
             con,
+            'SELECT s."meta.info.missing" FROM JSON_VIEW.SAMPLE s ORDER BY s."_id"',
+            ["JVS-PATH-ERROR", 'Field "missing" is not visible on object path "meta.info"', "describe wrapper --json"],
+            "missing nested field error",
+        )
+        assert_query_error(
+            con,
+            'SELECT "name.value" FROM JSON_VIEW.SAMPLE',
+            ["JVS-PATH-ERROR", 'Path step "name" resolves to a scalar value'],
+            "scalar path navigation error",
+        )
+        assert_query_error(
+            con,
+            'SELECT "meta[0]" FROM JSON_VIEW.SAMPLE',
+            ["JVS-PATH-ERROR", 'Path step "meta" resolves to an object', "dotted navigation"],
+            "object bracket guidance error",
+        )
+        assert_query_error(
+            con,
             'SELECT "meta." FROM JSON_VIEW.SAMPLE',
             ["JVS-PATH-ERROR", "Path cannot end with '.'"],
             "trailing dot path error",

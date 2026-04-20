@@ -982,9 +982,41 @@ JOIN_MODE_LUA = """
         return table_columns ~= nil and table_columns[normalize_identifier_value(column_name)] == true
     end
 
-    local function ensure_property_step_can_navigate(path, binding, current_table_name, step_name)
+    local function resolve_visible_path_column_name(binding, table_name, step_name)
+        if table_has_visible_column(binding, table_name, step_name) then
+            return step_name
+        end
+        if table_has_visible_column(binding, table_name, step_name .. "|object") then
+            return step_name .. "|object"
+        end
+        if table_has_visible_column(binding, table_name, step_name .. "|array") then
+            return step_name .. "|array"
+        end
+        return nil
+    end
+
+    local function raise_missing_path_field_error(path, step_name, parent_path)
+        local location = " on the current row source"
+        if parent_path ~= nil and parent_path ~= "" then
+            location = ' on object path "' .. parent_path .. '"'
+        end
+        raise_path_error(
+            path,
+            'Field "' .. step_name .. '" is not visible' .. location
+                    .. '. Use describe wrapper --json to inspect nested fields.'
+        )
+    end
+
+    local function ensure_property_step_can_navigate(path, binding, current_table_name, step_name, parent_path)
         local group_config = lookup_path_group_config_for_binding(binding, current_table_name, step_name)
+        local visible_column_name = resolve_visible_path_column_name(binding, current_table_name, step_name)
         local variant_columns = group_config and group_config.variantColumns or nil
+        if variant_columns ~= nil and variant_columns["OBJECT"] ~= nil then
+            return
+        end
+        if visible_column_name == (step_name .. "|object") then
+            return
+        end
         if variant_columns ~= nil and variant_columns["ARRAY"] ~= nil and variant_columns["OBJECT"] == nil then
             raise_path_error(
                 path,
@@ -993,6 +1025,55 @@ JOIN_MODE_LUA = """
                         .. step_name .. '[index]" for a single element.'
             )
         end
+        if visible_column_name == (step_name .. "|array") then
+            raise_path_error(
+                path,
+                'Path step "' .. step_name .. '" resolves to an array. '
+                        .. 'Use JOIN ... IN row."' .. step_name .. '" for traversal or "'
+                        .. step_name .. '[index]" for a single element.'
+            )
+        end
+        if visible_column_name ~= nil or group_config ~= nil then
+            raise_path_error(
+                path,
+                'Path step "' .. step_name .. '" resolves to a scalar value. '
+                        .. 'Only object fields can be followed by another dot-path segment.'
+            )
+        end
+        raise_missing_path_field_error(path, step_name, parent_path)
+    end
+
+    local function ensure_array_step_can_access(path, binding, current_table_name, step_name, parent_path)
+        local group_config = lookup_path_group_config_for_binding(binding, current_table_name, step_name)
+        local visible_column_name = resolve_visible_path_column_name(binding, current_table_name, step_name)
+        local variant_columns = group_config and group_config.variantColumns or nil
+        if variant_columns ~= nil and variant_columns["ARRAY"] ~= nil then
+            return
+        end
+        if visible_column_name == (step_name .. "|array") then
+            return
+        end
+        if variant_columns ~= nil and variant_columns["OBJECT"] ~= nil and variant_columns["ARRAY"] == nil then
+            raise_path_error(
+                path,
+                'Path step "' .. step_name .. '" resolves to an object. '
+                        .. 'Use dotted navigation such as "' .. step_name .. '.field" instead of brackets.'
+            )
+        end
+        if visible_column_name == (step_name .. "|object") then
+            raise_path_error(
+                path,
+                'Path step "' .. step_name .. '" resolves to an object. '
+                        .. 'Use dotted navigation such as "' .. step_name .. '.field" instead of brackets.'
+            )
+        end
+        if visible_column_name ~= nil or group_config ~= nil then
+            raise_path_error(
+                path,
+                'Bracket selectors require an array field. "' .. step_name .. '" is not an array on this row source.'
+            )
+        end
+        raise_missing_path_field_error(path, step_name, parent_path)
     end
 
     local function add_path_projection_column(column_names, seen_columns, column_name)
@@ -1388,10 +1469,28 @@ JOIN_MODE_LUA = """
                         .. "|" .. table.concat(prefix, ".")
 
                 if step.type == "property" then
+                    local parent_path = nil
+                    if #prefix > 1 then
+                        parent_path = table.concat(prefix, ".", 1, #prefix - 1)
+                    end
                     if is_last then
-                        replacement = current_ref .. "." .. encode_quoted_identifier(step.name)
+                        local visible_column_name = resolve_visible_path_column_name(
+                                binding,
+                                current_table_name,
+                                step.name
+                        )
+                        if visible_column_name == nil then
+                            raise_missing_path_field_error(reference.path, step.name, parent_path)
+                        end
+                        replacement = current_ref .. "." .. encode_quoted_identifier(visible_column_name)
                     else
-                        ensure_property_step_can_navigate(reference.path, binding, current_table_name, step.name)
+                        ensure_property_step_can_navigate(
+                            reference.path,
+                            binding,
+                            current_table_name,
+                            step.name,
+                            parent_path
+                        )
                         local existing = join_aliases[prefix_key]
                         local child_table_name = derive_child_table_name_for_iterator(current_table_name, step.name)
                         local step_source_ref, step_object_column_name = resolve_object_step_source(
@@ -1425,6 +1524,11 @@ JOIN_MODE_LUA = """
                         current_table_name = existing.table_name
                     end
                 elseif step.type == "array" then
+                    local parent_path = nil
+                    if #prefix > 1 then
+                        parent_path = table.concat(prefix, ".", 1, #prefix - 1)
+                    end
+                    ensure_array_step_can_access(reference.path, binding, current_table_name, step.name, parent_path)
                     local array_source_ref, array_column_name = resolve_array_step_source(
                             binding,
                             current_ref,
@@ -1574,10 +1678,28 @@ JOIN_MODE_LUA = """
                     prefix[#prefix + 1] = serialize_step(step)
                     local prefix_key = table.concat(prefix, ".")
                     if step.type == "property" then
+                        local parent_path = nil
+                        if #prefix > 1 then
+                            parent_path = table.concat(prefix, ".", 1, #prefix - 1)
+                        end
                         if is_last then
-                            replacement = current_ref .. "." .. encode_quoted_identifier(step.name)
+                            local visible_column_name = resolve_visible_path_column_name(
+                                    base_table,
+                                    current_table_name,
+                                    step.name
+                            )
+                            if visible_column_name == nil then
+                                raise_missing_path_field_error(reference.path, step.name, parent_path)
+                            end
+                            replacement = current_ref .. "." .. encode_quoted_identifier(visible_column_name)
                         else
-                            ensure_property_step_can_navigate(reference.path, base_table, current_table_name, step.name)
+                            ensure_property_step_can_navigate(
+                                reference.path,
+                                base_table,
+                                current_table_name,
+                                step.name,
+                                parent_path
+                            )
                             local existing = join_aliases[prefix_key]
                             local child_table_name = derive_child_table_name(current_table_name, step.name)
                             local step_source_ref, step_object_column_name = resolve_object_step_source(
@@ -1607,6 +1729,11 @@ JOIN_MODE_LUA = """
                             current_table_name = existing.table_name
                         end
                     elseif step.type == "array" then
+                        local parent_path = nil
+                        if #prefix > 1 then
+                            parent_path = table.concat(prefix, ".", 1, #prefix - 1)
+                        end
+                        ensure_array_step_can_access(reference.path, base_table, current_table_name, step.name, parent_path)
                         local array_source_ref, array_column_name = resolve_array_step_source(
                                 base_table,
                                 current_ref,
@@ -2902,6 +3029,16 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
                 return 'TO_JSON subset arguments must be visible top-level properties. Nested paths such as "meta.info.note" and bracket expressions such as "tags[SIZE]" are not supported.'
             end
         end
+        local _, qualifier_quote_start = string.find(raw, '%.%s*"', 1)
+        if qualifier_quote_start ~= nil then
+            local tail = trim_sql_argument_text(string.sub(raw, qualifier_quote_start))
+            if string.sub(tail, 1, 1) == '"' and string.sub(tail, -1, -1) == '"' then
+                local decoded_tail = decode_quoted_identifier(tail)
+                if string.find(decoded_tail, ".", 1, true) ~= nil or string.find(decoded_tail, "[", 1, true) ~= nil then
+                    return 'TO_JSON subset arguments must be visible top-level properties. Nested paths such as "meta.info.note" and bracket expressions such as "tags[SIZE]" are not supported.'
+                end
+            end
+        end
         return nil
     end
 
@@ -3666,7 +3803,7 @@ ORDER BY COLUMN_ORDINAL_POSITION
         else
             raise_function_error(
                 function_name,
-                'TO_JSON subset arguments must be top-level property references, optionally qualified as root_alias."property".'
+                'TO_JSON subset arguments must be visible top-level properties. Nested paths such as "meta.info.note" and bracket expressions such as "tags[SIZE]" are not supported.'
             )
         end
 

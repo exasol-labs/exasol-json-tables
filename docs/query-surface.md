@@ -87,11 +87,20 @@ For a fuller set of conventions, see [identifier-conventions.md](identifier-conv
 - array rowset syntax such as `JOIN item IN s."items"` and `JOIN VALUE tag IN s."tags"`
 - iterator-row path and bracket access such as `item."nested.note"` and `entry."extras[LAST]"`
 
+`[PARAM]` still requires a client that actually sends prepared parameters. It is safe for prepared-statement-capable clients, but plain Python string execution with `execute("...")` does not magically turn it into a bound parameter.
+
 ## Core Semantics
 
 ### Final JSON Output With `TO_JSON`
 
 `TO_JSON` is the primary final outlet when you want JSON back out of a query.
+
+The examples below use the uppercase fixture views such as `JSON_VIEW.SAMPLE`. Real installed wrapper roots often keep the ingested table name, which may be lowercase. In that case, quote the public view exactly, for example:
+
+```sql
+SELECT TO_JSON(*) AS doc_json
+FROM "EJT_CUSTOMER_EVENTS_VIEW"."customer_events";
+```
 
 On wrapped roots, it serializes the row recursively:
 
@@ -164,6 +173,8 @@ When a variant contains a non-scalar branch:
 - if `JSON_TYPEOF(expr) = 'OBJECT'`, traverse it with normal dotted paths such as `expr."note"` or `"flex.note"`
 - if `JSON_TYPEOF(expr) = 'ARRAY'`, use bracket access or rowset expansion such as `"flex[LAST].value"` or `JOIN item IN row."flex"`
 - `JSON_AS_VARCHAR(...)`, `JSON_AS_DECIMAL(...)`, and `JSON_AS_BOOLEAN(...)` are scalar extractors; object and array branches return `NULL` from those helpers until you navigate to a scalar child
+- use these helpers on variant-style fields such as `"value"` or `"flex"`, where the per-row JSON type can vary
+- do not use `JSON_TYPEOF(...)` as the primary inspection tool for structural wrapper branches whose visible columns are fixed object/array markers such as `child|object` or `tags|array`; traverse those branches, expand them, or serialize them with `TO_JSON(...)` instead
 
 Example:
 

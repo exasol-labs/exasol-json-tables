@@ -50,6 +50,19 @@ def project_top_level(rows: list[dict[str, object]], keys: list[str]) -> list[di
     return projected
 
 
+def flatten_array_property(rows: list[dict[str, object]], row_key: str, array_key: str) -> list[tuple[object, dict[str, object]]]:
+    flattened: list[tuple[object, dict[str, object]]] = []
+    for row in rows:
+        row_identifier = row[row_key]
+        array_value = row.get(array_key)
+        if not isinstance(array_value, list):
+            continue
+        for element in array_value:
+            if isinstance(element, dict):
+                flattened.append((row_identifier, element))
+    return flattened
+
+
 def install_big_number_fixture(con) -> None:
     con.execute(
         """
@@ -200,6 +213,67 @@ def main() -> None:
             "repeated TO_JSON id/meta rows",
         )
 
+        iterator_full_rows = con.execute(
+            f"""
+            SELECT
+              CAST(s."id" AS VARCHAR(10)),
+              TO_JSON(item.*)
+            FROM {WRAPPER_SCHEMA}.SAMPLE s
+            JOIN item IN s."items"
+            ORDER BY s."_id", item._index
+            """
+        ).fetchall()
+        iterator_subset_rows = con.execute(
+            f"""
+            SELECT
+              CAST(s."id" AS VARCHAR(10)),
+              TO_JSON(item."value", item."label", item."nested")
+            FROM {WRAPPER_SCHEMA}.SAMPLE s
+            JOIN item IN s."items"
+            ORDER BY s."_id", item._index
+            """
+        ).fetchall()
+        iterator_cte_rows = con.execute(
+            f"""
+            WITH expanded AS (
+              SELECT
+                CAST(s."id" AS VARCHAR(10)) AS sample_id,
+                TO_JSON(item.*) AS item_json
+              FROM {WRAPPER_SCHEMA}.SAMPLE s
+              JOIN item IN s."items"
+            )
+            SELECT sample_id, item_json
+            FROM expanded
+            ORDER BY sample_id, item_json
+            """
+        ).fetchall()
+        iterator_expected = [
+            (str(sample_id), item_json)
+            for sample_id, item_json in flatten_array_property(sample_expected, "id", "items")
+        ]
+        iterator_subset_expected = [
+            (sample_id, {key: value for key, value in item_json.items() if key in {"value", "label", "nested"}})
+            for sample_id, item_json in iterator_expected
+        ]
+        assert_equal(
+            [(row[0], json.loads(row[1])) for row in iterator_full_rows],
+            iterator_expected,
+            "iterator-row TO_JSON(*)",
+        )
+        assert_equal(
+            [(row[0], json.loads(row[1])) for row in iterator_subset_rows],
+            iterator_subset_expected,
+            "iterator-row TO_JSON subset",
+        )
+        assert_equal(
+            sorted(
+                [(row[0], json.loads(row[1])) for row in iterator_cte_rows],
+                key=lambda row: (row[0], json.dumps(row[1], sort_keys=True)),
+            ),
+            sorted(iterator_expected, key=lambda row: (row[0], json.dumps(row[1], sort_keys=True))),
+            "iterator-row TO_JSON inside CTE",
+        )
+
         joined_unqualified_error = fetch_error_text(
             con,
             f"""
@@ -223,6 +297,10 @@ def main() -> None:
         path_argument_error = fetch_error_text(
             con,
             f'SELECT TO_JSON("meta.info.note") FROM {WRAPPER_SCHEMA}.SAMPLE ORDER BY "_id"',
+        )
+        qualified_path_argument_error = fetch_error_text(
+            con,
+            f'SELECT TO_JSON(s."meta.info.note") FROM {WRAPPER_SCHEMA}.SAMPLE s ORDER BY s."_id"',
         )
         mixed_root_error = fetch_error_text(
             con,
@@ -249,6 +327,11 @@ def main() -> None:
             path_argument_error,
             'Nested paths such as "meta.info.note" and bracket expressions such as "tags[SIZE]" are not supported.',
             "nested-path TO_JSON error",
+        )
+        assert_contains(
+            qualified_path_argument_error,
+            'Nested paths such as "meta.info.note" and bracket expressions such as "tags[SIZE]" are not supported.',
+            "qualified nested-path TO_JSON error",
         )
         assert_contains(
             mixed_root_error,

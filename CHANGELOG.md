@@ -17,6 +17,9 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
   - `validate --json`
   - `describe wrapper --json`
   - `describe wrappers --json`
+- Added recursive wrapper discovery to `describe package --json` and `describe wrapper --json`:
+  - per-root `fieldTree` data for nested object and object-array branches
+  - per-root `familyTables` entries that map child helper tables back to paths such as `meta.info` or `items[]`
 - Added support for `TO_JSON(item.*)` on object-array iterator rows, so joined array items can now be serialized directly from the wrapper surface.
 - Added broader iterator-row `TO_JSON(...)` coverage for wrapped array items, including:
   - `TO_JSON(item.*)`
@@ -41,6 +44,7 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 - Fixed a shape-dependent iterator-row `TO_JSON(...)` failure on wrapped object arrays such as `orders.items`, where queries like `TO_JSON(i.*)` or `TO_JSON(i."sku", i."name")` could fail or return incomplete results.
 - Fixed iterator-row `TO_JSON(...)` behavior for wrapped child tables that are keyed by multiple structural columns, so child export joins now line up with the full table-family contract instead of relying on a simplified row-key heuristic.
 - Fixed a related preprocessor rewrite issue where generated iterator/derived sources could lose the correct join insertion point during later rewrite stages. This hardens both iterator-row `TO_JSON(...)` and qualified iterator-path rewrites.
+- Fixed opaque nested-path errors so missing fields and invalid scalar/object bracket traversal now fail with `JVS-PATH-ERROR` guidance instead of leaking internal rewrite aliases.
 
 ### Migration Notes
 

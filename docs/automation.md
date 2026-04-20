@@ -101,6 +101,8 @@ The description includes:
 
 - root views
 - top-level fields
+- recursive `fieldTree` discovery per root for nested object and object-array branches
+- `familyTables` entries per root so agents can map helper-table names back to paths such as `meta.info` or `items[]`
 - object and array fields
 - example `TO_JSON(*)`, helper, and rowset queries
 - activation SQL when the package config is available
@@ -123,7 +125,7 @@ The response includes:
 
 - `discovery` metadata showing whether the helper schema was autodiscovered
 - `installedState` from live catalog metadata
-- the wrapped roots, fields, and example queries
+- the wrapped roots, fields, recursive `fieldTree` data, per-root `familyTables`, and example queries
 
 If you do not provide the preprocessor schema and script, the describe output still works, but it cannot emit `activationSql`.
 

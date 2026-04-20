@@ -26,8 +26,9 @@ MANIFEST_PATH = ROOT / "dist" / "json_wrapper_manifest_test.json"
 # - preprocessor library: 179_582 bytes
 # - wrapper preprocessor: 53_518 bytes
 # Keep a modest guard band so future refactors can shrink freely, while accidental growth still trips.
+# The library grew slightly during the 2026-04-20 v3 discovery/error-hardening work.
 GENERIC_SIZE_CEILING_BYTES = 5_000
-LIBRARY_SIZE_CEILING_BYTES = 190_000
+LIBRARY_SIZE_CEILING_BYTES = 195_000
 WRAPPER_SIZE_CEILING_BYTES = 65_000
 
 

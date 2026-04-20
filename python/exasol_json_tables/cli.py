@@ -290,46 +290,293 @@ def _error_code_for_message(message: str, exc: BaseException | None = None) -> s
     return "UNEXPECTED-ERROR"
 
 
-def _describe_root_fields(root_table: dict[str, object], root: dict[str, object]) -> dict[str, object]:
+def _logical_field_name_and_kind(visible_name: str) -> tuple[str, str]:
+    if visible_name.endswith("|object"):
+        return visible_name[: -len("|object")], "object"
+    if visible_name.endswith("|array"):
+        return visible_name[: -len("|array")], "array"
+    return visible_name, "scalar"
+
+
+def _relationships_by_parent(
+    root: dict[str, object],
+) -> dict[str, list[dict[str, object]]]:
+    relationships: dict[str, list[dict[str, object]]] = {}
+    for relationship in root.get("relationships", []):
+        parent_table = str(relationship["parentTable"])
+        relationships.setdefault(parent_table, []).append(relationship)
+    for parent_table in relationships:
+        relationships[parent_table].sort(
+            key=lambda item: (
+                str(item["segmentName"]),
+                str(item["relationKind"]),
+                str(item["childTable"]),
+            )
+        )
+    return relationships
+
+
+def _relationships_by_parent_and_segment(
+    root: dict[str, object],
+) -> dict[str, dict[str, list[dict[str, object]]]]:
+    relationships: dict[str, dict[str, list[dict[str, object]]]] = {}
+    for relationship in root.get("relationships", []):
+        parent_table = str(relationship["parentTable"])
+        segment_name = str(relationship["segmentName"])
+        relationships.setdefault(parent_table, {}).setdefault(segment_name, []).append(relationship)
+    for parent_table in relationships:
+        for segment_name in relationships[parent_table]:
+            relationships[parent_table][segment_name].sort(
+                key=lambda item: (str(item["relationKind"]), str(item["childTable"]))
+            )
+    return relationships
+
+
+def _infer_array_element_kind(
+    child_table_name: str,
+    *,
+    table_lookup: dict[str, dict[str, object]],
+    relationships_by_parent: dict[str, list[dict[str, object]]],
+) -> str:
+    child_table = table_lookup[child_table_name]
+    visible_names = [
+        str(group["visibleName"])
+        for group in child_table.get("groups", [])
+        if group.get("visibleName") not in {None, "_id"}
+    ]
+    child_relationships = relationships_by_parent.get(child_table_name, [])
+    if visible_names == ["_value"] and not child_relationships:
+        return "scalar"
+    if visible_names == ["_value"]:
+        return "variant"
+    return "object"
+
+
+def _describe_table_fields(
+    table_name: str,
+    *,
+    table_lookup: dict[str, dict[str, object]],
+    relationships_by_parent_and_segment: dict[str, dict[str, list[dict[str, object]]]],
+) -> dict[str, object]:
+    table_spec = table_lookup[table_name]
     top_level_fields: list[dict[str, object]] = []
     scalar_fields: list[str] = []
     object_fields: list[dict[str, object]] = []
     array_fields: list[dict[str, object]] = []
-    relationships_by_segment = {
-        relation["segmentName"]: relation
-        for relation in root.get("relationships", [])
-        if relation["parentTable"] == root["tableName"]
-    }
-    for group in root_table.get("groups", []):
+    relationships_by_segment = relationships_by_parent_and_segment.get(table_name, {})
+    for group in table_spec.get("groups", []):
         visible_name = group.get("visibleName")
         if visible_name in {None, "_id"}:
             continue
-        field_kind = "scalar"
-        logical_name = str(visible_name)
-        if logical_name.endswith("|object"):
-            field_kind = "object"
-            logical_name = logical_name[: -len("|object")]
-        elif logical_name.endswith("|array"):
-            field_kind = "array"
-            logical_name = logical_name[: -len("|array")]
+        logical_name, field_kind = _logical_field_name_and_kind(str(visible_name))
         top_level_fields.append({"name": logical_name, "kind": field_kind})
         if field_kind == "scalar":
             scalar_fields.append(logical_name)
-    for segment_name, relationship in sorted(relationships_by_segment.items()):
-        entry = {
-            "name": segment_name,
-            "childTable": relationship["childTable"],
-        }
-        if relationship["relationKind"] == "array":
-            array_fields.append(entry)
-        elif relationship["relationKind"] == "object":
-            object_fields.append(entry)
+    for segment_name, segment_relationships in sorted(relationships_by_segment.items()):
+        for relationship in segment_relationships:
+            entry = {
+                "name": segment_name,
+                "childTable": relationship["childTable"],
+            }
+            if relationship["relationKind"] == "array":
+                array_fields.append(entry)
+            elif relationship["relationKind"] == "object":
+                object_fields.append(entry)
     return {
         "topLevelFields": top_level_fields,
         "scalarFields": scalar_fields,
         "objectFields": object_fields,
         "arrayFields": array_fields,
     }
+
+
+def _describe_field_tree(
+    table_name: str,
+    *,
+    table_lookup: dict[str, dict[str, object]],
+    relationships_by_parent: dict[str, list[dict[str, object]]],
+    relationships_by_parent_and_segment: dict[str, dict[str, list[dict[str, object]]]],
+) -> list[dict[str, object]]:
+    table_spec = table_lookup[table_name]
+    relationships_by_segment = relationships_by_parent_and_segment.get(table_name, {})
+    field_tree: list[dict[str, object]] = []
+    for group in table_spec.get("groups", []):
+        visible_name = group.get("visibleName")
+        if visible_name in {None, "_id"}:
+            continue
+        logical_name, field_kind = _logical_field_name_and_kind(str(visible_name))
+        entry: dict[str, object] = {
+            "name": logical_name,
+            "kind": field_kind,
+        }
+        segment_relationships = relationships_by_segment.get(logical_name, [])
+        if field_kind == "object":
+            object_relationship = next(
+                (item for item in segment_relationships if item["relationKind"] == "object"),
+                None,
+            )
+            if object_relationship is not None:
+                child_table_name = str(object_relationship["childTable"])
+                entry["childTable"] = child_table_name
+                entry["fields"] = _describe_field_tree(
+                    child_table_name,
+                    table_lookup=table_lookup,
+                    relationships_by_parent=relationships_by_parent,
+                    relationships_by_parent_and_segment=relationships_by_parent_and_segment,
+                )
+        elif field_kind == "array":
+            array_relationship = next(
+                (item for item in segment_relationships if item["relationKind"] == "array"),
+                None,
+            )
+            if array_relationship is not None:
+                child_table_name = str(array_relationship["childTable"])
+                element_kind = _infer_array_element_kind(
+                    child_table_name,
+                    table_lookup=table_lookup,
+                    relationships_by_parent=relationships_by_parent,
+                )
+                entry["childTable"] = child_table_name
+                entry["elementKind"] = element_kind
+                if element_kind == "object":
+                    entry["fields"] = _describe_field_tree(
+                        child_table_name,
+                        table_lookup=table_lookup,
+                        relationships_by_parent=relationships_by_parent,
+                        relationships_by_parent_and_segment=relationships_by_parent_and_segment,
+                    )
+        elif segment_relationships:
+            branch_kinds = sorted({str(item["relationKind"]) for item in segment_relationships})
+            entry["branchKinds"] = branch_kinds
+            object_relationship = next(
+                (item for item in segment_relationships if item["relationKind"] == "object"),
+                None,
+            )
+            if object_relationship is not None:
+                child_table_name = str(object_relationship["childTable"])
+                entry["objectBranch"] = {
+                    "childTable": child_table_name,
+                    "fields": _describe_field_tree(
+                        child_table_name,
+                        table_lookup=table_lookup,
+                        relationships_by_parent=relationships_by_parent,
+                        relationships_by_parent_and_segment=relationships_by_parent_and_segment,
+                    ),
+                }
+            array_relationship = next(
+                (item for item in segment_relationships if item["relationKind"] == "array"),
+                None,
+            )
+            if array_relationship is not None:
+                child_table_name = str(array_relationship["childTable"])
+                element_kind = _infer_array_element_kind(
+                    child_table_name,
+                    table_lookup=table_lookup,
+                    relationships_by_parent=relationships_by_parent,
+                )
+                array_branch: dict[str, object] = {
+                    "childTable": child_table_name,
+                    "elementKind": element_kind,
+                }
+                if element_kind == "object":
+                    array_branch["fields"] = _describe_field_tree(
+                        child_table_name,
+                        table_lookup=table_lookup,
+                        relationships_by_parent=relationships_by_parent,
+                        relationships_by_parent_and_segment=relationships_by_parent_and_segment,
+                    )
+                entry["arrayBranch"] = array_branch
+        field_tree.append(entry)
+    return field_tree
+
+
+def _describe_family_tables(
+    root: dict[str, object],
+    *,
+    table_lookup: dict[str, dict[str, object]],
+    relationships_by_parent: dict[str, list[dict[str, object]]],
+    relationships_by_parent_and_segment: dict[str, dict[str, list[dict[str, object]]]],
+) -> list[dict[str, object]]:
+    root_table_name = str(root["tableName"])
+    relationship_by_child: dict[str, dict[str, object]] = {}
+    path_by_table: dict[str, str | None] = {root_table_name: None}
+    queue: list[str] = [root_table_name]
+    while queue:
+        parent_table_name = queue.pop(0)
+        parent_path = path_by_table[parent_table_name]
+        for relationship in relationships_by_parent.get(parent_table_name, []):
+            child_table_name = str(relationship["childTable"])
+            if child_table_name in path_by_table:
+                continue
+            segment_name = str(relationship["segmentName"])
+            path_segment = f"{segment_name}[]" if relationship["relationKind"] == "array" else segment_name
+            path_by_table[child_table_name] = path_segment if parent_path is None else f"{parent_path}.{path_segment}"
+            relationship_by_child[child_table_name] = relationship
+            queue.append(child_table_name)
+
+    family_tables: list[dict[str, object]] = []
+    for table_name in sorted(root["familyTables"], key=lambda item: (path_by_table.get(str(item)) or "", str(item))):
+        normalized_table_name = str(table_name)
+        summary = _describe_table_fields(
+            normalized_table_name,
+            table_lookup=table_lookup,
+            relationships_by_parent_and_segment=relationships_by_parent_and_segment,
+        )
+        entry: dict[str, object] = {
+            "tableName": normalized_table_name,
+            "pathFromRoot": path_by_table.get(normalized_table_name),
+            "fieldTree": _describe_field_tree(
+                normalized_table_name,
+                table_lookup=table_lookup,
+                relationships_by_parent=relationships_by_parent,
+                relationships_by_parent_and_segment=relationships_by_parent_and_segment,
+            ),
+            **summary,
+        }
+        relationship = relationship_by_child.get(normalized_table_name)
+        if relationship is None:
+            entry["tableKind"] = "root"
+        else:
+            entry["tableKind"] = str(relationship["relationKind"])
+            entry["parentTable"] = str(relationship["parentTable"])
+            entry["segmentName"] = str(relationship["segmentName"])
+            if relationship["relationKind"] == "array":
+                entry["elementKind"] = _infer_array_element_kind(
+                    normalized_table_name,
+                    table_lookup=table_lookup,
+                    relationships_by_parent=relationships_by_parent,
+                )
+        family_tables.append(entry)
+    return family_tables
+
+
+def _describe_root_fields(
+    root_table: dict[str, object],
+    root: dict[str, object],
+    *,
+    table_lookup: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    relationships_by_parent = _relationships_by_parent(root)
+    relationships_by_parent_and_segment = _relationships_by_parent_and_segment(root)
+    table_name = str(root["tableName"])
+    field_summary = _describe_table_fields(
+        table_name,
+        table_lookup=table_lookup,
+        relationships_by_parent_and_segment=relationships_by_parent_and_segment,
+    )
+    field_summary["fieldTree"] = _describe_field_tree(
+        table_name,
+        table_lookup=table_lookup,
+        relationships_by_parent=relationships_by_parent,
+        relationships_by_parent_and_segment=relationships_by_parent_and_segment,
+    )
+    field_summary["familyTables"] = _describe_family_tables(
+        root,
+        table_lookup=table_lookup,
+        relationships_by_parent=relationships_by_parent,
+        relationships_by_parent_and_segment=relationships_by_parent_and_segment,
+    )
+    return field_summary
 
 
 def _describe_wrapper_manifest(
@@ -341,7 +588,7 @@ def _describe_wrapper_manifest(
     roots: list[dict[str, object]] = []
     for root in sorted(manifest["roots"], key=lambda item: item["publicView"]):
         root_table = table_lookup[root["tableName"]]
-        root_fields = _describe_root_fields(root_table, root)
+        root_fields = _describe_root_fields(root_table, root, table_lookup=table_lookup)
         example_queries: dict[str, object] = {
             "toJsonAll": (
                 f'SELECT TO_JSON(*) AS doc_json FROM "{manifest["publicSchema"]}"."{root["publicView"]}" '
@@ -354,11 +601,14 @@ def _describe_wrapper_manifest(
                 f'SELECT JSON_AS_VARCHAR(s.{quote_identifier(scalar_name)}) AS sample_value '
                 f'FROM "{manifest["publicSchema"]}"."{root["publicView"]}" s ORDER BY "_id" LIMIT 5;'
             )
-        if root_fields["arrayFields"]:
-            array_name = root_fields["arrayFields"][0]["name"]
+        rowset_example_name = next(
+            (field["name"] for field in root_fields["topLevelFields"] if field["kind"] == "array"),
+            root_fields["arrayFields"][0]["name"] if root_fields["arrayFields"] else None,
+        )
+        if rowset_example_name is not None:
             example_queries["rowset"] = (
                 f'SELECT s."_id", item._index FROM "{manifest["publicSchema"]}"."{root["publicView"]}" s '
-                f'JOIN item IN s.{quote_identifier(array_name)} ORDER BY 1, 2;'
+                f'JOIN item IN s.{quote_identifier(rowset_example_name)} ORDER BY 1, 2;'
             )
         roots.append(
             {
