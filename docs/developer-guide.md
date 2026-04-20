@@ -94,7 +94,7 @@ If you are trying to understand:
   Start with [python/exasol_json_tables/wrapper_package_tool.py](../python/exasol_json_tables/wrapper_package_tool.py)
 
 - how the SQL surface is rewritten
-  Start with [python/exasol_json_tables/generate_preprocessor_sql.py](../python/exasol_json_tables/generate_preprocessor_sql.py)
+  Start with [python/exasol_json_tables/generate_preprocessor_sql.py](../python/exasol_json_tables/generate_preprocessor_sql.py), [tests/test_preprocessor_refactor_phase0.py](../tests/test_preprocessor_refactor_phase0.py), and the focused parser lane [tools/test_nano_preprocessor_parser_lane.py](../tools/test_nano_preprocessor_parser_lane.py)
 
 - how final JSON output is generated
   Start with [python/exasol_json_tables/generate_preprocessor_sql.py](../python/exasol_json_tables/generate_preprocessor_sql.py), [python/exasol_json_tables/generate_json_export_helper_sql.py](../python/exasol_json_tables/generate_json_export_helper_sql.py), and [python/exasol_json_tables/generate_json_export_views_sql.py](../python/exasol_json_tables/generate_json_export_views_sql.py)

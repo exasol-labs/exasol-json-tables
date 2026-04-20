@@ -145,6 +145,19 @@ def main() -> None:
             raise AssertionError(
                 f"in-session install should materialize the JSON export helper scripts; missing {sorted(missing_helper_scripts)}"
             )
+        preprocessor_script_names = {
+            row[0]
+            for row in con.execute(
+                f"""
+                SELECT SCRIPT_NAME
+                FROM SYS.EXA_ALL_SCRIPTS
+                WHERE SCRIPT_SCHEMA = '{TEMP_PP_SCHEMA}'
+                ORDER BY SCRIPT_NAME
+                """
+            ).fetchall()
+        }
+        if "JVS_PREPROCESSOR_LIB" not in preprocessor_script_names:
+            raise AssertionError("in-session install should materialize the shared preprocessor library script")
 
         wrapper_rows = con.execute(
             f"""

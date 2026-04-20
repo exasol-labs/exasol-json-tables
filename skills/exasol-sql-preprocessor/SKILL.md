@@ -50,7 +50,9 @@ If you are working in this repository, also inspect:
 - `tools/generate_wrapper_preprocessor_sql.py`
 - `tools/generate_wrapper_views_sql.py`
 - `tools/wrapper_package_tool.py`
+- `tools/test_nano_preprocessor_parser_lane.py`
 - regenerate wrapper artifacts under `dist/exasol-json-tables/` when you need concrete generated SQL or package examples
+- `tests/test_preprocessor_refactor_phase0.py`
 - `tests/test_wrapper_surface.py`
 - `tests/test_wrapper_errors.py`
 - `tests/test_wrapper_evaluation.py`
@@ -420,6 +422,8 @@ Validate it against a live Exasol instance because the most important boundaries
 
 If you are working in this repository, the main live checks are:
 
+- `python3 tools/test_nano_preprocessor_parser_lane.py`
+- `python3 tests/test_preprocessor_refactor_phase0.py`
 - `python3 tests/test_wrapper_surface.py`
 - `python3 tests/test_wrapper_errors.py`
 - `python3 tests/test_wrapper_evaluation.py`

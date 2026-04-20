@@ -94,6 +94,38 @@ Verifies:
 - helper-based variant semantics
 - deep recursive traversal
 
+## Preprocessor Refactor Baseline
+
+```bash
+python3 tests/test_preprocessor_refactor_phase0.py
+```
+
+Verifies:
+
+- parser-heavy baseline behavior before preprocessor refactors
+- comments and string literals that contain JSON-surface syntax
+- CTE query-block rewriting
+- top-level `UNION ALL` rewriting
+- nested-subquery `TO_JSON(*)` rewriting
+- generated generic, shared-library, and wrapper preprocessor artifact sizes against recorded guard bands
+
+## Preprocessor Parser Lane
+
+```bash
+python3 tools/test_nano_preprocessor_parser_lane.py
+```
+
+Use this as the dedicated parser-heavy regression lane before and during preprocessor/parser refactors.
+
+It runs the parser-sensitive Nano-backed tests sequentially:
+
+- `tests/test_preprocessor_refactor_phase0.py`
+- `tests/test_wrapper_errors.py`
+- `tests/test_wrapper_to_json.py`
+- `tests/test_wrapper_surface.py`
+
+This lane exists so parser-oriented coverage stays explicit instead of being scattered across unrelated wrapper validations.
+
 ## Wrapper Package Lifecycle
 
 ```bash

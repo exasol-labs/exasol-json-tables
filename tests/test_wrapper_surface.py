@@ -130,6 +130,8 @@ def main() -> None:
         raise AssertionError("packaged wrapper preprocessor should be scoped to the public wrapper schema")
     if "Helper rewrite mode: wrapper semantic helpers" not in packaged_sql:
         raise AssertionError("packaged wrapper preprocessor should use wrapper semantic helper rewrite mode")
+    if 'exa.import("JVS_WRAP_PP.JVS_PREPROCESSOR_LIB", "JVS_PREPROCESSOR_LIB")' not in packaged_sql:
+        raise AssertionError("packaged wrapper preprocessor should import the shared preprocessor library")
     if "\nALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = " in packaged_sql:
         raise AssertionError("packaged wrapper preprocessor should not auto-activate by default")
 

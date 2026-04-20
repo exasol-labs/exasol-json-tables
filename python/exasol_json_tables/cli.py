@@ -133,6 +133,7 @@ def _build_wrapper_summary_from_config_path(config_path: Path) -> dict[str, obje
         "preprocessor": {
             "schema": config["preprocessor"]["schema"],
             "script": config["preprocessor"]["script"],
+            "libraryScript": config["preprocessor"].get("libraryScript"),
             "activationSql": wrapper_package_tool.build_activation_sql(config, include_semicolon=True),
             "activationRequired": True,
         },
@@ -140,6 +141,11 @@ def _build_wrapper_summary_from_config_path(config_path: Path) -> dict[str, obje
             "manifest": str(manifest_path),
             "viewsSql": str(
                 wrapper_package_tool.resolve_configured_path(config_path, config["generatedFiles"]["viewsSql"]).resolve()
+            ),
+            "preprocessorLibrarySql": (
+                str(wrapper_package_tool.resolve_preprocessor_library_sql_path(config_path, config))
+                if wrapper_package_tool.resolve_preprocessor_library_sql_path(config_path, config) is not None
+                else None
             ),
             "preprocessorSql": str(
                 wrapper_package_tool.resolve_configured_path(
@@ -177,6 +183,7 @@ def _build_wrapper_artifacts(summary: dict[str, object]) -> dict[str, object]:
         "packageConfig": summary["packageConfig"],
         "manifest": summary["generatedFiles"]["manifest"],
         "viewsSql": summary["generatedFiles"]["viewsSql"],
+        "preprocessorLibrarySql": summary["generatedFiles"]["preprocessorLibrarySql"],
         "preprocessorSql": summary["generatedFiles"]["preprocessorSql"],
     }
     if "sourceManifest" in summary:
@@ -194,6 +201,7 @@ def _build_wrapper_objects(summary: dict[str, object]) -> dict[str, object]:
         "helperSchema": summary["helperSchema"],
         "preprocessorSchema": summary["preprocessor"]["schema"],
         "preprocessorScript": summary["preprocessor"]["script"],
+        "preprocessorLibraryScript": summary["preprocessor"].get("libraryScript"),
     }
     if "publicViews" in summary:
         objects["publicViews"] = summary["publicViews"]

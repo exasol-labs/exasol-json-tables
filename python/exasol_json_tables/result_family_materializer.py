@@ -184,10 +184,12 @@ def _install_ephemeral_wrapper_preprocessor(
     target_schema: str,
     manifests: list[dict[str, Any]],
 ) -> tuple[str, str]:
+    from .generate_preprocessor_library_sql import install_preprocessor_library
     from .generate_wrapper_preprocessor_sql import generate_wrapper_preprocessor_sql_text
     from .wrapper_package_tool import execute_generated_preprocessor_sql
 
     script_schema, script_name = _ephemeral_preprocessor_names(target_schema)
+    install_preprocessor_library(con, script_schema)
     sql_text = generate_wrapper_preprocessor_sql_text(
         schema=script_schema,
         script=script_name,

@@ -9,6 +9,7 @@ import pyexasol
 
 from .generate_json_export_helper_sql import install_json_export_helpers
 from .generate_json_export_views_sql import install_json_export_views
+from .generate_preprocessor_library_sql import install_preprocessor_library
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -123,12 +124,11 @@ def install_wrapper_preprocessor(
         )
 
     content = output_path.read_text()
-    script_marker = f"CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema_name}.{script_name} AS\n"
-    script_body = content.split(script_marker, 1)[1].split("\n/\n", 1)[0]
+    from .wrapper_package_tool import execute_generated_preprocessor_sql
 
     con.execute(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE")
-    con.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
-    con.execute(f"CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema_name}.{script_name} AS\n" + script_body + "\n/")
+    install_preprocessor_library(con, schema_name)
+    execute_generated_preprocessor_sql(con, content)
     con.execute(f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {schema_name}.{script_name}")
 
 

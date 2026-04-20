@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = ROOT / "dist" / "json_preprocessor.sql"
+DEFAULT_PREPROCESSOR_LIBRARY_SCRIPT = "JVS_PREPROCESSOR_LIB"
 IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
 
@@ -132,6 +133,40 @@ def render_lua_value(value: object, indent: int = 0) -> str:
 
 def render_lua_string_table(mapping: dict[str, object], indent: int = 0) -> str:
     return render_lua_value(mapping, indent)
+
+
+def _build_preprocessor_config(
+    *,
+    function_names: list[str],
+    blocked_function_names: list[str],
+    blocked_function_message: str,
+    allowed_schemas: list[str],
+    helper_schema_map: dict[str, str],
+    wrapper_group_config: dict[str, dict[str, dict[str, object]]] | None,
+    wrapper_visible_column_config: dict[str, dict[str, dict[str, bool]]] | None,
+    wrapper_to_json_config: dict[str, dict[str, dict[str, object]]] | None,
+    regular_to_json_row_object_function: str | None,
+    rewrite_path_identifiers: bool,
+    helper_function_kinds: dict[str, str] | None = None,
+) -> dict[str, object]:
+    helper_function_kinds = helper_function_kinds or {name: "explicit_null" for name in function_names}
+    example_allowed_schema = allowed_schemas[0] if allowed_schemas else "JSON_VIEW"
+    helper_rewrite_mode = "wrapper" if wrapper_group_config else "marker"
+    return {
+        "helper_kind_by_name": helper_function_kinds,
+        "blocked_functions": {name: True for name in blocked_function_names},
+        "blocked_function_message": blocked_function_message,
+        "allowed_json_schemas": {name: True for name in allowed_schemas},
+        "allowed_json_schema_list": ", ".join(allowed_schemas),
+        "example_allowed_schema": example_allowed_schema,
+        "helper_schema_by_allowed_schema": dict(sorted(helper_schema_map.items())),
+        "group_config_by_schema_and_table": wrapper_group_config or {},
+        "visible_columns_by_schema_and_table": wrapper_visible_column_config or {},
+        "to_json_config_by_schema_and_table": wrapper_to_json_config or {},
+        "regular_to_json_row_object_function": regular_to_json_row_object_function or "",
+        "helper_rewrite_mode": helper_rewrite_mode,
+        "rewrite_path_identifiers": rewrite_path_identifiers,
+    }
 
 
 COMMON_LUA = """
@@ -3966,44 +4001,42 @@ def render_sql(
     rewrite_path_identifiers: bool,
     activate_session: bool,
     helper_function_kinds: dict[str, str] | None = None,
+    library_script: str = DEFAULT_PREPROCESSOR_LIBRARY_SCRIPT,
 ) -> str:
+    validated_library_script = validate_identifier("Library script", library_script)
     helper_function_kinds = helper_function_kinds or {name: "explicit_null" for name in function_names}
     configured_function_names = list(helper_function_kinds.keys())
-    helper_kind_map_lua = render_lua_string_table(helper_function_kinds, 4)
     function_list_sql = ", ".join(configured_function_names) if configured_function_names else "(disabled)"
-    blocked_function_rows = "\n".join(f"        {name} = true," for name in blocked_function_names)
-    blocked_function_set_lua = "{\n" + blocked_function_rows + "\n    }"
     blocked_function_list_sql = ", ".join(blocked_function_names) if blocked_function_names else "(none)"
-    allowed_schema_rows = "\n".join(f"        {name} = true," for name in allowed_schemas)
-    allowed_schema_set_lua = "{\n" + allowed_schema_rows + "\n    }"
     allowed_schema_list_sql = ", ".join(allowed_schemas)
     example_allowed_schema = allowed_schemas[0] if allowed_schemas else "JSON_VIEW"
-    helper_schema_rows = "\n".join(
-        f"        {public_schema} = {helper_schema!r},"
-        for public_schema, helper_schema in sorted(helper_schema_map.items())
-    )
-    helper_schema_map_lua = "{\n" + helper_schema_rows + "\n    }" if helper_schema_rows else "{}"
     helper_schema_comment = (
         ", ".join(f"{public_schema}->{helper_schema}" for public_schema, helper_schema in sorted(helper_schema_map.items()))
         if helper_schema_map
         else "(none)"
     )
-    wrapper_group_config_lua = render_lua_string_table(wrapper_group_config or {}, 4)
-    wrapper_visible_columns_lua = render_lua_string_table(wrapper_visible_column_config or {}, 4)
-    wrapper_to_json_config_lua = render_lua_string_table(wrapper_to_json_config or {}, 4)
-    regular_to_json_row_object_function_lua = lua_quote_string(regular_to_json_row_object_function or "")
+    config_lua = render_lua_string_table(
+        _build_preprocessor_config(
+            function_names=function_names,
+            blocked_function_names=blocked_function_names,
+            blocked_function_message=blocked_function_message,
+            allowed_schemas=allowed_schemas,
+            helper_schema_map=helper_schema_map,
+            wrapper_group_config=wrapper_group_config,
+            wrapper_visible_column_config=wrapper_visible_column_config,
+            wrapper_to_json_config=wrapper_to_json_config,
+            regular_to_json_row_object_function=regular_to_json_row_object_function,
+            rewrite_path_identifiers=rewrite_path_identifiers,
+            helper_function_kinds=helper_function_kinds,
+        ),
+        4,
+    )
     has_variant_helpers = any(kind != "explicit_null" for kind in helper_function_kinds.values())
     if wrapper_group_config:
         helper_mode = "wrapper semantic helpers" if has_variant_helpers else "wrapper explicit-null joins"
     else:
         helper_mode = "CASE-marker compatibility helpers"
-    if not rewrite_path_identifiers:
-        path_comment = "disabled"
-        path_lua = DISABLED_MODE_LUA
-    else:
-        path_comment = "enabled (joins)"
-        path_lua = JOIN_MODE_LUA
-    helper_rewrite_lua = WRAPPER_EXPLICIT_NULL_HELPER_LUA if wrapper_group_config else MARKER_HELPER_REWRITE_LUA
+    path_comment = "enabled (joins)" if rewrite_path_identifiers else "disabled"
 
     activation_sql = ""
     if activate_session:
@@ -4024,165 +4057,14 @@ def render_sql(
 -- Helper schema mappings: {helper_schema_comment}
 -- Helper rewrite mode: {helper_mode}
 -- Path identifier rewrite: {path_comment}
+-- Imported library script: {schema}.{validated_library_script}
 
 CREATE SCHEMA IF NOT EXISTS {schema};
 
 CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {schema}.{script} AS
-    local HELPER_KIND_BY_NAME = {helper_kind_map_lua}
-    local BLOCKED_FUNCTIONS = {blocked_function_set_lua}
-    local BLOCKED_FUNCTION_MESSAGE = {blocked_function_message!r}
-    local ALLOWED_JSON_SCHEMAS = {allowed_schema_set_lua}
-    local ALLOWED_JSON_SCHEMA_LIST = {allowed_schema_list_sql!r}
-    local EXAMPLE_ALLOWED_SCHEMA = {example_allowed_schema!r}
-    local HELPER_SCHEMA_BY_ALLOWED_SCHEMA = {helper_schema_map_lua}
-    local GROUP_CONFIG_BY_SCHEMA_AND_TABLE = {wrapper_group_config_lua}
-    local VISIBLE_COLUMNS_BY_SCHEMA_AND_TABLE = {wrapper_visible_columns_lua}
-    local TO_JSON_CONFIG_BY_SCHEMA_AND_TABLE = {wrapper_to_json_config_lua}
-    local REGULAR_TO_JSON_ROW_OBJECT_FUNCTION = {regular_to_json_row_object_function_lua}
-
-    local function raise_function_error(function_name, message)
-        error("JVS-FUNCTION-ERROR: " .. function_name .. ": " .. message, 0)
-    end
-
-    local function raise_scope_error(feature_name, message)
-        error(
-            "JVS-SCOPE-ERROR: " .. feature_name
-                .. " is only available for configured JSON schemas ("
-                .. ALLOWED_JSON_SCHEMA_LIST .. "). "
-                .. message,
-            0
-        )
-    end
-
-    local function json_schema_scope_example()
-        return 'Qualify the JSON table in FROM/JOIN using one of the configured JSON schemas, '
-                .. 'for example FROM "' .. EXAMPLE_ALLOWED_SCHEMA .. '"."<ROOT_TABLE>".'
-    end
-
-    local function normalize(token)
-        return sqlparsing.normalize(token)
-    end
-
-    local function is_ignored(token)
-        return sqlparsing.iswhitespaceorcomment(token)
-    end
-{COMMON_LUA}
-{ARRAY_ITERATION_LUA}
-{path_lua}
-
-    local function next_significant(tokens, index)
-        local current = index
-        while current <= #tokens and is_ignored(tokens[current]) do
-            current = current + 1
-        end
-        return current
-    end
-
-    local function read_call(tokens, start_index)
-        local identifier_index = next_significant(tokens, start_index)
-        if identifier_index > #tokens then
-            return nil
-        end
-
-        local current = identifier_index
-        local identifier_parts = parse_identifier_token(tokens[current])
-        if identifier_parts == nil then
-            return nil
-        end
-
-        local last_identifier = normalize(identifier_parts[#identifier_parts])
-        if last_identifier == nil then
-            return nil
-        end
-
-        while true do
-            local dot_index = next_significant(tokens, current + 1)
-            if dot_index > #tokens or tokens[dot_index] ~= "." then
-                break
-            end
-            local next_identifier = next_significant(tokens, dot_index + 1)
-            if next_identifier > #tokens then
-                return nil
-            end
-            current = next_identifier
-            local next_identifier_parts = parse_identifier_token(tokens[current])
-            if next_identifier_parts == nil then
-                return nil
-            end
-            last_identifier = normalize(next_identifier_parts[#next_identifier_parts])
-            if last_identifier == nil then
-                return nil
-            end
-        end
-
-        local opening_paren = next_significant(tokens, current + 1)
-        if opening_paren > #tokens or tokens[opening_paren] ~= "(" then
-            return nil
-        end
-
-        return {{
-            last_identifier = last_identifier,
-            opening_paren = opening_paren
-        }}
-    end
-
-    local function find_matching_paren(tokens, opening_paren)
-        local depth = 1
-        local top_level_commas = 0
-        local index = opening_paren + 1
-        while index <= #tokens do
-            if not is_ignored(tokens[index]) then
-                if tokens[index] == "(" then
-                    depth = depth + 1
-                elseif tokens[index] == ")" then
-                    depth = depth - 1
-                    if depth == 0 then
-                        return index, top_level_commas
-                    end
-                elseif tokens[index] == "," and depth == 1 then
-                    top_level_commas = top_level_commas + 1
-                end
-            end
-            index = index + 1
-        end
-        return nil, nil
-    end
-
-    local function has_expression_argument(tokens, opening_paren, closing_paren)
-        for index = opening_paren + 1, closing_paren - 1 do
-            if not is_ignored(tokens[index]) then
-                return true
-            end
-        end
-        return false
-    end
-
-    local function helper_query_targets_allowed_schema(sqltext)
-        local path_tokens = tokenize_path_sql(sqltext)
-        local base_binding = read_base_source_binding_from_path_tokens(path_tokens)
-        if base_binding == nil then
-            return false, json_schema_scope_example()
-        end
-        if base_binding.kind == "derived_source" then
-            return false,
-                    'JSON helper functions do not resolve through derived tables yet. '
-                    .. 'Move the helper call into the inner SELECT or query the wrapper view directly.'
-        end
-        if base_binding.kind ~= "json_source" or not table_reference_is_in_allowed_schema(base_binding) then
-            return false, json_schema_scope_example()
-        end
-        return true, nil
-    end
-{helper_rewrite_lua}
-
-    local function rewrite(sqltext)
-        local rewritten_sql = rewrite_array_iteration_in_sql(sqltext)
-        rewritten_sql = rewrite_path_identifiers_in_sql(rewritten_sql)
-        rewritten_sql = rewrite_helper_calls_in_sql(rewritten_sql)
-        return rewritten_sql
-    end
-
-    sqlparsing.setsqltext(rewrite(sqlparsing.getsqltext()))
+    exa.import("{schema}.{validated_library_script}", "JVS_PREPROCESSOR_LIB")
+    local CONFIG = {config_lua}
+    sqlparsing.setsqltext(JVS_PREPROCESSOR_LIB.rewrite(sqlparsing.getsqltext(), CONFIG))
 /
 {activation_sql}
 

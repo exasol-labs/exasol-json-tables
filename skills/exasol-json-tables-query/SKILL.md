@@ -47,6 +47,8 @@ Start with:
 
 Most important tests:
 
+- `tools/test_nano_preprocessor_parser_lane.py`
+- `tests/test_preprocessor_refactor_phase0.py`
 - `tests/test_wrapper_surface.py`
 - `tests/test_wrapper_to_json.py`
 - `tests/test_regular_table_to_json.py`
@@ -145,6 +147,10 @@ The preprocessor is not optional sugar from a product perspective. It is part of
 
 Use these as the main regression surface:
 
+- dedicated parser-heavy lane:
+  - `python3 tools/test_nano_preprocessor_parser_lane.py`
+- preprocessor parser/stability baseline:
+  - `python3 tests/test_preprocessor_refactor_phase0.py`
 - wrapper semantics:
   - `python3 tests/test_wrapper_surface.py`
 - wrapper `TO_JSON(...)` semantics:

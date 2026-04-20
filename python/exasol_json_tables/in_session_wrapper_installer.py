@@ -5,6 +5,10 @@ from typing import Any
 
 from .generate_json_export_helper_sql import install_json_export_helpers
 from .generate_json_export_views_sql import install_json_export_views
+from .generate_preprocessor_library_sql import (
+    install_preprocessor_library,
+)
+from .generate_preprocessor_sql import DEFAULT_PREPROCESSOR_LIBRARY_SCRIPT
 from .generate_preprocessor_sql import validate_identifier
 from .generate_wrapper_preprocessor_sql import (
     DEFAULT_EXPLICIT_NULL_FUNCTION_NAMES,
@@ -50,6 +54,7 @@ class InSessionWrapperInstallResult:
     views_sql: str
     preprocessor_schema: str | None = None
     preprocessor_script: str | None = None
+    preprocessor_library_script: str | None = None
     preprocessor_sql: str | None = None
 
 
@@ -140,18 +145,16 @@ def install_wrapper_preprocessor_in_session(
         blocked_helper_message=blocked_helper_message,
         activate_session=activate_session,
     )
-
-    script_marker = f"CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {validated_schema}.{validated_script} AS\n"
-    script_body = sql_text.split(script_marker, 1)[1].split("\n/\n", 1)[0]
+    from .wrapper_package_tool import execute_generated_preprocessor_sql
 
     if reset_schema:
         con.execute(f"DROP SCHEMA IF EXISTS {validated_schema} CASCADE")
-    con.execute(f"CREATE SCHEMA IF NOT EXISTS {validated_schema}")
-    con.execute(
-        f"CREATE OR REPLACE LUA PREPROCESSOR SCRIPT {validated_schema}.{validated_script} AS\n"
-        + script_body
-        + "\n/"
+    install_preprocessor_library(
+        con,
+        validated_schema,
+        DEFAULT_PREPROCESSOR_LIBRARY_SCRIPT,
     )
+    execute_generated_preprocessor_sql(con, sql_text)
     if activate_session:
         con.execute(f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {validated_schema}.{validated_script}")
 
@@ -163,6 +166,7 @@ def install_wrapper_preprocessor_in_session(
         views_sql="",
         preprocessor_schema=validated_schema,
         preprocessor_script=validated_script,
+        preprocessor_library_script=DEFAULT_PREPROCESSOR_LIBRARY_SCRIPT,
         preprocessor_sql=sql_text,
     )
 
@@ -220,5 +224,6 @@ def install_wrapper_surface_in_session(
         views_sql=views_result.views_sql,
         preprocessor_schema=preprocessor_result.preprocessor_schema,
         preprocessor_script=preprocessor_result.preprocessor_script,
+        preprocessor_library_script=preprocessor_result.preprocessor_library_script,
         preprocessor_sql=preprocessor_result.preprocessor_sql,
     )
