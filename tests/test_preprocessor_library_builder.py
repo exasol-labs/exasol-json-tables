@@ -58,7 +58,11 @@ def test_library_builder_resolves_all_placeholders() -> None:
     assert "function rewrite(sqltext, config)" in body
     assert "rewrite_with_shared_query_block_walker" in body
     assert "query_might_need_runtime_rewrite" in body
+    assert "query_might_need_helper_rewrite" in body
+    assert "query_might_need_path_rewrite" in body
+    assert "query_might_need_shared_walker_rewrite" in body
     assert "if not query_might_need_runtime_rewrite(sqltext) then" in body
+    assert "if not query_might_need_shared_walker_rewrite(rewritten_sql) then" in body
     assert "raw_text_reference_known_helper" in body
     assert "quoted_identifier_contains_path_syntax" in body
     assert "raw_text_might_need_iterator_rewrite" in body

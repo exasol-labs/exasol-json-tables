@@ -190,9 +190,32 @@ RUNTIME_PIPELINE_LUA = """
         return string.find(raw_sqltext, '%f[%w]IN%f[%W]%s*[A-Za-z_][A-Za-z0-9_]*%s*%.%s*"', 1) ~= nil
     end
 
+    local function query_might_need_helper_rewrite(raw_sqltext)
+        return raw_text_reference_known_helper(string.upper(raw_sqltext))
+    end
+
+    local function query_might_need_path_rewrite(raw_sqltext)
+        if not REWRITE_PATH_IDENTIFIERS then
+            return false
+        end
+        if string.find(raw_sqltext, '"', 1, true) == nil then
+            return false
+        end
+        if string.find(raw_sqltext, "[", 1, true) ~= nil then
+            return true
+        end
+        if quoted_identifier_contains_path_syntax(raw_sqltext) then
+            return true
+        end
+        return false
+    end
+
+    local function query_might_need_shared_walker_rewrite(raw_sqltext)
+        return query_might_need_path_rewrite(raw_sqltext) or query_might_need_helper_rewrite(raw_sqltext)
+    end
+
     local function query_might_need_runtime_rewrite(raw_sqltext)
-        local raw_sqltext_upper = string.upper(raw_sqltext)
-        if raw_text_reference_known_helper(raw_sqltext_upper) then
+        if query_might_need_helper_rewrite(raw_sqltext) then
             return true
         end
         if string.find(raw_sqltext, '"', 1, true) == nil then
@@ -226,13 +249,19 @@ RUNTIME_PIPELINE_LUA = """
 
     local function rewrite_query_block_pipeline_sql(query_sql)
         local rewritten_sql = query_sql
-        if REWRITE_PATH_IDENTIFIERS then
+        if query_might_need_path_rewrite(query_sql) then
             rewritten_sql = rewrite_path_query_block_sql(rewritten_sql)
         end
         if HELPER_REWRITE_MODE == "wrapper" then
-            return rewrite_helper_query_block_sql(rewritten_sql)
+            if query_might_need_helper_rewrite(rewritten_sql) then
+                return rewrite_helper_query_block_sql(rewritten_sql)
+            end
+            return rewritten_sql
         end
-        return rewrite_helper_query_block_sql_marker_mode(rewritten_sql)
+        if query_might_need_helper_rewrite(rewritten_sql) then
+            return rewrite_helper_query_block_sql_marker_mode(rewritten_sql)
+        end
+        return rewritten_sql
     end
 
     local function rewrite_with_shared_query_block_walker(raw_sqltext)
@@ -244,6 +273,9 @@ RUNTIME_PIPELINE_LUA = """
     end
 
     local rewritten_sql = rewrite_array_iteration_in_sql(sqltext)
+    if not query_might_need_shared_walker_rewrite(rewritten_sql) then
+        return rewritten_sql
+    end
     return rewrite_with_shared_query_block_walker(rewritten_sql)
 """
 
