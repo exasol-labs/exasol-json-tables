@@ -18,6 +18,10 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
   - `describe wrapper --json`
   - `describe wrappers --json`
 - Added support for `TO_JSON(item.*)` on object-array iterator rows, so joined array items can now be serialized directly from the wrapper surface.
+- Added broader iterator-row `TO_JSON(...)` coverage for wrapped array items, including:
+  - `TO_JSON(item.*)`
+  - subset forms such as `TO_JSON(item."sku", item."name", ...)`
+  - use inside CTEs on expanded array rows
 - Added [docs/identifier-conventions.md](docs/identifier-conventions.md) and aligned the agent skills with explicit guidance for quoted wrapper references, uppercase durable aliases, and reserved-word avoidance.
 
 ### Changed
@@ -34,6 +38,9 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 - Fixed `describe wrappers --json` so each wrapper entry includes top-level `wrapperSchema`, `helperSchema`, `sourceSchema`, and `publicViews`.
 - Fixed wrapper workflow visibility around actual public view names. `--name` still controls derived schema/package names, and the actual public views are now surfaced explicitly in JSON responses and documented in the user docs.
 - Fixed the installed-package hidden export surface so validation and helper-object expectations include all required export views.
+- Fixed a shape-dependent iterator-row `TO_JSON(...)` failure on wrapped object arrays such as `orders.items`, where queries like `TO_JSON(i.*)` or `TO_JSON(i."sku", i."name")` could fail or return incomplete results.
+- Fixed iterator-row `TO_JSON(...)` behavior for wrapped child tables that are keyed by multiple structural columns, so child export joins now line up with the full table-family contract instead of relying on a simplified row-key heuristic.
+- Fixed a related preprocessor rewrite issue where generated iterator/derived sources could lose the correct join insertion point during later rewrite stages. This hardens both iterator-row `TO_JSON(...)` and qualified iterator-path rewrites.
 
 ### Migration Notes
 

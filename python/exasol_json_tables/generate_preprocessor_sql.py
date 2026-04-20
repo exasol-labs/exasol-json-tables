@@ -400,6 +400,24 @@ COMMON_LUA = """
         return current
     end
 
+    local function find_matching_raw_paren(tokens, opening_index)
+        local depth = 0
+        local index = opening_index
+        while index <= #tokens do
+            local token = tokens[index]
+            if token == "(" then
+                depth = depth + 1
+            elseif token == ")" then
+                depth = depth - 1
+                if depth == 0 then
+                    return index
+                end
+            end
+            index = index + 1
+        end
+        return nil
+    end
+
     local is_clause_keyword
     local is_join_keyword
 
@@ -447,17 +465,33 @@ COMMON_LUA = """
                 local normalized = normalize(token)
                 if normalized == "FROM" or normalized == "JOIN" then
                     local table_index = next_significant_raw(tokens, index + 1)
-                    local table_parts = parse_identifier_token(tokens[table_index])
-                    if table_parts ~= nil then
-                        local alias_name, alias_end_index = read_alias_after_table(tokens, table_index)
-                        out[#out + 1] = {
-                            catalog_name = (#table_parts >= 3) and table_parts[#table_parts - 2] or nil,
-                            schema_name = (#table_parts >= 2) and table_parts[#table_parts - 1] or nil,
-                            table_name = table_parts[#table_parts],
-                            alias_name = alias_name,
-                            insert_after_index = alias_end_index
-                        }
-                        index = alias_end_index
+                    if table_index <= #tokens and tokens[table_index] == "(" then
+                        local closing_index = find_matching_raw_paren(tokens, table_index)
+                        if closing_index ~= nil then
+                            local alias_name, alias_end_index = read_alias_after_table(tokens, closing_index)
+                            if alias_name ~= nil then
+                                out[#out + 1] = {
+                                    table_name = alias_name,
+                                    alias_name = alias_name,
+                                    kind = "derived_source",
+                                    insert_after_index = alias_end_index
+                                }
+                                index = alias_end_index
+                            end
+                        end
+                    else
+                        local table_parts = parse_identifier_token(tokens[table_index])
+                        if table_parts ~= nil then
+                            local alias_name, alias_end_index = read_alias_after_table(tokens, table_index)
+                            out[#out + 1] = {
+                                catalog_name = (#table_parts >= 3) and table_parts[#table_parts - 2] or nil,
+                                schema_name = (#table_parts >= 2) and table_parts[#table_parts - 1] or nil,
+                                table_name = table_parts[#table_parts],
+                                alias_name = alias_name,
+                                insert_after_index = alias_end_index
+                            }
+                            index = alias_end_index
+                        end
                     end
                 end
             end
@@ -2900,8 +2934,9 @@ WRAPPER_EXPLICIT_NULL_HELPER_LUA = """
             elseif depth == 0 then
                 local prefix = read_join_prefix_at(tokens, index)
                 if prefix ~= nil then
-                    local binding, _ = read_standard_source_binding(tokens, prefix.end_index + 1)
+                    local binding, insert_after_index = read_standard_source_binding(tokens, prefix.end_index + 1)
                     if binding ~= nil then
+                        binding.insert_after_index = insert_after_index
                         local alias_key = normalize_identifier_value(binding.alias_name or binding.table_name)
                         if alias_key ~= nil then
                             lookup[alias_key] = binding

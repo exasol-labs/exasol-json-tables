@@ -1,0 +1,158 @@
+[
+  {
+    "order_id": "ORD-001",
+    "customer": {
+      "id": "C001",
+      "email": "alice@corp.com",
+      "tier": "gold",
+      "address": {
+        "city": "Berlin",
+        "country": "DE",
+        "zip": "10115"
+      }
+    },
+    "items": [
+      {
+        "sku": "P001",
+        "name": "Wireless Mouse",
+        "qty": 2,
+        "unit_price": 29.99,
+        "discount": 0.1
+      },
+      {
+        "sku": "P003",
+        "name": "USB-C Hub",
+        "qty": 1,
+        "unit_price": 49.99,
+        "discount": 0
+      }
+    ],
+    "payment": {
+      "method": "card",
+      "last4": "4242",
+      "currency": "EUR"
+    },
+    "status": "delivered",
+    "total": 103.97,
+    "tags": [
+      "repeat",
+      "bulk"
+    ],
+    "created_at": "2026-03-10T12:00:00Z"
+  },
+  {
+    "order_id": "ORD-002",
+    "customer": {
+      "id": "C002",
+      "email": "bob@startup.io",
+      "tier": "silver",
+      "address": {
+        "city": "Tokyo",
+        "country": "JP",
+        "zip": "100-0001"
+      }
+    },
+    "items": [
+      {
+        "sku": "P002",
+        "name": "Keyboard K900",
+        "qty": 1,
+        "unit_price": 89.99,
+        "discount": 0
+      }
+    ],
+    "payment": {
+      "method": "paypal",
+      "last4": null,
+      "currency": "JPY"
+    },
+    "status": "shipped",
+    "total": 89.99,
+    "tags": [
+      "new"
+    ],
+    "created_at": "2026-03-11T09:30:00Z"
+  },
+  {
+    "order_id": "ORD-003",
+    "customer": {
+      "id": "C001",
+      "email": "alice@corp.com",
+      "tier": "gold",
+      "address": {
+        "city": "Berlin",
+        "country": "DE",
+        "zip": "10115"
+      }
+    },
+    "items": [
+      {
+        "sku": "P001",
+        "name": "Wireless Mouse",
+        "qty": 5,
+        "unit_price": 26.99,
+        "discount": 0.1
+      },
+      {
+        "sku": "P002",
+        "name": "Keyboard K900",
+        "qty": 2,
+        "unit_price": 79.99,
+        "discount": 0.1
+      }
+    ],
+    "payment": {
+      "method": "invoice",
+      "last4": null,
+      "currency": "EUR"
+    },
+    "status": "processing",
+    "total": 294.73,
+    "tags": [
+      "repeat",
+      "bulk",
+      "vip"
+    ],
+    "created_at": "2026-03-14T16:45:00Z"
+  },
+  {
+    "order_id": "ORD-004",
+    "customer": {
+      "id": "C003",
+      "email": "charlie@example.com",
+      "tier": "bronze",
+      "address": {
+        "city": "New York",
+        "country": "US",
+        "zip": "10001"
+      }
+    },
+    "items": [
+      {
+        "sku": "P003",
+        "name": "USB-C Hub",
+        "qty": 1,
+        "unit_price": 49.99,
+        "discount": 0
+      },
+      {
+        "sku": "P004",
+        "name": "Webcam",
+        "qty": 1,
+        "unit_price": 39.99,
+        "discount": 0
+      }
+    ],
+    "payment": {
+      "method": "card",
+      "last4": "5555",
+      "currency": "USD"
+    },
+    "status": "pending",
+    "total": 89.98,
+    "tags": [
+      "new"
+    ],
+    "created_at": "2026-03-15T08:00:00Z"
+  }
+]

@@ -275,8 +275,10 @@ def _build_to_json_config(manifests: list[dict]) -> dict[str, dict[str, dict[str
         roots_by_table = {str(root["tableName"]).upper(): root for root in manifest["roots"]}
         root_table_names = set(roots_by_table)
         relation_kind_by_child_table: dict[str, str] = {}
+        parent_table_names: set[str] = set()
         for root in manifest["roots"]:
             for relationship in root["relationships"]:
+                parent_table_names.add(str(relationship["parentTable"]).upper())
                 relation_kind_by_child_table[str(relationship["childTable"]).upper()] = str(relationship["relationKind"])
 
         for table in manifest["tables"]:
@@ -297,12 +299,11 @@ def _build_to_json_config(manifests: list[dict]) -> dict[str, dict[str, dict[str
                 argument_to_fragment[normalized_visible_name] = fragment_column
                 display_name_by_argument[normalized_visible_name] = str(visible_name)
 
-            row_key_source_columns = ["_id"]
-            if table_name not in root_table_names:
-                if relation_kind_by_child_table.get(table_name) == "array":
-                    row_key_source_columns = ["_parent", "_pos"]
-                else:
-                    row_key_source_columns = ["_id"]
+            row_key_source_columns: list[str] = []
+            if table_name in root_table_names or table_name in parent_table_names or relation_kind_by_child_table.get(table_name) != "array":
+                row_key_source_columns.append("_id")
+            if relation_kind_by_child_table.get(table_name) == "array":
+                row_key_source_columns.extend(["_parent", "_pos"])
 
             helper_schema_tables[table_name] = {
                 "rootTable": table_name,
