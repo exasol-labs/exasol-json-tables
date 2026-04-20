@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # These tests should stay sequential because they share Nano-backed fixture schemas.
 PARSER_LANE_TESTS = [
     "tests/test_preprocessor_refactor_phase0.py",
+    "tests/test_preprocessor_early_out.py",
     "tests/test_wrapper_errors.py",
     "tests/test_wrapper_to_json.py",
     "tests/test_wrapper_surface.py",

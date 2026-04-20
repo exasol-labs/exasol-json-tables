@@ -5,56 +5,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .generate_preprocessor_sql import (
-    ARRAY_ITERATION_LUA,
-    COMMON_LUA,
-    DEFAULT_PREPROCESSOR_LIBRARY_SCRIPT,
-    DISABLED_MODE_LUA,
-    JOIN_MODE_LUA,
-    MARKER_HELPER_REWRITE_LUA,
-    ROOT,
-    WRAPPER_EXPLICIT_NULL_HELPER_LUA,
-    validate_identifier,
-)
+from .generate_preprocessor_sql import DEFAULT_PREPROCESSOR_LIBRARY_SCRIPT, ROOT, validate_identifier
+from .preprocessor_library_builder import generate_preprocessor_library_body
 
 
 DEFAULT_OUTPUT = ROOT / "dist" / "exasol-json-tables" / "json_preprocessor_library.sql"
-LIBRARY_TEMPLATE_PATH = Path(__file__).resolve().parent / "preprocessor_assets" / "jvs_preprocessor_lib.lua"
-
-
-def _rename_local_function(block: str, original_name: str, renamed_name: str) -> str:
-    original = f"local function {original_name}("
-    replacement = f"local function {renamed_name}("
-    if original not in block:
-        raise ValueError(f"Could not find Lua function {original_name!r} in the shared preprocessor block.")
-    return block.replace(original, replacement, 1)
-
-
-def generate_preprocessor_library_body() -> str:
-    template = LIBRARY_TEMPLATE_PATH.read_text()
-    replacements = {
-        "__COMMON_LUA__": COMMON_LUA.strip("\n"),
-        "__ARRAY_ITERATION_LUA__": ARRAY_ITERATION_LUA.strip("\n"),
-        "__JOIN_MODE_LUA__": _rename_local_function(
-            JOIN_MODE_LUA.strip("\n"),
-            "rewrite_path_identifiers_in_sql",
-            "rewrite_path_identifiers_in_sql_join_mode",
-        ),
-        "__DISABLED_MODE_LUA__": _rename_local_function(
-            DISABLED_MODE_LUA.strip("\n"),
-            "rewrite_path_identifiers_in_sql",
-            "rewrite_path_identifiers_in_sql_disabled",
-        ),
-        "__MARKER_HELPER_REWRITE_LUA__": MARKER_HELPER_REWRITE_LUA.strip("\n"),
-        "__WRAPPER_HELPER_REWRITE_LUA__": _rename_local_function(
-            WRAPPER_EXPLICIT_NULL_HELPER_LUA.strip("\n"),
-            "rewrite_helper_calls_in_sql",
-            "rewrite_helper_calls_in_sql_wrapper_mode",
-        ),
-    }
-    for placeholder, value in replacements.items():
-        template = template.replace(placeholder, value)
-    return template.strip() + "\n"
 
 
 def generate_preprocessor_library_sql_text(

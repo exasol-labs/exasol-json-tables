@@ -40,119 +40,17 @@ function rewrite(sqltext, config)
     local function is_ignored(token)
         return sqlparsing.iswhitespaceorcomment(token)
     end
-__COMMON_LUA__
+__PARSER_CORE_LUA__
 
 __ARRAY_ITERATION_LUA__
 
-__JOIN_MODE_LUA__
+__PATH_REWRITE_LUA__
 
-__DISABLED_MODE_LUA__
+__PATH_REWRITE_DISABLED_LUA__
 
-    local function next_significant(tokens, index)
-        local current = index
-        while current <= #tokens and is_ignored(tokens[current]) do
-            current = current + 1
-        end
-        return current
-    end
+__HELPER_CORE_LUA__
 
-    local function read_call(tokens, start_index)
-        local identifier_index = next_significant(tokens, start_index)
-        if identifier_index > #tokens then
-            return nil
-        end
-
-        local current = identifier_index
-        local identifier_parts = parse_identifier_token(tokens[current])
-        if identifier_parts == nil then
-            return nil
-        end
-
-        local last_identifier = normalize(identifier_parts[#identifier_parts])
-        if last_identifier == nil then
-            return nil
-        end
-
-        while true do
-            local dot_index = next_significant(tokens, current + 1)
-            if dot_index > #tokens or tokens[dot_index] ~= "." then
-                break
-            end
-            local next_identifier = next_significant(tokens, dot_index + 1)
-            if next_identifier > #tokens then
-                return nil
-            end
-            current = next_identifier
-            local next_identifier_parts = parse_identifier_token(tokens[current])
-            if next_identifier_parts == nil then
-                return nil
-            end
-            last_identifier = normalize(next_identifier_parts[#next_identifier_parts])
-            if last_identifier == nil then
-                return nil
-            end
-        end
-
-        local opening_paren = next_significant(tokens, current + 1)
-        if opening_paren > #tokens or tokens[opening_paren] ~= "(" then
-            return nil
-        end
-
-        return {
-            last_identifier = last_identifier,
-            opening_paren = opening_paren
-        }
-    end
-
-    local function find_matching_paren(tokens, opening_paren)
-        local depth = 1
-        local top_level_commas = 0
-        local index = opening_paren + 1
-        while index <= #tokens do
-            if not is_ignored(tokens[index]) then
-                if tokens[index] == "(" then
-                    depth = depth + 1
-                elseif tokens[index] == ")" then
-                    depth = depth - 1
-                    if depth == 0 then
-                        return index, top_level_commas
-                    end
-                elseif tokens[index] == "," and depth == 1 then
-                    top_level_commas = top_level_commas + 1
-                end
-            end
-            index = index + 1
-        end
-        return nil, nil
-    end
-
-    local function has_expression_argument(tokens, opening_paren, closing_paren)
-        for index = opening_paren + 1, closing_paren - 1 do
-            if not is_ignored(tokens[index]) then
-                return true
-            end
-        end
-        return false
-    end
-
-    local function helper_query_targets_allowed_schema(sqltext)
-        local path_tokens = tokenize_path_sql(sqltext)
-        local base_binding = read_base_source_binding_from_path_tokens(path_tokens)
-        if base_binding == nil then
-            return false, json_schema_scope_example()
-        end
-        if base_binding.kind == "derived_source" then
-            return false,
-                    'JSON helper functions do not resolve through derived tables yet. '
-                    .. 'Move the helper call into the inner SELECT or query the wrapper view directly.'
-        end
-        if base_binding.kind ~= "json_source" or not table_reference_is_in_allowed_schema(base_binding) then
-            return false, json_schema_scope_example()
-        end
-        return true, nil
-    end
-
-__MARKER_HELPER_REWRITE_LUA__
+__HELPER_MARKER_LUA__
 
     local function rewrite_helper_query_block_sql_marker_mode(sqltext)
         local tokens = sqlparsing.tokenize(sqltext)
@@ -181,24 +79,7 @@ __MARKER_HELPER_REWRITE_LUA__
         return rewrite_sql_with_query_blocks(raw_sqltext, rewrite_helper_query_block_sql_marker_mode)
     end
 
-__WRAPPER_HELPER_REWRITE_LUA__
+__HELPER_WRAPPER_LUA__
 
-    local function rewrite_path_identifiers_in_sql_dispatch(raw_sqltext)
-        if REWRITE_PATH_IDENTIFIERS then
-            return rewrite_path_identifiers_in_sql_join_mode(raw_sqltext)
-        end
-        return rewrite_path_identifiers_in_sql_disabled(raw_sqltext)
-    end
-
-    local function rewrite_helper_calls_in_sql_dispatch(raw_sqltext)
-        if HELPER_REWRITE_MODE == "wrapper" then
-            return rewrite_helper_calls_in_sql_wrapper_mode(raw_sqltext)
-        end
-        return rewrite_helper_calls_in_sql_marker_mode(raw_sqltext)
-    end
-
-    local rewritten_sql = rewrite_array_iteration_in_sql(sqltext)
-    rewritten_sql = rewrite_path_identifiers_in_sql_dispatch(rewritten_sql)
-    rewritten_sql = rewrite_helper_calls_in_sql_dispatch(rewritten_sql)
-    return rewritten_sql
+__RUNTIME_PIPELINE_LUA__
 end

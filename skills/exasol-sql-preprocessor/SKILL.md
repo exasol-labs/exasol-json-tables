@@ -52,7 +52,9 @@ If you are working in this repository, also inspect:
 - `tools/wrapper_package_tool.py`
 - `tools/test_nano_preprocessor_parser_lane.py`
 - regenerate wrapper artifacts under `dist/exasol-json-tables/` when you need concrete generated SQL or package examples
+- `tests/test_preprocessor_library_builder.py`
 - `tests/test_preprocessor_refactor_phase0.py`
+- `tests/test_preprocessor_early_out.py`
 - `tests/test_wrapper_surface.py`
 - `tests/test_wrapper_errors.py`
 - `tests/test_wrapper_evaluation.py`

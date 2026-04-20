@@ -109,6 +109,19 @@ Verifies:
 - nested-subquery `TO_JSON(*)` rewriting
 - generated generic, shared-library, and wrapper preprocessor artifact sizes against recorded guard bands
 
+## Preprocessor Library Builder
+
+```bash
+python3 tests/test_preprocessor_library_builder.py
+```
+
+Verifies:
+
+- the shared preprocessor library is assembled from a named module inventory
+- module markers are emitted into the generated runtime body
+- the shared library output has no unresolved builder placeholders
+- the authoritative builder path remains explicit before Nano-backed parser tests run
+
 ## Preprocessor Parser Lane
 
 ```bash
@@ -120,6 +133,7 @@ Use this as the dedicated parser-heavy regression lane before and during preproc
 It runs the parser-sensitive Nano-backed tests sequentially:
 
 - `tests/test_preprocessor_refactor_phase0.py`
+- `tests/test_preprocessor_early_out.py`
 - `tests/test_wrapper_errors.py`
 - `tests/test_wrapper_to_json.py`
 - `tests/test_wrapper_surface.py`

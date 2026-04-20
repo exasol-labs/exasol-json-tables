@@ -216,45 +216,46 @@ COMMON_LUA = """
     end
 
     local function tokenize_path_sql(sqltext)
+        local canonical_sqltext = table.concat(sqlparsing.tokenize(sqltext))
         local tokens = {}
         local index = 1
-        while index <= #sqltext do
-            local ch = string.sub(sqltext, index, index)
-            local next_ch = string.sub(sqltext, index + 1, index + 1)
+        while index <= #canonical_sqltext do
+            local ch = string.sub(canonical_sqltext, index, index)
+            local next_ch = string.sub(canonical_sqltext, index + 1, index + 1)
             if string.match(ch, "%s") then
                 local start_index = index
                 repeat
                     index = index + 1
-                    ch = string.sub(sqltext, index, index)
-                until index > #sqltext or not string.match(ch, "%s")
-                tokens[#tokens + 1] = {type = "whitespace", text = string.sub(sqltext, start_index, index - 1)}
+                    ch = string.sub(canonical_sqltext, index, index)
+                until index > #canonical_sqltext or not string.match(ch, "%s")
+                tokens[#tokens + 1] = {type = "whitespace", text = string.sub(canonical_sqltext, start_index, index - 1)}
             elseif ch == "-" and next_ch == "-" then
                 local start_index = index
                 index = index + 2
-                while index <= #sqltext and string.sub(sqltext, index, index) ~= "\\n" do
+                while index <= #canonical_sqltext and string.sub(canonical_sqltext, index, index) ~= "\\n" do
                     index = index + 1
                 end
-                if index <= #sqltext then
+                if index <= #canonical_sqltext then
                     index = index + 1
                 end
-                tokens[#tokens + 1] = {type = "comment", text = string.sub(sqltext, start_index, index - 1)}
+                tokens[#tokens + 1] = {type = "comment", text = string.sub(canonical_sqltext, start_index, index - 1)}
             elseif ch == "/" and next_ch == "*" then
                 local start_index = index
                 index = index + 2
-                while index <= #sqltext - 1 and string.sub(sqltext, index, index + 1) ~= "*/" do
+                while index <= #canonical_sqltext - 1 and string.sub(canonical_sqltext, index, index + 1) ~= "*/" do
                     index = index + 1
                 end
-                if index <= #sqltext - 1 then
+                if index <= #canonical_sqltext - 1 then
                     index = index + 2
                 end
-                tokens[#tokens + 1] = {type = "comment", text = string.sub(sqltext, start_index, index - 1)}
+                tokens[#tokens + 1] = {type = "comment", text = string.sub(canonical_sqltext, start_index, index - 1)}
             elseif ch == "'" then
                 local start_index = index
                 index = index + 1
-                while index <= #sqltext do
-                    local current = string.sub(sqltext, index, index)
+                while index <= #canonical_sqltext do
+                    local current = string.sub(canonical_sqltext, index, index)
                     if current == "'" then
-                        if string.sub(sqltext, index + 1, index + 1) == "'" then
+                        if string.sub(canonical_sqltext, index + 1, index + 1) == "'" then
                             index = index + 2
                         else
                             index = index + 1
@@ -264,14 +265,14 @@ COMMON_LUA = """
                         index = index + 1
                     end
                 end
-                tokens[#tokens + 1] = {type = "string", text = string.sub(sqltext, start_index, index - 1)}
+                tokens[#tokens + 1] = {type = "string", text = string.sub(canonical_sqltext, start_index, index - 1)}
             elseif ch == '"' then
                 local start_index = index
                 index = index + 1
-                while index <= #sqltext do
-                    local current = string.sub(sqltext, index, index)
+                while index <= #canonical_sqltext do
+                    local current = string.sub(canonical_sqltext, index, index)
                     if current == '"' then
-                        if string.sub(sqltext, index + 1, index + 1) == '"' then
+                        if string.sub(canonical_sqltext, index + 1, index + 1) == '"' then
                             index = index + 2
                         else
                             index = index + 1
@@ -281,7 +282,7 @@ COMMON_LUA = """
                         index = index + 1
                     end
                 end
-                local token_text = string.sub(sqltext, start_index, index - 1)
+                local token_text = string.sub(canonical_sqltext, start_index, index - 1)
                 tokens[#tokens + 1] = {
                     type = "quoted_identifier",
                     text = token_text,
@@ -290,19 +291,19 @@ COMMON_LUA = """
             elseif string.match(ch, "[A-Za-z_]") then
                 local start_index = index
                 index = index + 1
-                while index <= #sqltext and string.match(string.sub(sqltext, index, index), "[A-Za-z0-9_]") do
+                while index <= #canonical_sqltext and string.match(string.sub(canonical_sqltext, index, index), "[A-Za-z0-9_]") do
                     index = index + 1
                 end
-                tokens[#tokens + 1] = {type = "word", text = string.sub(sqltext, start_index, index - 1)}
+                tokens[#tokens + 1] = {type = "word", text = string.sub(canonical_sqltext, start_index, index - 1)}
             elseif string.match(ch, "%d") then
                 local start_index = index
                 index = index + 1
-                while index <= #sqltext and string.match(string.sub(sqltext, index, index), "[0-9]") do
+                while index <= #canonical_sqltext and string.match(string.sub(canonical_sqltext, index, index), "[0-9]") do
                     index = index + 1
                 end
-                tokens[#tokens + 1] = {type = "number", text = string.sub(sqltext, start_index, index - 1)}
+                tokens[#tokens + 1] = {type = "number", text = string.sub(canonical_sqltext, start_index, index - 1)}
             else
-                local two_chars = string.sub(sqltext, index, index + 1)
+                local two_chars = string.sub(canonical_sqltext, index, index + 1)
                 if two_chars == ">=" or two_chars == "<=" or two_chars == "<>" or two_chars == "!="
                         or two_chars == "||" then
                     tokens[#tokens + 1] = {type = "punct", text = two_chars}
@@ -2462,7 +2463,9 @@ ARRAY_ITERATION_LUA = """
         return table.concat(out)
     end
 
-    local function rewrite_query_block_tokens(tokens, outer_scope)
+    local function rewrite_query_block_tokens(tokens, outer_scope, options)
+        options = options or {}
+        local recurse_parenthesized_query_blocks = options.recurse_parenthesized_query_blocks ~= false
         local scope = copy_scope(outer_scope or {})
         local out = {}
         local pending_filters = {}
@@ -2485,11 +2488,13 @@ ARRAY_ITERATION_LUA = """
             if token.type == "punct" and token.text == "(" then
                 local closing_index = find_matching_path_paren(tokens, index)
                 local first_inside, first_inside_index = next_significant_path_token(tokens, index + 1)
-                if closing_index ~= nil and first_inside_index ~= nil and path_token_is_query_start(first_inside) then
+                if recurse_parenthesized_query_blocks and closing_index ~= nil and first_inside_index ~= nil
+                        and path_token_is_query_start(first_inside) then
                     out[#out + 1] = "("
                     out[#out + 1] = rewrite_query_block_tokens(
                             {table.unpack(tokens, index + 1, closing_index - 1)},
-                            scope
+                            scope,
+                            options
                     )
                     out[#out + 1] = ")"
                     index = closing_index + 1
@@ -2622,13 +2627,13 @@ ARRAY_ITERATION_LUA = """
         return rewrite_iterator_index_references_in_sql(table.concat(out), scope)
     end
 
-    local function rewrite_array_iteration_query_sql(sqltext)
+    local function rewrite_array_iteration_query_sql(sqltext, options)
         local tokens = tokenize_path_sql(sqltext)
         local first_token = next_significant_path_token(tokens, 1)
         if first_token == nil or not path_token_is_query_start(first_token) then
             return sqltext
         end
-        return rewrite_query_block_tokens(tokens, {})
+        return rewrite_query_block_tokens(tokens, {}, options)
     end
 
     local function rewrite_array_iteration_in_sql(sqltext)

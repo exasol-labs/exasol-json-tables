@@ -47,8 +47,10 @@ Start with:
 
 Most important tests:
 
+- `tests/test_preprocessor_library_builder.py`
 - `tools/test_nano_preprocessor_parser_lane.py`
 - `tests/test_preprocessor_refactor_phase0.py`
+- `tests/test_preprocessor_early_out.py`
 - `tests/test_wrapper_surface.py`
 - `tests/test_wrapper_to_json.py`
 - `tests/test_regular_table_to_json.py`
