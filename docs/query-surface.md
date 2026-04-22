@@ -22,6 +22,13 @@ ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSO
 
 Without that activation, the wrapper views still exist, but the extra JSON syntax sugar such as dotted paths and bracket access will not be rewritten.
 
+**Python / pyexasol note:** `export_to_pandas()` internally runs an `EXPORT ... INTO CSV` statement, which bypasses the SQL preprocessor. Use `execute()` followed by `fetchall()` instead:
+
+```python
+stmt = con.execute('SELECT "meta.info.note" FROM "EJT_MY_VIEW"."my_table"')
+df = pd.DataFrame(stmt.fetchall(), columns=list(stmt.columns().keys()))
+```
+
 ## Identifier Discipline
 
 There are two different naming concerns on the wrapper surface:
@@ -335,6 +342,8 @@ JOIN JVS_DIM.DOC_FLAGS f
 ## Known Boundaries
 
 - The preprocessor is session-local. Activate it in the SQL session where you want wrapper syntax.
+- **pyexasol `export_to_pandas()`** bypasses the preprocessor because it uses an `EXPORT ... INTO CSV` statement internally. Use `execute()` + `fetchall()` when querying wrapper views from Python.
+- **`method` is an unsafe iterator alias.** Using it in `JOIN item IN` or `JOIN VALUE method IN` causes the preprocessor to rewrite it to `METHOD_`, producing a syntax error. Use a different alias such as `tag`, `entry`, or `rm`.
 - In joined queries, qualify root-document helper arguments with the root alias, for example `JSON_IS_EXPLICIT_NULL(s."note")`.
 - `TO_JSON(*)` is the primary final-output surface on wrapped roots, but joined wrapper queries must use qualified top-level subsets such as `TO_JSON(s."id", s."meta")`.
 - On ordinary tables and ordinary views, `TO_JSON` is a flat row serializer and joined queries should use `TO_JSON(alias.*)` or qualified columns.

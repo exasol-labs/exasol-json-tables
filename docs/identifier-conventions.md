@@ -93,6 +93,9 @@ Treat these as risky aliases:
 - `user`
 - `order`
 - `group`
+- `method`
+
+`method` deserves special attention: it is also unsafe as a `JOIN` iterator alias (not just in published objects). Using it in `JOIN item IN s."items"` or `JOIN VALUE method IN s."tags"` causes the preprocessor to rewrite it to `METHOD_`, producing a cryptic syntax error. Use a descriptive alias such as `tag`, `entry`, or `rm` instead.
 
 Safer patterns:
 
