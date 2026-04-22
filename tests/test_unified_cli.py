@@ -13,6 +13,7 @@ from typing import Optional
 import _bootstrap  # noqa: F401
 
 from exasol_json_tables import cli as cli_module
+from exasol_json_tables import nano_support as nano_support_module
 from exasol_json_tables import wrapper_schema_support
 from nano_support import ROOT, connect
 
@@ -1484,6 +1485,24 @@ def test_wrapper_generation_connection_ssl_options() -> None:
     assert "websocket_sslopt" not in captured[1]
 
 
+def test_nano_support_connection_ssl_options() -> None:
+    captured: list[dict[str, object]] = []
+    original_connect = nano_support_module.pyexasol.connect
+    try:
+        def fake_connect(**kwargs):
+            captured.append(kwargs)
+            class DummyConnection:
+                pass
+            return DummyConnection()
+
+        nano_support_module.pyexasol.connect = fake_connect
+        nano_support_module.connect()
+    finally:
+        nano_support_module.pyexasol.connect = original_connect
+
+    assert captured[0]["websocket_sslopt"]["cert_reqs"] == ssl.CERT_NONE
+
+
 def test_unified_cli_schema_ensure_propagates_certificate_validation() -> None:
     calls: list[bool] = []
 
@@ -1525,6 +1544,7 @@ if __name__ == "__main__":
     test_unified_cli_ingest_json_artifacts_are_structured()
     test_unified_cli_ingest_error_codes()
     test_wrapper_generation_connection_ssl_options()
+    test_nano_support_connection_ssl_options()
     test_unified_cli_schema_ensure_propagates_certificate_validation()
     print("-- unified cli regression --")
     print("verified ingest/wrap/validate orchestration, wrap deploy, ingest-and-wrap defaults, and structured-results preview-json")

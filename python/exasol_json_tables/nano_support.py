@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import ssl
 import subprocess
 from typing import Optional
 
@@ -16,7 +17,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def connect():
-    return pyexasol.connect(dsn="127.0.0.1:8563", user="sys", password="exasol", schema="SYS")
+    return pyexasol.connect(
+        dsn="127.0.0.1:8563",
+        user="sys",
+        password="exasol",
+        schema="SYS",
+        websocket_sslopt={"cert_reqs": ssl.CERT_NONE},
+    )
 
 
 def install_wrapper_views(

@@ -12,7 +12,7 @@ That command is provided by the Python package defined in [pyproject.toml](../py
 
 For the full workflow, you need:
 
-- Python 3.9 or newer
+- Python 3.10 or newer
 - Rust and Cargo, if you want to run the ingest stage from this repo
 - access to an Exasol database
 
