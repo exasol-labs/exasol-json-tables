@@ -509,7 +509,6 @@ def _build_table_export_select_sql(
                 )
         else:
             fragment_cte = _cte_name("fragments", table_name)
-            fragment_ctes[table_name] = fragment_cte
             fragment_selects: list[str] = []
             fragment_key_sql = ",\n      ".join(
                 f'base.{quote_identifier(column_name)} AS {quote_identifier(column_name)}'
@@ -603,6 +602,7 @@ def _build_table_export_select_sql(
 )""".strip()
                 )
             else:
+                fragment_ctes[table_name] = fragment_cte
                 key_select_columns = [
                     f'base.{quote_identifier(column_name)} AS {quote_identifier(column_name)}'
                     for column_name in key_columns
