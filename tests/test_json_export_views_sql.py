@@ -12,12 +12,13 @@ from _fixture_expected_json import deepdoc_fixture_documents, sample_fixture_doc
 from generate_json_export_helper_sql import install_json_export_helpers
 from generate_json_export_views_sql import (
     generate_json_export_artifacts,
+    generate_json_export_artifacts_from_source_columns,
     install_json_export_views,
     json_export_root_names_from_wrapper_manifest,
     json_export_view_name,
 )
 from nano_support import ROOT, connect, install_source_fixture, install_wrapper_views
-from wrapper_schema_support import quote_identifier
+from wrapper_schema_support import ColumnMeta, quote_identifier
 
 
 SOURCE_SCHEMA = "JVS_SRC"
@@ -58,6 +59,29 @@ def fetch_full_json_list(con, qualified_view: str, full_json_column: str, id_col
         """
     ).fetchall()
     return [json.loads(row[0]) for row in rows]
+
+
+def make_column(
+    table: str,
+    name: str,
+    type_name: str,
+    ordinal: int,
+    *,
+    size: int | None = None,
+    precision: int | None = None,
+    scale: int | None = None,
+    schema: str = SOURCE_SCHEMA,
+) -> ColumnMeta:
+    return ColumnMeta(
+        schema=schema,
+        table=table,
+        name=name,
+        type_name=type_name,
+        ordinal=ordinal,
+        size=size,
+        precision=precision,
+        scale=scale,
+    )
 
 
 def main() -> None:
@@ -261,6 +285,95 @@ def main() -> None:
             "row 2 items fragment",
         )
         assert_equal(parse_fragment(fragment_rows[2][5]), None, "row 3 items fragment")
+
+        empty_array_source_schema = "JVS_SRC_EMPTY_ARR"
+        empty_array_export_schema = "JVS_EMPTY_ARR_EXPORT"
+        empty_array_udf_schema = "JVS_EMPTY_ARR_UDF"
+        empty_array_source_columns = {
+            "DOCS": [
+                make_column("DOCS", "_id", "DECIMAL", 1, precision=18, scale=0, schema=empty_array_source_schema),
+                make_column("DOCS", "name", "VARCHAR(100)", 2, size=100, schema=empty_array_source_schema),
+                make_column(
+                    "DOCS",
+                    "items|array",
+                    "DECIMAL",
+                    3,
+                    precision=18,
+                    scale=0,
+                    schema=empty_array_source_schema,
+                ),
+            ],
+            "DOCS_items_arr": [
+                make_column(
+                    "DOCS_items_arr",
+                    "_parent",
+                    "DECIMAL",
+                    1,
+                    precision=18,
+                    scale=0,
+                    schema=empty_array_source_schema,
+                ),
+                make_column(
+                    "DOCS_items_arr",
+                    "_pos",
+                    "DECIMAL",
+                    2,
+                    precision=18,
+                    scale=0,
+                    schema=empty_array_source_schema,
+                ),
+            ],
+        }
+        empty_array_artifacts = generate_json_export_artifacts_from_source_columns(
+            empty_array_source_columns,
+            source_schema=empty_array_source_schema,
+            schema=empty_array_export_schema,
+            udf_schema=empty_array_udf_schema,
+        )
+        assert_not_contains(
+            empty_array_artifacts.sql.lower(),
+            "left join fragments_docs_items_arr ",
+            "empty-array child should not reference an unregistered fragment CTE",
+        )
+
+        con.execute(f"DROP SCHEMA IF EXISTS {empty_array_source_schema} CASCADE")
+        con.execute(f"DROP SCHEMA IF EXISTS {empty_array_export_schema} CASCADE")
+        con.execute(f"DROP SCHEMA IF EXISTS {empty_array_udf_schema} CASCADE")
+        con.execute(f"CREATE SCHEMA {empty_array_source_schema}")
+        con.execute(f"OPEN SCHEMA {empty_array_source_schema}")
+        con.execute(
+            'CREATE OR REPLACE TABLE DOCS'
+            ' ("_id" DECIMAL(18,0) NOT NULL, "name" VARCHAR(100), "items|array" DECIMAL(18,0))'
+        )
+        con.execute(
+            'CREATE OR REPLACE TABLE "DOCS_items_arr"'
+            ' ("_parent" DECIMAL(18,0) NOT NULL, "_pos" DECIMAL(18,0) NOT NULL)'
+        )
+        con.execute("INSERT INTO DOCS VALUES (1, 'alpha', NULL)")
+        con.execute("INSERT INTO DOCS VALUES (2, 'beta', NULL)")
+
+        install_json_export_helpers(con, empty_array_udf_schema)
+        install_json_export_views(
+            con,
+            source_schema=empty_array_source_schema,
+            schema=empty_array_export_schema,
+            udf_schema=empty_array_udf_schema,
+        )
+
+        empty_array_root = empty_array_artifacts.root_names["DOCS"]
+        empty_array_rows = con.execute(
+            f"""
+            SELECT {quote_identifier(empty_array_root.full_json_column)}
+            FROM {empty_array_root.qualified_view}
+            ORDER BY {quote_identifier(empty_array_root.id_column)}
+            """
+        ).fetchall()
+        empty_array_docs = [json.loads(row[0]) for row in empty_array_rows]
+        assert_equal(
+            empty_array_docs,
+            [{"name": "alpha"}, {"name": "beta"}],
+            "empty-array child export documents",
+        )
     finally:
         con.close()
 
