@@ -15,7 +15,7 @@ import _bootstrap  # noqa: F401
 from exasol_json_tables import cli as cli_module
 from exasol_json_tables import nano_support as nano_support_module
 from exasol_json_tables import wrapper_schema_support
-from nano_support import ROOT, connect
+from nano_support import ROOT, connect, install_source_fixture, install_wrapper_views
 
 
 CLI = ROOT / "tools" / "exasol_json_tables.py"
@@ -1008,6 +1008,206 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
                 con.close()
 
 
+def test_unified_cli_describe_wrappers_recovers_legacy_metadata_tables() -> None:
+    con = connect()
+    try:
+        cleanup_schemas(con)
+        install_source_fixture(con, include_deep_fixture=True)
+        install_wrapper_views(
+            con,
+            source_schema=SOURCE_SCHEMA,
+            wrapper_schema=WRAPPER_SCHEMA,
+            helper_schema=HELPER_SCHEMA,
+        )
+        con.execute(f'DELETE FROM "{HELPER_SCHEMA}"."__JVS_COLUMN_MEMBERS"')
+    finally:
+        con.close()
+
+    try:
+        describe_wrappers_result = subprocess.run(
+            [
+                "python3",
+                str(CLI),
+                "describe",
+                "wrappers",
+                "--json",
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        describe_wrappers_payload = json.loads(describe_wrappers_result.stdout)
+        assert describe_wrappers_payload["status"] == "ok"
+        legacy_entry = next(
+            entry
+            for entry in describe_wrappers_payload["wrappers"]
+            if entry["wrapperSchema"] == WRAPPER_SCHEMA and entry["helperSchema"] == HELPER_SCHEMA
+        )
+        assert legacy_entry["sourceSchema"] == SOURCE_SCHEMA
+        assert legacy_entry["publicViews"] == ["DEEPDOC", "SAMPLE"]
+    finally:
+        con = connect()
+        try:
+            cleanup_schemas(con)
+        finally:
+            con.close()
+
+
+def test_unified_cli_ingest_and_wrap_aliases_array_object_value_fields() -> None:
+    with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_v4_value_") as tmpdir:
+        tmp = Path(tmpdir)
+        artifact_root = tmp / "artifacts"
+        staging_dir = tmp / "staging"
+        input_path = tmp / "experiments_v4.json"
+        input_documents = [
+            {
+                "experiment_id": "1",
+                "biomarkers": {"glucose": 92.5, "bmi": 21.5},
+                "measurements": [
+                    {"value": 10, "unit": "mg/dL"},
+                    {"value": 20, "unit": "mmol/L"},
+                ],
+            },
+            {
+                "experiment_id": "2",
+                "biomarkers": {"glucose": 101.25, "bmi": 24.25},
+                "measurements": [
+                    {"value": 5, "unit": "mg/dL"},
+                ],
+            },
+        ]
+        input_path.write_text(json.dumps(input_documents))
+
+        workflow_name = "v4bug_values"
+        package_config: Optional[dict[str, object]] = None
+
+        try:
+            con = connect()
+            try:
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "ingest-and-wrap",
+                    "--input",
+                    str(input_path),
+                    "--name",
+                    workflow_name,
+                    "--artifact-dir",
+                    str(artifact_root),
+                    "--exasol-temp-dir",
+                    str(staging_dir),
+                    "--exasol-cleanup",
+                    "--json",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            payload = json.loads(result.stdout)
+            assert payload["status"] == "ok"
+            package_config = json.loads(Path(payload["wrapper"]["packageConfig"]).read_text())
+            wrapper_schema = str(package_config["wrapperSchema"])
+            root_view = str(payload["wrapper"]["publicViews"][0])
+
+            describe_result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "describe",
+                    "wrapper",
+                    "--wrapper-schema",
+                    wrapper_schema,
+                    "--json",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            describe_payload = json.loads(describe_result.stdout)
+            described_root = describe_payload["description"]["roots"][0]
+            measurements_table = next(
+                table
+                for table in described_root["familyTables"]
+                if table["pathFromRoot"] == "measurements[]"
+            )
+            assert measurements_table["scalarFields"] == ["value", "unit"]
+
+            con = connect()
+            try:
+                con.execute(payload["wrapper"]["preprocessor"]["activationSql"].rstrip(";"))
+                measurement_stmt = con.execute(
+                    f'''
+                    SELECT
+                      CAST(e."experiment_id" AS VARCHAR(10)) AS experiment_id,
+                      CAST(m."value" AS VARCHAR(20)) AS measurement_value,
+                      m."unit"
+                    FROM "{wrapper_schema}"."{root_view}" e
+                    JOIN m IN e."measurements"
+                    ORDER BY e."_id", m._index
+                    '''
+                )
+                measurement_rows = measurement_stmt.fetchall()
+
+                iterator_json_rows = con.execute(
+                    f'''
+                    SELECT TO_JSON(m.*)
+                    FROM "{wrapper_schema}"."{root_view}" e
+                    JOIN m IN e."measurements"
+                    ORDER BY e."_id", m._index
+                    '''
+                ).fetchall()
+                root_json_rows = con.execute(
+                    f'''
+                    SELECT TO_JSON(*)
+                    FROM "{wrapper_schema}"."{root_view}"
+                    ORDER BY "_id"
+                    '''
+                ).fetchall()
+                column_stmt = con.execute(
+                    f'''
+                    SELECT
+                      e."biomarkers.glucose",
+                      e."biomarkers.bmi"
+                    FROM "{wrapper_schema}"."{root_view}" e
+                    ORDER BY e."_id"
+                    '''
+                )
+                column_names = list(column_stmt.columns())
+                biomarker_rows = column_stmt.fetchall()
+            finally:
+                con.close()
+
+            assert measurement_rows == [
+                ("1", "10", "mg/dL"),
+                ("1", "20", "mmol/L"),
+                ("2", "5", "mg/dL"),
+            ]
+            assert [json.loads(row[0]) for row in iterator_json_rows] == [
+                {"value": 10, "unit": "mg/dL"},
+                {"value": 20, "unit": "mmol/L"},
+                {"value": 5, "unit": "mg/dL"},
+            ]
+            assert [json.loads(row[0]) for row in root_json_rows] == input_documents
+            assert column_names == ["e.biomarkers.glucose", "e.biomarkers.bmi"]
+            assert biomarker_rows == [(92.5, 21.5), (101.25, 24.25)]
+        finally:
+            con = connect()
+            try:
+                if package_config is not None:
+                    cleanup_package_schemas(con, package_config)
+                cleanup_named_workflow_schemas(con, workflow_name)
+            finally:
+                con.close()
+
+
 def test_unified_cli_ingest_and_wrap_supports_object_fields_inside_array_items() -> None:
     with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_array_object_") as tmpdir:
         tmp = Path(tmpdir)
@@ -1539,6 +1739,8 @@ if __name__ == "__main__":
     test_unified_cli_ingest_and_wrap_with_lowercase_root_name()
     test_unified_cli_ingest_and_wrap_json_summary()
     test_unified_cli_validate_and_describe_json_surfaces()
+    test_unified_cli_describe_wrappers_recovers_legacy_metadata_tables()
+    test_unified_cli_ingest_and_wrap_aliases_array_object_value_fields()
     test_unified_cli_json_failure_envelope()
     test_unified_cli_error_repro_redacts_password()
     test_unified_cli_ingest_json_artifacts_are_structured()
@@ -1547,4 +1749,4 @@ if __name__ == "__main__":
     test_nano_support_connection_ssl_options()
     test_unified_cli_schema_ensure_propagates_certificate_validation()
     print("-- unified cli regression --")
-    print("verified ingest/wrap/validate orchestration, wrap deploy, ingest-and-wrap defaults, and structured-results preview-json")
+    print("verified ingest/wrap/validate orchestration, describe recovery, value-alias regressions, and structured-results preview-json")

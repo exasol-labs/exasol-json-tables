@@ -451,40 +451,14 @@ def build_manifest(
             }
         )
 
-    tables_manifest: list[dict[str, Any]] = []
-    for table_name in sorted(table_models):
-        model = table_models[table_name]
-        groups_manifest: list[dict[str, Any]] = []
-        for group in sorted(model.groups.values(), key=lambda item: item.base_name):
-            visible_member = choose_visible_member(group)
-            visible_name = visible_name_for_group(group, visible_member) if (
-                visible_member is not None or group.null_mask is not None
-            ) else None
-            members = ordered_non_null_members(group)
-            groups_manifest.append(
-                {
-                    "baseName": group.base_name,
-                    "visibleName": visible_name,
-                    "nullMaskName": group.null_mask.name if group.null_mask is not None else None,
-                    "members": [
-                        {
-                            "name": member.name,
-                            "type": member.type_name,
-                            "ordinal": member.ordinal,
-                            "isPrimary": visible_member is not None and member.name == visible_member.name,
-                        }
-                        for member in members
-                    ],
-                }
-            )
-        tables_manifest.append(
-            {
-                "tableName": table_name,
-                "rootTable": root_by_table[table_name],
-                "isPublicRoot": table_name in root_tables,
-                "groups": groups_manifest,
-            }
+    tables_manifest = [
+        build_table_manifest_entry(
+            table_models[table_name],
+            root_table=root_by_table[table_name],
+            is_public_root=table_name in root_tables,
         )
+        for table_name in sorted(table_models)
+    ]
 
     roots_manifest = [
         {
@@ -502,6 +476,43 @@ def build_manifest(
         "helperSchema": helper_schema,
         "roots": roots_manifest,
         "tables": tables_manifest,
+    }
+
+
+def build_table_manifest_entry(
+    table_model: TableModel,
+    *,
+    root_table: str,
+    is_public_root: bool,
+) -> dict[str, Any]:
+    groups_manifest: list[dict[str, Any]] = []
+    for group in sorted(table_model.groups.values(), key=lambda item: item.base_name):
+        visible_member = choose_visible_member(group)
+        visible_name = visible_name_for_group(group, visible_member) if (
+            visible_member is not None or group.null_mask is not None
+        ) else None
+        members = ordered_non_null_members(group)
+        groups_manifest.append(
+            {
+                "baseName": group.base_name,
+                "visibleName": visible_name,
+                "nullMaskName": group.null_mask.name if group.null_mask is not None else None,
+                "members": [
+                    {
+                        "name": member.name,
+                        "type": member.type_name,
+                        "ordinal": member.ordinal,
+                        "isPrimary": visible_member is not None and member.name == visible_member.name,
+                    }
+                    for member in members
+                ],
+            }
+        )
+    return {
+        "tableName": table_model.name,
+        "rootTable": root_table,
+        "isPublicRoot": is_public_root,
+        "groups": groups_manifest,
     }
 
 
@@ -811,15 +822,20 @@ def load_installed_wrapper_manifest(con, helper_schema: str) -> dict[str, Any]:
         """
     ).fetchall()
     relationships_by_root: dict[str, list[dict[str, str]]] = {}
+    family_tables_by_root: dict[str, set[str]] = {str(row[0]): {str(row[0])} for row in roots_rows}
     for row in relationships_rows:
-        relationships_by_root.setdefault(str(row[0]), []).append(
+        root_table = str(row[0])
+        parent_table = str(row[1])
+        child_table = str(row[2])
+        relationships_by_root.setdefault(root_table, []).append(
             {
-                "parentTable": str(row[1]),
-                "childTable": str(row[2]),
+                "parentTable": parent_table,
+                "childTable": child_table,
                 "segmentName": str(row[3]),
                 "relationKind": str(row[4]),
             }
         )
+        family_tables_by_root.setdefault(root_table, {root_table}).update({parent_table, child_table})
 
     member_rows = con.execute(
         f"""
@@ -841,8 +857,6 @@ def load_installed_wrapper_manifest(con, helper_schema: str) -> dict[str, Any]:
 
     tables_by_name: dict[str, dict[str, Any]] = {}
     groups_by_table_and_base: dict[tuple[str, str], dict[str, Any]] = {}
-    family_tables_by_root: dict[str, set[str]] = {}
-
     for row in member_rows:
         root_table = str(row[0])
         source_table = str(row[1])
@@ -885,8 +899,40 @@ def load_installed_wrapper_manifest(con, helper_schema: str) -> dict[str, Any]:
                 }
             )
 
-    roots: list[dict[str, Any]] = []
     public_root_views = {str(row[3]): str(row[0]) for row in roots_rows}
+    expected_family_tables = sorted({table_name for tables in family_tables_by_root.values() for table_name in tables})
+    missing_table_names = [table_name for table_name in expected_family_tables if table_name not in tables_by_name]
+    if missing_table_names:
+        helper_columns = fetch_source_columns(con, helper_schema)
+        missing_table_models = build_table_models(
+            {
+                table_name: helper_columns[table_name]
+                for table_name in missing_table_names
+                if table_name in helper_columns and not table_name.startswith("__JVS_")
+            }
+        )
+        root_by_table = {
+            table_name: root_table
+            for root_table, table_names in family_tables_by_root.items()
+            for table_name in table_names
+        }
+        for table_name in missing_table_names:
+            model = missing_table_models.get(table_name)
+            if model is None:
+                continue
+            tables_by_name[table_name] = build_table_manifest_entry(
+                model,
+                root_table=root_by_table.get(table_name, table_name),
+                is_public_root=table_name in public_root_views,
+            )
+    unresolved_table_names = [table_name for table_name in expected_family_tables if table_name not in tables_by_name]
+    if unresolved_table_names:
+        raise ValueError(
+            "Helper schema "
+            f"{helper_schema} is missing metadata and helper views for tables: {', '.join(unresolved_table_names)}."
+        )
+
+    roots: list[dict[str, Any]] = []
     for table_entry in tables_by_name.values():
         if table_entry["tableName"] in public_root_views:
             table_entry["isPublicRoot"] = True

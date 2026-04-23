@@ -455,6 +455,8 @@ def _error_code_for_message(message: str, exc: BaseException | None = None) -> s
 
 
 def _logical_field_name_and_kind(visible_name: str) -> tuple[str, str]:
+    if visible_name == "_value":
+        return "value", "scalar"
     if visible_name.endswith("|object"):
         return visible_name[: -len("|object")], "object"
     if visible_name.endswith("|array"):
@@ -514,7 +516,7 @@ def _relationships_by_parent_and_segment(
     relationships: dict[str, dict[str, list[dict[str, object]]]] = {}
     for relationship in _root_relationships(root):
         parent_table = str(relationship["parentTable"])
-        segment_name = str(relationship["segmentName"])
+        segment_name, _ = _logical_field_name_and_kind(str(relationship["segmentName"]))
         relationships.setdefault(parent_table, {}).setdefault(segment_name, []).append(relationship)
     for parent_table in relationships:
         for segment_name in relationships[parent_table]:
@@ -537,9 +539,9 @@ def _infer_array_element_kind(
         if group.get("visibleName") not in {None, "_id"}
     ]
     child_relationships = relationships_by_parent.get(child_table_name, [])
-    if visible_names == ["_value"] and not child_relationships:
+    if visible_names in (["_value"], ["value"]) and not child_relationships:
         return "scalar"
-    if visible_names == ["_value"]:
+    if visible_names in (["_value"], ["value"]):
         return "variant"
     return "object"
 
@@ -700,7 +702,7 @@ def _describe_family_tables(
             child_table_name = str(child_relationship["childTable"])
             if child_table_name in path_by_table:
                 continue
-            segment_name = str(child_relationship["segmentName"])
+            segment_name, _ = _logical_field_name_and_kind(str(child_relationship["segmentName"]))
             path_segment = f"{segment_name}[]" if child_relationship["relationKind"] == "array" else segment_name
             path_by_table[child_table_name] = path_segment if parent_path is None else f"{parent_path}.{path_segment}"
             relationship_by_child[child_table_name] = child_relationship
@@ -731,7 +733,7 @@ def _describe_family_tables(
         else:
             entry["tableKind"] = str(table_relationship["relationKind"])
             entry["parentTable"] = str(table_relationship["parentTable"])
-            entry["segmentName"] = str(table_relationship["segmentName"])
+            entry["segmentName"], _ = _logical_field_name_and_kind(str(table_relationship["segmentName"]))
             if table_relationship["relationKind"] == "array":
                 entry["elementKind"] = _infer_array_element_kind(
                     normalized_table_name,

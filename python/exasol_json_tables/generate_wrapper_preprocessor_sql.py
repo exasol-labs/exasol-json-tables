@@ -206,6 +206,32 @@ def _infer_variant_label(member: dict) -> str | None:
     return _normalize_variant_label(member_type)
 
 
+def _preferred_group_reference_column_name(group: dict) -> str | None:
+    for member in group.get("members", []):
+        if member.get("isPrimary"):
+            return str(member["name"])
+    members = group.get("members", [])
+    if not members:
+        return None
+    return str(members[0]["name"])
+
+
+def _group_alias_names(group: dict) -> list[str]:
+    visible_name = group.get("visibleName")
+    if visible_name is None:
+        return []
+    aliases = [str(visible_name)]
+    if str(group.get("baseName")) == "_value" and "value" not in aliases:
+        aliases.append("value")
+    return aliases
+
+
+def _group_display_name(group: dict, alias_name: str) -> str:
+    if str(group.get("baseName")) == "_value":
+        return "value"
+    return alias_name
+
+
 def _build_group_config(manifests: list[dict]) -> WrapperGroupConfig:
     config: WrapperGroupConfig = {}
     for manifest in manifests:
@@ -220,12 +246,15 @@ def _build_group_config(manifests: list[dict]) -> WrapperGroupConfig:
             table_name = validate_identifier("Manifest table name", table["tableName"])
             table_groups: dict[str, dict[str, object]] = {}
             for group in table["groups"]:
-                visible_name = group["visibleName"]
-                if visible_name is None:
+                alias_names = _group_alias_names(group)
+                if not alias_names:
                     continue
                 group_config: dict[str, object] = {}
                 if group["nullMaskName"] is not None:
                     group_config["nullMaskName"] = str(group["nullMaskName"])
+                reference_column_name = _preferred_group_reference_column_name(group)
+                if reference_column_name is not None:
+                    group_config["referenceColumnName"] = reference_column_name
                 variant_columns: dict[str, str] = {}
                 for member in group["members"]:
                     variant_label = _infer_variant_label(member)
@@ -235,7 +264,8 @@ def _build_group_config(manifests: list[dict]) -> WrapperGroupConfig:
                 if variant_columns:
                     group_config["variantColumns"] = variant_columns
                 if group_config:
-                    table_groups[str(visible_name).upper()] = group_config
+                    for alias_name in alias_names:
+                        table_groups[alias_name.upper()] = dict(group_config)
             helper_schema_tables.setdefault(table_name, {}).update(table_groups)
             if table.get("isPublicRoot"):
                 public_view_name = validate_identifier("Manifest public view", roots_by_table[table_name]["publicView"])
@@ -257,10 +287,8 @@ def _build_visible_column_config(manifests: list[dict]) -> WrapperVisibleColumnC
             table_name = validate_identifier("Manifest table name", table["tableName"])
             visible_columns: dict[str, bool] = {"_ID": True}
             for group in table["groups"]:
-                visible_name = group["visibleName"]
-                if visible_name is None:
-                    continue
-                visible_columns[str(visible_name).upper()] = True
+                for alias_name in _group_alias_names(group):
+                    visible_columns[alias_name.upper()] = True
             helper_schema_tables.setdefault(table_name, {}).update(visible_columns)
             if table.get("isPublicRoot"):
                 public_view_name = validate_identifier("Manifest public view", roots_by_table[table_name]["publicView"])
@@ -299,11 +327,12 @@ def _build_to_json_config(manifests: list[dict]) -> WrapperToJsonConfig:
                 fragment_column = json_export_fragment_column_name(base_name)
                 normalized_base_name = base_name.upper()
                 argument_to_fragment[normalized_base_name] = fragment_column
-                display_name_by_argument[normalized_base_name] = base_name
+                display_name_by_argument[normalized_base_name] = _group_display_name(group, base_name)
 
-                normalized_visible_name = str(visible_name).upper()
-                argument_to_fragment[normalized_visible_name] = fragment_column
-                display_name_by_argument[normalized_visible_name] = str(visible_name)
+                for alias_name in _group_alias_names(group):
+                    normalized_visible_name = alias_name.upper()
+                    argument_to_fragment[normalized_visible_name] = fragment_column
+                    display_name_by_argument[normalized_visible_name] = _group_display_name(group, alias_name)
 
             row_key_source_columns: list[str] = []
             if table_name in root_table_names or table_name in parent_table_names or relation_kind_by_child_table.get(table_name) != "array":
@@ -331,11 +360,18 @@ def _build_to_json_config(manifests: list[dict]) -> WrapperToJsonConfig:
             for fragment in root_names.fragments:
                 normalized_base_name = str(fragment.base_name).upper()
                 root_argument_to_fragment[normalized_base_name] = fragment.column_name
-                root_display_name_by_argument[normalized_base_name] = fragment.base_name
+                root_display_name_by_argument[normalized_base_name] = (
+                    "value" if str(fragment.base_name) == "_value" else fragment.base_name
+                )
 
                 normalized_visible_name = str(fragment.visible_name).upper()
                 root_argument_to_fragment[normalized_visible_name] = fragment.column_name
-                root_display_name_by_argument[normalized_visible_name] = fragment.visible_name
+                root_display_name_by_argument[normalized_visible_name] = (
+                    "value" if str(fragment.base_name) == "_value" else fragment.visible_name
+                )
+                if str(fragment.base_name) == "_value":
+                    root_argument_to_fragment["VALUE"] = fragment.column_name
+                    root_display_name_by_argument["VALUE"] = "value"
 
             public_schema_tables[validate_identifier("Manifest public view", root["publicView"])] = {
                 "rootTable": root_table,

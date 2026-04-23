@@ -237,6 +237,45 @@ def _value_group_json_expr(
     return "CASE " + " ".join(f"WHEN {condition} THEN {rendered}" for condition, rendered in branches) + " END"
 
 
+def _value_group_fragment_expr(
+    quote_string_udf: str,
+    group: Group,
+    base_alias: str,
+    *,
+    object_alias: str | None = None,
+    array_alias: str | None = None,
+) -> tuple[str, str] | None:
+    json_expr = _value_group_json_expr(
+        quote_string_udf,
+        group,
+        base_alias,
+        object_alias=object_alias,
+        array_alias=array_alias,
+    )
+    if json_expr is None:
+        return None
+
+    presence_terms: list[str] = []
+    if group.primary is not None:
+        expr = f'{base_alias}.{quote_identifier(group.primary.name)}'
+        presence_terms.append(f"{expr} IS NOT NULL")
+    for alternate in sorted(group.alternates, key=lambda column: column.ordinal):
+        expr = f'{base_alias}.{quote_identifier(alternate.name)}'
+        presence_terms.append(f"{expr} IS NOT NULL")
+    if group.object_member is not None:
+        marker_expr = f'{base_alias}.{quote_identifier(group.object_member.name)}'
+        presence_terms.append(f"{marker_expr} IS NOT NULL")
+    if group.array_member is not None:
+        marker_expr = f'{base_alias}.{quote_identifier(group.array_member.name)}'
+        presence_terms.append(f"{marker_expr} IS NOT NULL")
+    if group.null_mask is not None:
+        null_mask_expr = f'{base_alias}.{quote_identifier(group.null_mask.name)}'
+        presence_terms.append(f"{null_mask_expr} IS TRUE")
+    if not presence_terms:
+        return None
+    return (sql_literal('"value":') + " || " + json_expr, " OR ".join(presence_terms))
+
+
 def _structural_key_columns(model: TableModel) -> list[str]:
     names = {column.name for column in model.columns}
     return [name for name in ("_id", "_parent", "_pos") if name in names]
@@ -372,6 +411,25 @@ def _build_table_export_select_sql(
                     f'base.{quote_identifier(column_name)} AS {quote_identifier(column_name)}'
                     for column_name in key_columns
                 )
+                value_fragment_expr = _value_group_fragment_expr(
+                    udf_names.json_quote_string,
+                    group,
+                    "base",
+                    object_alias=object_alias,
+                    array_alias=array_alias,
+                )
+                if value_fragment_expr is not None:
+                    rendered, predicate = value_fragment_expr
+                    object_fragment_selects.append(
+                        f"""
+    SELECT
+      {fragment_key_sql},
+      5 AS ord,
+      {sql_literal("value")} AS frag_key,
+      {rendered} AS frag
+    FROM {source_qtable} base
+    WHERE {predicate}""".strip()
+                    )
                 group_ord = 0
                 for value_group in non_value_groups:
                     object_child_relation = relationship_by_parent_segment_kind.get(

@@ -622,7 +622,7 @@ COMMON_LUA = """
             return token.text == "," or token.text == ")"
         end
         local normalized = normalize_path_token(token)
-        return normalized ~= nil and (CLAUSE_KEYWORDS[normalized] == true or normalized == "JOIN" or normalized == "LEFT"
+        return normalized ~= nil and (CLAUSE_KEYWORDS[normalized] == true or normalized == "FROM" or normalized == "JOIN" or normalized == "LEFT"
                 or normalized == "RIGHT" or normalized == "FULL" or normalized == "INNER"
                 or normalized == "CROSS")
     end
@@ -908,6 +908,77 @@ JOIN_MODE_LUA = """
         return string.upper(selector.kind)
     end
 
+    local function lookup_path_group_config_for_binding(binding, table_name, visible_name)
+        if binding == nil or table_name == nil or visible_name == nil then
+            return nil
+        end
+        local schema_name = binding.helper_schema_name
+                or helper_schema_name_for_table_reference(binding)
+                or binding.schema_name
+        local schema_tables = GROUP_CONFIG_BY_SCHEMA_AND_TABLE[normalize_identifier_value(schema_name)]
+        if schema_tables == nil then
+            return nil
+        end
+        local table_groups = schema_tables[normalize_identifier_value(table_name)]
+        if table_groups == nil then
+            return nil
+        end
+        local normalized_visible_name = normalize_identifier_value(visible_name)
+        local group_config = table_groups[normalized_visible_name]
+        if group_config ~= nil then
+            return group_config
+        end
+        return table_groups[normalize_identifier_value(visible_name .. "|array")]
+    end
+
+    local function group_reference_column_name(group_config)
+        if group_config == nil then
+            return nil
+        end
+        return group_config.referenceColumnName
+    end
+
+    table_has_visible_column = function(binding, table_name, column_name)
+        if binding == nil or table_name == nil or column_name == nil then
+            return false
+        end
+        local schema_name = binding.helper_schema_name
+                or helper_schema_name_for_table_reference(binding)
+                or binding.schema_name
+        local schema_tables = VISIBLE_COLUMNS_BY_SCHEMA_AND_TABLE[normalize_identifier_value(schema_name)]
+        local table_columns = schema_tables and schema_tables[normalize_identifier_value(table_name)] or nil
+        return table_columns ~= nil and table_columns[normalize_identifier_value(column_name)] == true
+    end
+
+    resolve_visible_path_column_name = function(binding, table_name, step_name)
+        local group_config = lookup_path_group_config_for_binding(binding, table_name, step_name)
+        local reference_column_name = group_reference_column_name(group_config)
+        if reference_column_name ~= nil then
+            return reference_column_name
+        end
+        if table_has_visible_column(binding, table_name, step_name) then
+            return step_name
+        end
+        if table_has_visible_column(binding, table_name, step_name .. "|object") then
+            return step_name .. "|object"
+        end
+        if table_has_visible_column(binding, table_name, step_name .. "|array") then
+            return step_name .. "|array"
+        end
+        return nil
+    end
+
+    local function resolve_value_member_column_name(binding, table_name)
+        local value_column_name = resolve_visible_path_column_name(binding, table_name, "value")
+        if value_column_name ~= nil then
+            return value_column_name
+        end
+        if table_has_visible_column(binding, table_name, "_value") then
+            return "_value"
+        end
+        return nil
+    end
+
     local function build_array_selector_sql(binding, current_table_name, selector_ref, array_ref, step, array_column_name, path)
         array_column_name = array_column_name or (step.name .. "|array")
         if step.selector.kind == "index" then
@@ -947,55 +1018,9 @@ JOIN_MODE_LUA = """
                     'Array selector "' .. step.selector.field_name .. '" must be ?, PARAM, or a visible field on the current row.'
                 )
             end
-            return selector_ref .. "." .. encode_quoted_identifier(step.selector.field_name)
-        end
-        return nil
-    end
-
-    local function lookup_path_group_config_for_binding(binding, table_name, visible_name)
-        if binding == nil or table_name == nil or visible_name == nil then
-            return nil
-        end
-        local schema_name = binding.helper_schema_name
-                or helper_schema_name_for_table_reference(binding)
-                or binding.schema_name
-        local schema_tables = GROUP_CONFIG_BY_SCHEMA_AND_TABLE[normalize_identifier_value(schema_name)]
-        if schema_tables == nil then
-            return nil
-        end
-        local table_groups = schema_tables[normalize_identifier_value(table_name)]
-        if table_groups == nil then
-            return nil
-        end
-        local normalized_visible_name = normalize_identifier_value(visible_name)
-        local group_config = table_groups[normalized_visible_name]
-        if group_config ~= nil then
-            return group_config
-        end
-        return table_groups[normalize_identifier_value(visible_name .. "|array")]
-    end
-
-    local function table_has_visible_column(binding, table_name, column_name)
-        if binding == nil or table_name == nil or column_name == nil then
-            return false
-        end
-        local schema_name = binding.helper_schema_name
-                or helper_schema_name_for_table_reference(binding)
-                or binding.schema_name
-        local schema_tables = VISIBLE_COLUMNS_BY_SCHEMA_AND_TABLE[normalize_identifier_value(schema_name)]
-        local table_columns = schema_tables and schema_tables[normalize_identifier_value(table_name)] or nil
-        return table_columns ~= nil and table_columns[normalize_identifier_value(column_name)] == true
-    end
-
-    local function resolve_visible_path_column_name(binding, table_name, step_name)
-        if table_has_visible_column(binding, table_name, step_name) then
-            return step_name
-        end
-        if table_has_visible_column(binding, table_name, step_name .. "|object") then
-            return step_name .. "|object"
-        end
-        if table_has_visible_column(binding, table_name, step_name .. "|array") then
-            return step_name .. "|array"
+            local actual_field_name = resolve_visible_path_column_name(binding, current_table_name, step.selector.field_name)
+                    or step.selector.field_name
+            return selector_ref .. "." .. encode_quoted_identifier(actual_field_name)
         end
         return nil
     end
@@ -1586,14 +1611,15 @@ JOIN_MODE_LUA = """
                         current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
                         current_table_name = existing.table_name
                         if is_last then
-                            if not table_has_visible_column(binding, current_table_name, "_value") then
+                            local value_column_name = resolve_value_member_column_name(binding, current_table_name)
+                            if value_column_name == nil then
                                 raise_path_error(
                                     reference.path,
                                     'Bracket access on object-array elements requires a trailing property, '
                                             .. 'for example "items[LAST].value", or a nested JOIN ... IN.'
                                 )
                             end
-                            replacement = current_ref .. "." .. encode_quoted_identifier("_value")
+                            replacement = current_ref .. "." .. encode_quoted_identifier(value_column_name)
                         end
                     end
                 end
@@ -1787,14 +1813,15 @@ JOIN_MODE_LUA = """
                             current_row_id = current_ref .. "." .. encode_quoted_identifier("_id")
                             current_table_name = existing.table_name
                             if is_last then
-                                if not table_has_visible_column(base_table, current_table_name, "_value") then
+                                local value_column_name = resolve_value_member_column_name(base_table, current_table_name)
+                                if value_column_name == nil then
                                     raise_path_error(
                                         reference.path,
                                         'Bracket access on object-array elements requires a trailing property, '
                                                 .. 'for example "items[LAST].value", or a nested JOIN ... IN.'
                                     )
                                 end
-                                replacement = current_ref .. "." .. encode_quoted_identifier("_value")
+                                replacement = current_ref .. "." .. encode_quoted_identifier(value_column_name)
                             end
                         end
                     end
@@ -2587,6 +2614,26 @@ ARRAY_ITERATION_LUA = """
         return table.concat(pending_filters, " AND ")
     end
 
+    local table_has_visible_column
+    local resolve_visible_path_column_name
+
+    local function resolve_iterator_member_column_name(binding, member_name)
+        if binding == nil or member_name == nil then
+            return nil
+        end
+        if normalize_identifier_value(member_name) == "_INDEX" then
+            return "_index"
+        end
+        local actual_member_name = resolve_visible_path_column_name(binding, binding.table_name, member_name)
+        if actual_member_name ~= nil then
+            return actual_member_name
+        end
+        if table_has_visible_column(binding, binding.table_name, member_name) then
+            return member_name
+        end
+        return nil
+    end
+
     local function rewrite_iterator_index_references_in_sql(sqltext, scope)
         local tokens = tokenize_path_sql(sqltext)
         local out = {}
@@ -2616,11 +2663,17 @@ ARRAY_ITERATION_LUA = """
             end
             if binding ~= nil and (binding.kind == "iterator_row" or binding.kind == "iterator_value")
                     and dot_token ~= nil and dot_token.type == "punct" and dot_token.text == "."
-                    and member_token ~= nil and member_token.type == "word" then
-                out[#out + 1] = token.text
-                out[#out + 1] = "."
-                out[#out + 1] = encode_quoted_identifier(member_name)
-                index = member_index + 1
+                    and member_token ~= nil then
+                local rewritten_member_name = resolve_iterator_member_column_name(binding, member_name)
+                if rewritten_member_name ~= nil and (member_token.type == "word" or rewritten_member_name ~= member_name) then
+                    out[#out + 1] = token.text
+                    out[#out + 1] = "."
+                    out[#out + 1] = encode_quoted_identifier(rewritten_member_name)
+                    index = member_index + 1
+                else
+                    out[#out + 1] = token.text
+                    index = index + 1
+                end
             else
                 out[#out + 1] = token.text
                 index = index + 1
@@ -2706,6 +2759,18 @@ ARRAY_ITERATION_LUA = """
                         out[#out + 1] = encode_quoted_identifier("_index")
                         index = member_index + 1
                         goto continue
+                    elseif binding ~= nil and (binding.kind == "iterator_row" or binding.kind == "iterator_value")
+                            and dot_token ~= nil and dot_token.type == "punct" and dot_token.text == "."
+                            and member_token ~= nil then
+                        local rewritten_member_name = resolve_iterator_member_column_name(binding, member_name)
+                        if rewritten_member_name ~= nil
+                                and (member_token.type == "word" or rewritten_member_name ~= member_name) then
+                            out[#out + 1] = token.text
+                            out[#out + 1] = "."
+                            out[#out + 1] = encode_quoted_identifier(rewritten_member_name)
+                            index = member_index + 1
+                            goto continue
+                        end
                     end
                 end
                 local prefix = read_join_prefix_at(tokens, index)
@@ -2776,6 +2841,20 @@ ARRAY_ITERATION_LUA = """
                     out[#out + 1] = "."
                     out[#out + 1] = encode_quoted_identifier("_index")
                     index = member_index + 1
+                elseif binding ~= nil and (binding.kind == "iterator_row" or binding.kind == "iterator_value")
+                        and dot_token ~= nil and dot_token.type == "punct" and dot_token.text == "."
+                        and member_token ~= nil then
+                    local rewritten_member_name = resolve_iterator_member_column_name(binding, member_name)
+                    if rewritten_member_name ~= nil
+                            and (member_token.type == "word" or rewritten_member_name ~= member_name) then
+                        out[#out + 1] = token.text
+                        out[#out + 1] = "."
+                        out[#out + 1] = encode_quoted_identifier(rewritten_member_name)
+                        index = member_index + 1
+                    else
+                        out[#out + 1] = token.text
+                        index = index + 1
+                    end
                 else
                     out[#out + 1] = token.text
                     index = index + 1

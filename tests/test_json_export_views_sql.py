@@ -374,6 +374,125 @@ def main() -> None:
             [{"name": "alpha"}, {"name": "beta"}],
             "empty-array child export documents",
         )
+
+        value_object_source_schema = "JVS_SRC_VALUE_OBJECTS"
+        value_object_export_schema = "JVS_VALUE_OBJECTS_EXPORT"
+        value_object_udf_schema = "JVS_VALUE_OBJECTS_UDF"
+        value_object_source_columns = {
+            "EXPERIMENTS": [
+                make_column("EXPERIMENTS", "_id", "DECIMAL", 1, precision=18, scale=0, schema=value_object_source_schema),
+                make_column("EXPERIMENTS", "experiment_id", "VARCHAR(100)", 2, size=100, schema=value_object_source_schema),
+                make_column(
+                    "EXPERIMENTS",
+                    "measurements|array",
+                    "DECIMAL",
+                    3,
+                    precision=18,
+                    scale=0,
+                    schema=value_object_source_schema,
+                ),
+            ],
+            "EXPERIMENTS_measurements_arr": [
+                make_column(
+                    "EXPERIMENTS_measurements_arr",
+                    "_id",
+                    "DECIMAL",
+                    1,
+                    precision=18,
+                    scale=0,
+                    schema=value_object_source_schema,
+                ),
+                make_column(
+                    "EXPERIMENTS_measurements_arr",
+                    "_parent",
+                    "DECIMAL",
+                    2,
+                    precision=18,
+                    scale=0,
+                    schema=value_object_source_schema,
+                ),
+                make_column(
+                    "EXPERIMENTS_measurements_arr",
+                    "_pos",
+                    "DECIMAL",
+                    3,
+                    precision=18,
+                    scale=0,
+                    schema=value_object_source_schema,
+                ),
+                make_column(
+                    "EXPERIMENTS_measurements_arr",
+                    "_value",
+                    "DECIMAL",
+                    4,
+                    precision=18,
+                    scale=0,
+                    schema=value_object_source_schema,
+                ),
+                make_column(
+                    "EXPERIMENTS_measurements_arr",
+                    "unit",
+                    "VARCHAR(20)",
+                    5,
+                    size=20,
+                    schema=value_object_source_schema,
+                ),
+            ],
+        }
+        value_object_artifacts = generate_json_export_artifacts_from_source_columns(
+            value_object_source_columns,
+            source_schema=value_object_source_schema,
+            schema=value_object_export_schema,
+            udf_schema=value_object_udf_schema,
+        )
+        con.execute(f"DROP SCHEMA IF EXISTS {value_object_source_schema} CASCADE")
+        con.execute(f"DROP SCHEMA IF EXISTS {value_object_export_schema} CASCADE")
+        con.execute(f"DROP SCHEMA IF EXISTS {value_object_udf_schema} CASCADE")
+        con.execute(f"CREATE SCHEMA {value_object_source_schema}")
+        con.execute(f"OPEN SCHEMA {value_object_source_schema}")
+        con.execute(
+            'CREATE OR REPLACE TABLE EXPERIMENTS'
+            ' ("_id" DECIMAL(18,0) NOT NULL, "experiment_id" VARCHAR(100), "measurements|array" DECIMAL(18,0))'
+        )
+        con.execute(
+            'CREATE OR REPLACE TABLE "EXPERIMENTS_measurements_arr"'
+            ' ("_id" DECIMAL(18,0) NOT NULL, "_parent" DECIMAL(18,0) NOT NULL, "_pos" DECIMAL(18,0) NOT NULL,'
+            ' "_value" DECIMAL(18,0), "unit" VARCHAR(20))'
+        )
+        con.execute("INSERT INTO EXPERIMENTS VALUES (1, 'exp-1', 2)")
+        con.execute("INSERT INTO EXPERIMENTS VALUES (2, 'exp-2', NULL)")
+        con.execute('INSERT INTO "EXPERIMENTS_measurements_arr" VALUES (101, 1, 0, 10, \'mg/dL\')')
+        con.execute('INSERT INTO "EXPERIMENTS_measurements_arr" VALUES (102, 1, 1, 20, \'mmol/L\')')
+
+        install_json_export_helpers(con, value_object_udf_schema)
+        install_json_export_views(
+            con,
+            source_schema=value_object_source_schema,
+            schema=value_object_export_schema,
+            udf_schema=value_object_udf_schema,
+        )
+
+        value_object_root = value_object_artifacts.root_names["EXPERIMENTS"]
+        value_object_docs = fetch_full_json_list(
+            con,
+            value_object_root.qualified_view,
+            value_object_root.full_json_column,
+            value_object_root.id_column,
+        )
+        assert_equal(
+            value_object_docs,
+            [
+                {
+                    "experiment_id": "exp-1",
+                    "measurements": [
+                        {"value": 10, "unit": "mg/dL"},
+                        {"value": 20, "unit": "mmol/L"},
+                    ],
+                },
+                {"experiment_id": "exp-2"},
+            ],
+            "object-array value field survives full JSON export",
+        )
     finally:
         con.close()
 
