@@ -34,7 +34,3 @@ warn_unused_configs = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 check_untyped_defs = true
-
-[[tool.mypy.overrides]]
-module = ["exasol_json_tables.cli"]
-ignore_errors = true
