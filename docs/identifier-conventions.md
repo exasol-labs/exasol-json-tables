@@ -141,6 +141,7 @@ For feature tables and training exports:
 - use uppercase aliases
 - avoid reserved words such as `SOURCE` and `TYPE`
 - cast to explicit scalar SQL types where helpful
+- for wrapper-syntax notebook work, keep the wrapper query interactive and only publish durable views/tables when you want `export_to_pandas()` or similar downstream access; see [python-dataframes.md](python-dataframes.md)
 
 Example:
 

@@ -150,7 +150,7 @@ FROM JSON_VIEW.SAMPLE;
 
 After the view is created, other sessions can query `ANALYTICS.SAMPLE_PUBLISHED` without activating the JSON Tables preprocessor.
 
-When you create published objects for downstream SQL, BI, or pandas-style access, prefer uppercase aliases so later queries do not need quoted lowercase identifiers everywhere. See [identifier-conventions.md](identifier-conventions.md).
+When you create published objects for downstream SQL, BI, or pandas-style access, prefer uppercase aliases so later queries do not need quoted lowercase identifiers everywhere. See [identifier-conventions.md](identifier-conventions.md) and [python-dataframes.md](python-dataframes.md).
 
 Use a published view when:
 

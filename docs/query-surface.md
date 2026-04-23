@@ -22,12 +22,15 @@ ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSO
 
 Without that activation, the wrapper views still exist, but the extra JSON syntax sugar such as dotted paths and bracket access will not be rewritten.
 
-If you query wrapper views from Python via PyExasol, avoid `export_to_pandas()` for wrapper-syntax queries. PyExasol implements it through `EXPORT ... INTO CSV`, which bypasses the SQL preprocessor. Use `execute()` and `fetchall()` instead, then build a DataFrame yourself if needed:
+If you query wrapper views from Python via PyExasol, treat `execute()` plus `fetchall()` as the primary interface for wrapper-syntax queries. PyExasol implements `export_to_pandas()` through `EXPORT ... INTO CSV`. On the current stack, simple root-wrapper queries can work when the preprocessor is active, but iterator-heavy wrapper syntax is still unreliable there and often degrades into an opaque `EmptyDataError` / `ExaExportError` chain. For notebook work, execute the wrapper query directly and build the DataFrame yourself:
 
 ```python
 stmt = con.execute('SELECT "meta.info.note" FROM "JSON_VIEW"."SAMPLE" ORDER BY "_id"')
+columns = list(stmt.columns())
 rows = stmt.fetchall()
 ```
+
+If you want `export_to_pandas()`, first publish an ordinary view or table with explicit casts and SQL-safe aliases, then export that durable object. See [python-dataframes.md](python-dataframes.md).
 
 ## Identifier Discipline
 
@@ -342,7 +345,7 @@ JOIN JVS_DIM.DOC_FLAGS f
 ## Known Boundaries
 
 - The preprocessor is session-local. Activate it in the SQL session where you want wrapper syntax.
-- PyExasol `export_to_pandas()` bypasses the preprocessor because it runs an `EXPORT ... INTO CSV` statement under the hood. Use `execute()` plus `fetchall()` for wrapper-syntax queries.
+- PyExasol `export_to_pandas()` runs `EXPORT ... INTO CSV` under the hood. Simple root-wrapper queries may work when the preprocessor is active, but wrapper syntax that depends on iterator rewrites is still unreliable there. Use `execute()` plus `fetchall()` for exploratory wrapper queries, or export a published ordinary view/table instead.
 - In joined queries, qualify root-document helper arguments with the root alias, for example `JSON_IS_EXPLICIT_NULL(s."note")`.
 - `TO_JSON(*)` is the primary final-output surface on wrapped roots, but joined wrapper queries must use qualified top-level subsets such as `TO_JSON(s."id", s."meta")`.
 - On ordinary tables and ordinary views, `TO_JSON` is a flat row serializer and joined queries should use `TO_JSON(alias.*)` or qualified columns.
