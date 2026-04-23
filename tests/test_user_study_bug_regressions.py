@@ -140,6 +140,21 @@ def main() -> None:
             'Array selector "child" resolves to a nested object/array reference',
             "BUG-010 selector type error",
         )
+
+        method_iterator_alias_error = fetch_error(
+            con,
+            """
+            SELECT CAST(s."id" AS VARCHAR(10)), method
+            FROM JSON_VIEW.SAMPLE s
+            JOIN VALUE method IN s."tags"
+            ORDER BY 1, 2
+            """,
+        )
+        assert_contains(
+            method_iterator_alias_error,
+            "METHOD_",
+            "BUG-012 method iterator alias rewrite",
+        )
     finally:
         try:
             con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")

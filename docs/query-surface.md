@@ -22,6 +22,13 @@ ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSO
 
 Without that activation, the wrapper views still exist, but the extra JSON syntax sugar such as dotted paths and bracket access will not be rewritten.
 
+If you query wrapper views from Python via PyExasol, avoid `export_to_pandas()` for wrapper-syntax queries. PyExasol implements it through `EXPORT ... INTO CSV`, which bypasses the SQL preprocessor. Use `execute()` and `fetchall()` instead, then build a DataFrame yourself if needed:
+
+```python
+stmt = con.execute('SELECT "meta.info.note" FROM "JSON_VIEW"."SAMPLE" ORDER BY "_id"')
+rows = stmt.fetchall()
+```
+
 ## Identifier Discipline
 
 There are two different naming concerns on the wrapper surface:
@@ -335,11 +342,13 @@ JOIN JVS_DIM.DOC_FLAGS f
 ## Known Boundaries
 
 - The preprocessor is session-local. Activate it in the SQL session where you want wrapper syntax.
+- PyExasol `export_to_pandas()` bypasses the preprocessor because it runs an `EXPORT ... INTO CSV` statement under the hood. Use `execute()` plus `fetchall()` for wrapper-syntax queries.
 - In joined queries, qualify root-document helper arguments with the root alias, for example `JSON_IS_EXPLICIT_NULL(s."note")`.
 - `TO_JSON(*)` is the primary final-output surface on wrapped roots, but joined wrapper queries must use qualified top-level subsets such as `TO_JSON(s."id", s."meta")`.
 - On ordinary tables and ordinary views, `TO_JSON` is a flat row serializer and joined queries should use `TO_JSON(alias.*)` or qualified columns.
 - Path/helper syntax does not start from derived-table roots yet. Move the JSON expression into the inner `SELECT` or query the wrapper view directly.
 - `VALUE` iterators support plain SQL on the scalar value, but JSON helper/path syntax is intentionally not supported on them.
+- `method` is an unsafe iterator alias. `JOIN VALUE method IN s."tags"` may parse, but later references such as `SELECT method` or `WHERE method = 'x'` are rewritten into a broken `METHOD_` token. Use aliases such as `tag`, `entry`, or `raw_method` instead.
 - Use `JSON_TYPEOF(...)` and `JSON_AS_*` for JSON-aware variant semantics. Built-in `TYPEOF(...)` and plain `CAST(...)` reflect wrapper view SQL types, not the original per-row JSON type contract.
 
 ## Where To Go Next

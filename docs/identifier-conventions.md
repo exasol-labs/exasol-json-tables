@@ -93,6 +93,7 @@ Treat these as risky aliases:
 - `user`
 - `order`
 - `group`
+- `method`
 
 Safer patterns:
 
@@ -111,6 +112,8 @@ FROM JSON_VIEW.TRAINING_DATASET;
 ```
 
 But for durable downstream surfaces, prefer a non-keyword alias instead.
+
+`method` deserves extra caution on the wrapper query surface too. As an iterator alias it can be rewritten into a broken `METHOD_` token once you reference it later in the query. For example, `JOIN VALUE method IN s."tags"` may parse, but `SELECT method` or `WHERE method = 'red'` can fail unexpectedly. Prefer iterator aliases such as `tag`, `entry`, or `raw_method`.
 
 ## Agent Defaults
 
