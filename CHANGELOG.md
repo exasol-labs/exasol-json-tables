@@ -6,6 +6,8 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+## [0.1] - 2026-04-23
+
 ### Added
 
 - Added a user-facing changelog so downstream users can track notable changes between releases.
