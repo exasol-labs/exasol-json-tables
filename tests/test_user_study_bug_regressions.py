@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import _bootstrap  # noqa: F401
-from pyexasol.statement import ExaStatement
 
 from nano_support import connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
 
@@ -64,8 +63,7 @@ def main() -> None:
                 schema_name=PREPROCESSOR_SCHEMA,
                 script_name=PREPROCESSOR_SCRIPT,
             )
-            prepared_stmt = ExaStatement(
-                prepared_selector_con,
+            prepared_stmt = prepared_selector_con.create_prepared_statement(
                 """
                 SELECT
                   CAST("id" AS VARCHAR(10)) AS doc_id,
@@ -73,7 +71,6 @@ def main() -> None:
                 FROM JSON_VIEW.SAMPLE
                 ORDER BY "id"
                 """,
-                prepare=True,
             )
             prepared_stmt.execute_prepared([(1,)])
             prepared_selector_rows = prepared_stmt.fetchall()

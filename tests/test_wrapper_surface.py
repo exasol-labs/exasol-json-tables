@@ -3,7 +3,6 @@
 import subprocess
 
 import _bootstrap  # noqa: F401
-from pyexasol.statement import ExaStatement
 
 from nano_support import ROOT, connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
 
@@ -228,8 +227,7 @@ def main() -> None:
     prepared_selector_con = connect()
     try:
         install_wrapper_preprocessor(prepared_selector_con, [PUBLIC_WRAPPER_SCHEMA], [HELPER_WRAPPER_SCHEMA])
-        prepared_stmt = ExaStatement(
-            prepared_selector_con,
+        prepared_stmt = prepared_selector_con.create_prepared_statement(
             """
             SELECT
               CAST("id" AS VARCHAR(10)) AS doc_id,
@@ -237,7 +235,6 @@ def main() -> None:
             FROM JSON_VIEW.SAMPLE
             ORDER BY "id"
             """,
-            prepare=True,
         )
         prepared_stmt.execute_prepared([(1,)])
         prepared_selector_rows = prepared_stmt.fetchall()
