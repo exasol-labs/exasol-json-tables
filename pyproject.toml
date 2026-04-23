@@ -13,6 +13,11 @@ dependencies = [
   "pyexasol>=2.2.0,<3",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "mypy==1.20.*",
+]
+
 [project.scripts]
 exasol-json-tables = "exasol_json_tables.cli:main"
 
@@ -21,3 +26,15 @@ package-dir = {"" = "python"}
 
 [tool.setuptools.packages.find]
 where = ["python"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["python/exasol_json_tables"]
+warn_unused_configs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["exasol_json_tables.cli"]
+ignore_errors = true

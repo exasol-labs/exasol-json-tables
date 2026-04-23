@@ -664,11 +664,11 @@ def _validate_structured_object_node(node: StructuredObjectNodeSpec, *, label: s
                 f"{label} array {array_name!r} requires a matching array_ref field in the parent node."
             )
 
-    for child in node.objects:
-        child_label = f"{label}.{child.name}" if child.name is not None else label
-        _validate_structured_object_node(child, label=child_label)
-    for child in node.arrays:
-        _validate_structured_array_node(child, label=f"{label}.{child.name}")
+    for object_child in node.objects:
+        child_label = f"{label}.{object_child.name}" if object_child.name is not None else label
+        _validate_structured_object_node(object_child, label=child_label)
+    for array_child in node.arrays:
+        _validate_structured_array_node(array_child, label=f"{label}.{array_child.name}")
 
 
 def _validate_structured_array_node(node: StructuredArrayNodeSpec, *, label: str) -> None:
@@ -703,11 +703,11 @@ def _validate_structured_array_node(node: StructuredArrayNodeSpec, *, label: str
                 f"{label} array {array_name!r} requires a matching array_ref field in the parent array node."
             )
 
-    for child in objects:
-        child_label = f"{label}.{child.name}" if child.name is not None else label
-        _validate_structured_object_node(child, label=child_label)
-    for child in arrays:
-        _validate_structured_array_node(child, label=f"{label}.{child.name}")
+    for object_child in objects:
+        child_label = f"{label}.{object_child.name}" if object_child.name is not None else label
+        _validate_structured_object_node(object_child, label=child_label)
+    for array_child in arrays:
+        _validate_structured_array_node(array_child, label=f"{label}.{array_child.name}")
 
 
 def _compile_structured_object_node(
@@ -733,20 +733,20 @@ def _compile_structured_object_node(
             select_sql=_format_select_sql(select_items, node.from_sql),
         )
     ]
-    for child in node.objects:
-        if child.name is None:
+    for object_child in node.objects:
+        if object_child.name is None:
             raise ValueError(f"Structured object node under {table_name!r} is missing a name.")
         table_specs.extend(
             _compile_structured_object_node(
-                table_name=f"{table_name}_{child.name}",
-                node=child,
+                table_name=f"{table_name}_{object_child.name}",
+                node=object_child,
             )
         )
-    for child in node.arrays:
+    for array_child in node.arrays:
         table_specs.extend(
             _compile_structured_array_node(
-                table_name=f"{table_name}_{child.name}_arr",
-                node=child,
+                table_name=f"{table_name}_{array_child.name}_arr",
+                node=array_child,
             )
         )
     return table_specs
@@ -772,6 +772,8 @@ def _compile_structured_array_node(
             )
         ]
     else:
+        if node.row_id_sql is None:
+            raise AssertionError("Structured object-array nodes must define row_id_sql.")
         select_items: list[tuple[str, str]] = [
             (node.row_id_sql, "_id"),
             (node.parent_id_sql, "_parent"),
@@ -794,20 +796,20 @@ def _compile_structured_array_node(
                 select_sql=_format_select_sql(select_items, node.from_sql),
             )
         ]
-        for child in node.objects or []:
-            if child.name is None:
+        for object_child in node.objects or []:
+            if object_child.name is None:
                 raise ValueError(f"Structured object node under {table_name!r} is missing a name.")
             table_specs.extend(
                 _compile_structured_object_node(
-                    table_name=f"{table_name}_{child.name}",
-                    node=child,
+                    table_name=f"{table_name}_{object_child.name}",
+                    node=object_child,
                 )
             )
-        for child in node.arrays or []:
+        for array_child in node.arrays or []:
             table_specs.extend(
                 _compile_structured_array_node(
-                    table_name=f"{table_name}_{child.name}_arr",
-                    node=child,
+                    table_name=f"{table_name}_{array_child.name}_arr",
+                    node=array_child,
                 )
             )
     return table_specs

@@ -19,6 +19,16 @@ Some tests do not need Nano and only validate local packaging or module behavior
 
 Important: many Nano-backed tests reuse shared schemas and fixtures, so they should be run sequentially rather than in parallel.
 
+## Static Validation
+
+```bash
+python3 -m mypy
+```
+
+Runs the repo-configured `mypy` lane for `python/exasol_json_tables`.
+
+The initial typed surface excludes `exasol_json_tables.cli`, which still needs a larger cleanup of its nested JSON summary payload typing.
+
 ## Packaging Surface
 
 ```bash

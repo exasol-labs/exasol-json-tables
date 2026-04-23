@@ -324,6 +324,10 @@ def _build_table_export_select_sql(
             object_alias: str | None = None
             array_alias: str | None = None
             if object_relation is not None:
+                if group.object_member is None:
+                    raise AssertionError(
+                        f"Value group in table {table_name} is missing an object marker column."
+                    )
                 object_alias = "child_value_obj"
                 marker_expr = f'base.{quote_identifier(group.object_member.name)}'
                 join_lines.append(
@@ -363,7 +367,7 @@ def _build_table_export_select_sql(
             else:
                 object_fragment_cte = _cte_name("fragments", table_name)
                 object_row_cte = _cte_name("objectjson", table_name)
-                fragment_selects: list[str] = []
+                object_fragment_selects: list[str] = []
                 fragment_key_sql = ",\n      ".join(
                     f'base.{quote_identifier(column_name)} AS {quote_identifier(column_name)}'
                     for column_name in key_columns
@@ -379,7 +383,7 @@ def _build_table_export_select_sql(
                     group_ord += 10
                     if value_group.null_mask is not None:
                         null_mask_expr = f'base.{quote_identifier(value_group.null_mask.name)}'
-                        fragment_selects.append(
+                        object_fragment_selects.append(
                             f"""
     SELECT
       {fragment_key_sql},
@@ -392,7 +396,7 @@ def _build_table_export_select_sql(
                     if object_child_relation is not None:
                         child_cte = row_ctes[object_child_relation.child_table]
                         marker_expr = f'base.{quote_identifier(value_group.base_name + "|object")}'
-                        fragment_selects.append(
+                        object_fragment_selects.append(
                             f"""
     SELECT
       {fragment_key_sql},
@@ -411,7 +415,7 @@ def _build_table_export_select_sql(
                             )
                         child_array_cte = array_ctes[array_child_relation.child_table]
                         marker_expr = f'base.{quote_identifier(value_group.base_name + "|array")}'
-                        fragment_selects.append(
+                        object_fragment_selects.append(
                             f"""
     SELECT
       {fragment_key_sql},
@@ -431,7 +435,7 @@ def _build_table_export_select_sql(
                     )
                     if fragment_expr is not None:
                         rendered, predicate = fragment_expr
-                        fragment_selects.append(
+                        object_fragment_selects.append(
                             f"""
     SELECT
       {fragment_key_sql},
@@ -442,7 +446,7 @@ def _build_table_export_select_sql(
     WHERE {predicate}""".strip()
                         )
 
-                if fragment_selects:
+                if object_fragment_selects:
                     key_select_columns = [
                         f'base.{quote_identifier(column_name)} AS {quote_identifier(column_name)}'
                         for column_name in key_columns
@@ -457,8 +461,8 @@ def _build_table_export_select_sql(
                         f"{udf_names.json_object_from_fragments}(frag.ord, frag.frag) AS j"
                     )
                     fragment_union_sql = "\n".join(
-                        ["    " + fragment_selects[0]]
-                        + ["    UNION ALL\n    " + item for item in fragment_selects[1:]]
+                        ["    " + object_fragment_selects[0]]
+                        + ["    UNION ALL\n    " + item for item in object_fragment_selects[1:]]
                     )
                     ctes.append(
                         f"""

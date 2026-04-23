@@ -42,6 +42,8 @@ def _resolve_source_schema(
         return materialized_family.source_schema
     if materialized_family is not None:
         return materialized_family.source_schema
+    if source_schema is None:
+        raise AssertionError("source_schema must be present when materialized_family is absent.")
     return validate_identifier("Source schema", source_schema)
 
 

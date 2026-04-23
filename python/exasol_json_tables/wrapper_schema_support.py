@@ -663,6 +663,10 @@ def generate_metadata_sql(
                 and not group.alternates
                 and null_mask_name is not None
             ):
+                if group.null_mask is None:
+                    raise AssertionError(
+                        f"Group {group.base_name!r} in table {table_name!r} is missing null-mask metadata."
+                    )
                 column_rows.append([
                     root_table,
                     table_name,

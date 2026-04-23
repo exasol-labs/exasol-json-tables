@@ -14,7 +14,13 @@ from .generate_json_export_views_sql import (
     json_export_root_names_from_wrapper_manifest,
     json_export_view_name,
 )
-from .generate_preprocessor_sql import render_sql, validate_identifier
+from .generate_preprocessor_sql import (
+    WrapperGroupConfig,
+    WrapperToJsonConfig,
+    WrapperVisibleColumnConfig,
+    render_sql,
+    validate_identifier,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -200,8 +206,8 @@ def _infer_variant_label(member: dict) -> str | None:
     return _normalize_variant_label(member_type)
 
 
-def _build_group_config(manifests: list[dict]) -> dict[str, dict[str, dict[str, object]]]:
-    config: dict[str, dict[str, dict[str, str]]] = {}
+def _build_group_config(manifests: list[dict]) -> WrapperGroupConfig:
+    config: WrapperGroupConfig = {}
     for manifest in manifests:
         public_schema = validate_identifier("Manifest public schema", manifest["publicSchema"])
         helper_schema = validate_identifier("Manifest helper schema", manifest["helperSchema"])
@@ -237,8 +243,8 @@ def _build_group_config(manifests: list[dict]) -> dict[str, dict[str, dict[str, 
     return config
 
 
-def _build_visible_column_config(manifests: list[dict]) -> dict[str, dict[str, dict[str, bool]]]:
-    config: dict[str, dict[str, dict[str, bool]]] = {}
+def _build_visible_column_config(manifests: list[dict]) -> WrapperVisibleColumnConfig:
+    config: WrapperVisibleColumnConfig = {}
     for manifest in manifests:
         public_schema = validate_identifier("Manifest public schema", manifest["publicSchema"])
         helper_schema = validate_identifier("Manifest helper schema", manifest["helperSchema"])
@@ -262,8 +268,8 @@ def _build_visible_column_config(manifests: list[dict]) -> dict[str, dict[str, d
     return config
 
 
-def _build_to_json_config(manifests: list[dict]) -> dict[str, dict[str, dict[str, object]]]:
-    config: dict[str, dict[str, dict[str, object]]] = {}
+def _build_to_json_config(manifests: list[dict]) -> WrapperToJsonConfig:
+    config: WrapperToJsonConfig = {}
     for manifest in manifests:
         public_schema = validate_identifier("Manifest public schema", manifest["publicSchema"])
         helper_schema = validate_identifier("Manifest helper schema", manifest["helperSchema"])
@@ -320,16 +326,16 @@ def _build_to_json_config(manifests: list[dict]) -> dict[str, dict[str, dict[str
 
         for root_table, root_names in export_root_names.items():
             root = roots_by_table[root_table]
-            argument_to_fragment: dict[str, str] = {}
-            display_name_by_argument: dict[str, str] = {}
+            root_argument_to_fragment: dict[str, str] = {}
+            root_display_name_by_argument: dict[str, str] = {}
             for fragment in root_names.fragments:
                 normalized_base_name = str(fragment.base_name).upper()
-                argument_to_fragment[normalized_base_name] = fragment.column_name
-                display_name_by_argument[normalized_base_name] = fragment.base_name
+                root_argument_to_fragment[normalized_base_name] = fragment.column_name
+                root_display_name_by_argument[normalized_base_name] = fragment.base_name
 
                 normalized_visible_name = str(fragment.visible_name).upper()
-                argument_to_fragment[normalized_visible_name] = fragment.column_name
-                display_name_by_argument[normalized_visible_name] = fragment.visible_name
+                root_argument_to_fragment[normalized_visible_name] = fragment.column_name
+                root_display_name_by_argument[normalized_visible_name] = fragment.visible_name
 
             public_schema_tables[validate_identifier("Manifest public view", root["publicView"])] = {
                 "rootTable": root_table,
@@ -338,8 +344,8 @@ def _build_to_json_config(manifests: list[dict]) -> dict[str, dict[str, dict[str
                 "rowKeySourceColumns": ["_id"],
                 "fullJsonColumn": root_names.full_json_column,
                 "optionalFragmentsFunction": helper_udf_names.json_object_from_optional_fragments,
-                "fragmentColumnByArgumentName": argument_to_fragment,
-                "displayNameByArgumentName": display_name_by_argument,
+                "fragmentColumnByArgumentName": root_argument_to_fragment,
+                "displayNameByArgumentName": root_display_name_by_argument,
             }
     return config
 

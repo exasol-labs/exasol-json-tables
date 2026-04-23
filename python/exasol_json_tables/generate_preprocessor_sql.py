@@ -11,6 +11,11 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = ROOT / "dist" / "json_preprocessor.sql"
 DEFAULT_PREPROCESSOR_LIBRARY_SCRIPT = "JVS_PREPROCESSOR_LIB"
 IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+WrapperGroupDetail = dict[str, object]
+WrapperTableGroupConfig = dict[str, WrapperGroupDetail]
+WrapperGroupConfig = dict[str, dict[str, WrapperTableGroupConfig]]
+WrapperVisibleColumnConfig = dict[str, dict[str, dict[str, bool]]]
+WrapperToJsonConfig = dict[str, dict[str, dict[str, object]]]
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,9 +147,9 @@ def _build_preprocessor_config(
     blocked_function_message: str,
     allowed_schemas: list[str],
     helper_schema_map: dict[str, str],
-    wrapper_group_config: dict[str, dict[str, dict[str, object]]] | None,
-    wrapper_visible_column_config: dict[str, dict[str, dict[str, bool]]] | None,
-    wrapper_to_json_config: dict[str, dict[str, dict[str, object]]] | None,
+    wrapper_group_config: WrapperGroupConfig | None,
+    wrapper_visible_column_config: WrapperVisibleColumnConfig | None,
+    wrapper_to_json_config: WrapperToJsonConfig | None,
     regular_to_json_row_object_function: str | None,
     rewrite_path_identifiers: bool,
     helper_function_kinds: dict[str, str] | None = None,
@@ -4171,9 +4176,9 @@ def render_sql(
     blocked_function_message: str,
     allowed_schemas: list[str],
     helper_schema_map: dict[str, str],
-    wrapper_group_config: dict[str, dict[str, dict[str, object]]] | None,
-    wrapper_visible_column_config: dict[str, dict[str, dict[str, bool]]] | None,
-    wrapper_to_json_config: dict[str, dict[str, dict[str, object]]] | None,
+    wrapper_group_config: WrapperGroupConfig | None,
+    wrapper_visible_column_config: WrapperVisibleColumnConfig | None,
+    wrapper_to_json_config: WrapperToJsonConfig | None,
     regular_to_json_row_object_function: str | None,
     rewrite_path_identifiers: bool,
     activate_session: bool,

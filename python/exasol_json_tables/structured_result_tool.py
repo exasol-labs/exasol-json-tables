@@ -7,6 +7,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 from .in_session_wrapper_installer import install_wrapper_surface_in_session
 from .result_family_materializer import (
@@ -46,7 +47,7 @@ def _drop_schema_if_exists(con, schema_name: str) -> None:
     con.execute(f"DROP SCHEMA IF EXISTS {quote_identifier(schema_name)} CASCADE")
 
 
-def _resolve_preview_public_view(manifest: dict[str, object], root_table: str | None) -> str:
+def _resolve_preview_public_view(manifest: dict[str, Any], root_table: str | None) -> str:
     roots = list(manifest["roots"])
     if root_table is None:
         if len(roots) != 1:
