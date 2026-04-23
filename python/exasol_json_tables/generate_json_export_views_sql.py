@@ -418,18 +418,10 @@ def _build_table_export_select_sql(
                     object_alias=object_alias,
                     array_alias=array_alias,
                 )
+                value_object_fragment_rendered = None
+                value_object_fragment_predicate = None
                 if value_fragment_expr is not None:
-                    rendered, predicate = value_fragment_expr
-                    object_fragment_selects.append(
-                        f"""
-    SELECT
-      {fragment_key_sql},
-      5 AS ord,
-      {sql_literal("value")} AS frag_key,
-      {rendered} AS frag
-    FROM {source_qtable} base
-    WHERE {predicate}""".strip()
-                    )
+                    value_object_fragment_rendered, value_object_fragment_predicate = value_fragment_expr
                 group_ord = 0
                 for value_group in non_value_groups:
                     object_child_relation = relationship_by_parent_segment_kind.get(
@@ -553,10 +545,21 @@ def _build_table_export_select_sql(
                 ]
                 final_json_expr = "obj_json.j"
                 if json_expr is not None:
-                    final_json_expr = (
-                        f"CASE WHEN obj_json.j <> '{{}}' THEN obj_json.j "
-                        f"ELSE COALESCE({json_expr}, obj_json.j) END"
-                    )
+                    if value_object_fragment_rendered is not None and value_object_fragment_predicate is not None:
+                        merged_object_expr = (
+                            f"CASE WHEN {value_object_fragment_predicate} THEN "
+                            f"'{{' || {value_object_fragment_rendered} || ',' || SUBSTR(obj_json.j, 2) "
+                            f"ELSE obj_json.j END"
+                        )
+                        final_json_expr = (
+                            f"CASE WHEN obj_json.j <> '{{}}' THEN {merged_object_expr} "
+                            f"ELSE COALESCE({json_expr}, obj_json.j) END"
+                        )
+                    else:
+                        final_json_expr = (
+                            f"CASE WHEN obj_json.j <> '{{}}' THEN obj_json.j "
+                            f"ELSE COALESCE({json_expr}, obj_json.j) END"
+                        )
                 ctes.append(
                     f"""
 {row_cte} AS (

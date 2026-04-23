@@ -1009,13 +1009,15 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
 
 
 def test_unified_cli_describe_wrappers_recovers_legacy_metadata_tables() -> None:
+    source_schema = "JVS_SRC"
     con = connect()
     try:
         cleanup_schemas(con)
+        con.execute('DROP SCHEMA IF EXISTS "JVS_SRC" CASCADE')
         install_source_fixture(con, include_deep_fixture=True)
         install_wrapper_views(
             con,
-            source_schema=SOURCE_SCHEMA,
+            source_schema=source_schema,
             wrapper_schema=WRAPPER_SCHEMA,
             helper_schema=HELPER_SCHEMA,
         )
@@ -1044,12 +1046,13 @@ def test_unified_cli_describe_wrappers_recovers_legacy_metadata_tables() -> None
             for entry in describe_wrappers_payload["wrappers"]
             if entry["wrapperSchema"] == WRAPPER_SCHEMA and entry["helperSchema"] == HELPER_SCHEMA
         )
-        assert legacy_entry["sourceSchema"] == SOURCE_SCHEMA
+        assert legacy_entry["sourceSchema"] == source_schema
         assert legacy_entry["publicViews"] == ["DEEPDOC", "SAMPLE"]
     finally:
         con = connect()
         try:
             cleanup_schemas(con)
+            con.execute('DROP SCHEMA IF EXISTS "JVS_SRC" CASCADE')
         finally:
             con.close()
 
