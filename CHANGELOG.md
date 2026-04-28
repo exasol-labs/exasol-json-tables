@@ -6,6 +6,18 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+### Added
+
+- Added `--exasol-http-tls` to the Rust ingest CLI and unified `exasol-json-tables ingest` / `ingest-and-wrap` workflows. This enables TLS for the Exasol HTTP bulk-import transport independently from the control connection TLS settings in the `--exasol` URL.
+- Added `httpTransportTls` to ingest JSON summaries when direct Exasol import is used.
+
+### Changed
+
+- Upgraded the Rust ingest engine from `exarrow-rs` `0.9.0` to `0.12.0`.
+- Direct Exasol ingest can now benefit from `exarrow-rs` native Parquet import automatically on Exasol 2025.1.11 and newer, while older Exasol versions continue to use the existing CSV conversion path.
+- Direct Exasol ingest now relies on `exarrow-rs` automatic schema activation during `connect()`, avoiding the previous explicit `set_schema()` round trip on every ingest connection.
+- Updated ingest documentation to distinguish Exasol control-connection TLS from the HTTP transport TLS used for bulk imports.
+
 ## [0.1] - 2026-04-23
 
 ### Added
