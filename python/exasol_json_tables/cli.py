@@ -1214,6 +1214,11 @@ def add_ingest_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--schema-sql", action="store_true", help="Emit Exasol SQL DDL.")
     parser.add_argument("--exasol", default=None, help="Exasol connection URL.")
+    parser.add_argument(
+        "--exasol-http-tls",
+        action="store_true",
+        help="Use TLS for the Exasol HTTP import transport. Keep disabled for local Docker/Nano.",
+    )
     parser.add_argument("--exasol-temp-dir", type=Path, default=None, help="Exasol staging directory.")
     parser.add_argument("--exasol-cleanup", action="store_true", help="Clean up staged Parquet files after upload.")
     parser.add_argument(
@@ -1515,6 +1520,9 @@ def command_ingest(args: argparse.Namespace) -> None:
         command.extend(["--manifest-output", str(manifest_output)])
     if args.exasol is not None:
         command.extend(["--exasol", args.exasol])
+    exasol_http_tls = bool(getattr(args, "exasol_http_tls", False))
+    if exasol_http_tls:
+        command.append("--exasol-http-tls")
     if args.exasol_temp_dir is not None:
         command.extend(["--exasol-temp-dir", str(args.exasol_temp_dir.resolve())])
     if args.exasol_cleanup:
@@ -1567,6 +1575,7 @@ def command_ingest(args: argparse.Namespace) -> None:
                 "dsn": str(parsed_exasol["dsn"]),
                 "sourceSchema": str(parsed_exasol.get("schema") or ""),
                 "sourceSchemaEnsured": bool(parsed_exasol.get("schema")),
+                "httpTransportTls": exasol_http_tls,
             }
         _emit_json_summary(summary)
 

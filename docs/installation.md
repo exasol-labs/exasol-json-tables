@@ -213,6 +213,7 @@ For other environments, use the connection options on the CLI. Common options in
 - `--user`
 - `--password`
 - `--exasol` for the ingest URL
+- `--exasol-http-tls` for production/SaaS bulk-import HTTP transport TLS
 
 For example:
 
@@ -220,7 +221,8 @@ For example:
 exasol-json-tables ingest \
   --input ./data.json \
   --artifact-dir ./dist/exasol-json-tables \
-  --exasol exasol://sys:exasol@db.example.com:8563/JVS_SRC
+  --exasol exasol://sys:exasol@db.example.com:8563/JVS_SRC \
+  --exasol-http-tls
 ```
 
 For direct ingest, the CLI creates the target source schema if it does not already exist. If schema creation is not allowed for your user, the command will now fail early at that step instead of after scan and staging work.

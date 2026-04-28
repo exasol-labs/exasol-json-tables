@@ -52,6 +52,9 @@ json_to_parquet --input data.json --exasol "exasol://user:pass@host:8563/schema"
 # Import via temp staging files and clean them up after upload
 json_to_parquet --input data.json --exasol "exasol://user:pass@host:8563/schema" --exasol-temp-dir /tmp/json_to_parquet --exasol-cleanup
 
+# Use TLS on the Exasol HTTP import transport for production/SaaS targets
+json_to_parquet --input data.json --exasol "exasol://user:pass@host:8563/schema" --exasol-http-tls
+
 # Emit an Exasol SQL DDL file alongside the generated Parquet outputs
 json_to_parquet --input data.json --schema-sql
 
@@ -62,8 +65,12 @@ json_to_parquet --input data.json --output-dir ./out
 ## Exasol Import
 
 When `--exasol` is provided, the tool uploads the generated Parquet files to Exasol using the
-`exarrow-rs` driver. Tables are created automatically from Parquet metadata, and uploads run
-in parallel using multiple HTTP connections for higher throughput.
+`exarrow-rs` driver. Tables are created from the inferred JSON table plan, and uploads run in
+parallel using multiple HTTP connections for higher throughput.
+
+The Exasol control connection TLS setting in the `--exasol` URL is separate from the HTTP
+transport used for bulk imports. Local Docker/Nano setups normally keep the HTTP import
+transport unencrypted. For production or SaaS targets, pass `--exasol-http-tls`.
 
 The generated `PRIMARY KEY` and `FOREIGN KEY` constraints are emitted as `DISABLE` in Exasol.
 This keeps them as relationship metadata instead of relying on the session's
@@ -72,6 +79,7 @@ This keeps them as relationship metadata instead of relying on the session's
 ### Exasol Flags
 
 - `--exasol "<url>"`: Exasol connection URL (format: `exasol://user:pass@host:port/schema`).
+- `--exasol-http-tls`: Use TLS for the HTTP import transport.
 - `--exasol-temp-dir <dir>`: Write intermediate Parquet files to a specific directory.
 - `--exasol-cleanup`: Remove intermediate Parquet files after a successful upload.
 

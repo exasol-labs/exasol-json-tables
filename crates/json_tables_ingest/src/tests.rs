@@ -1434,6 +1434,7 @@ fn exasol_e2e_imports_nested_objects_into_related_tables() {
         schema_sql: false,
         manifest_output: None,
         exasol: Some(schema.schema_url()),
+        exasol_http_tls: false,
         exasol_temp_dir: Some(staging_dir.clone()),
         exasol_cleanup: true,
     })
@@ -1542,6 +1543,7 @@ fn exasol_e2e_imports_ndjson_and_preserves_array_order() {
         schema_sql: false,
         manifest_output: None,
         exasol: Some(schema.schema_url()),
+        exasol_http_tls: false,
         exasol_temp_dir: None,
         exasol_cleanup: false,
     })

@@ -1570,6 +1570,46 @@ def test_unified_cli_ingest_json_artifacts_are_structured() -> None:
         assert all(path.endswith(".parquet") for path in artifacts["parquetFiles"])
 
 
+def test_unified_cli_forwards_exasol_http_tls_to_rust_ingest() -> None:
+    captured_commands: list[list[str]] = []
+    original_run = subprocess.run
+    original_ensure_schema_exists = cli_module._ensure_schema_exists
+    try:
+        def fake_run(command, **kwargs):
+            captured_commands.append(list(command))
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        subprocess.run = fake_run
+        cli_module._ensure_schema_exists = lambda **kwargs: None
+
+        with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_http_tls_") as tmpdir:
+            tmp = Path(tmpdir)
+            cli_module.command_ingest(
+                cli_module.argparse.Namespace(
+                    input=tmp / "sample.json",
+                    artifact_dir=tmp / "artifacts",
+                    manifest_output=None,
+                    no_source_manifest=False,
+                    output_dir=None,
+                    schema_sql=False,
+                    exasol="exasol://sys:exasol@127.0.0.1:8563/JVS_HTTP_TLS?tls=1&validateservercertificate=0",
+                    exasol_http_tls=True,
+                    exasol_temp_dir=tmp / "staging",
+                    exasol_cleanup=True,
+                    validate_server_certificate=False,
+                    cargo_manifest_path=ROOT / "crates" / "json_tables_ingest" / "Cargo.toml",
+                    json=False,
+                    _suppress_human_output=True,
+                )
+            )
+    finally:
+        subprocess.run = original_run
+        cli_module._ensure_schema_exists = original_ensure_schema_exists
+
+    assert len(captured_commands) == 1
+    assert "--exasol-http-tls" in captured_commands[0]
+
+
 def test_unified_cli_ingest_error_codes() -> None:
     with tempfile.TemporaryDirectory(prefix="exasol_json_tables_cli_ingest_errors_") as tmpdir:
         tmp = Path(tmpdir)
@@ -1747,6 +1787,7 @@ if __name__ == "__main__":
     test_unified_cli_json_failure_envelope()
     test_unified_cli_error_repro_redacts_password()
     test_unified_cli_ingest_json_artifacts_are_structured()
+    test_unified_cli_forwards_exasol_http_tls_to_rust_ingest()
     test_unified_cli_ingest_error_codes()
     test_wrapper_generation_connection_ssl_options()
     test_nano_support_connection_ssl_options()

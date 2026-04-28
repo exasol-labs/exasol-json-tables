@@ -81,6 +81,10 @@ pub struct Args {
     #[arg(long)]
     exasol: Option<String>,
 
+    /// Use TLS for Exasol HTTP import transport (separate from the control connection TLS).
+    #[arg(long, default_value_t = false)]
+    exasol_http_tls: bool,
+
     /// When importing into Exasol, write intermediate Parquet files to this directory.
     #[arg(long)]
     exasol_temp_dir: Option<PathBuf>,
@@ -142,7 +146,13 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let table_files = write_all_tables(&args.input, format, &planned_tables, &output_dir, &stem)?;
 
     if let Some(exasol_url) = args.exasol.as_deref() {
-        import_into_exasol(exasol_url, &planned_tables, &table_files, &stem)?;
+        import_into_exasol(
+            exasol_url,
+            args.exasol_http_tls,
+            &planned_tables,
+            &table_files,
+            &stem,
+        )?;
     }
 
     if args.exasol.is_some() && args.exasol_cleanup {
@@ -182,16 +192,12 @@ struct TableFile {
 async fn connect_exasol(exasol_url: &str) -> Result<Connection, DynError> {
     let driver = Driver::new();
     let database = driver.open(exasol_url)?;
-    let schema = database.params().schema.clone();
-    let mut connection = database.connect().await?;
-    if let Some(schema) = schema {
-        connection.set_schema(schema).await?;
-    }
-    Ok(connection)
+    Ok(database.connect().await?)
 }
 
 fn import_into_exasol(
     exasol_url: &str,
+    exasol_http_tls: bool,
     planned_tables: &[PlannedTable],
     table_files: &[TableFile],
     stem: &str,
@@ -202,13 +208,21 @@ fn import_into_exasol(
 
     runtime
         .block_on(async {
-            import_into_exasol_async(exasol_url, planned_tables, table_files, stem).await
+            import_into_exasol_async(
+                exasol_url,
+                exasol_http_tls,
+                planned_tables,
+                table_files,
+                stem,
+            )
+            .await
         })
         .map_err(|err| err as Box<dyn Error>)
 }
 
 async fn import_into_exasol_async(
     exasol_url: &str,
+    exasol_http_tls: bool,
     planned_tables: &[PlannedTable],
     table_files: &[TableFile],
     stem: &str,
@@ -252,7 +266,7 @@ async fn import_into_exasol_async(
         join_set.spawn(async move {
             let _permit = semaphore.acquire().await?;
             let mut connection = connect_exasol(&url).await?;
-            let import_options = ParquetImportOptions::default();
+            let import_options = ParquetImportOptions::default().use_tls(exasol_http_tls);
             let rows = connection
                 .import_parquet_from_files(&table_name, files, import_options)
                 .await?;
