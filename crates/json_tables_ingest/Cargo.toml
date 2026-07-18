@@ -6,12 +6,12 @@ description = "CLI tool to convert JSON input into Parquet output files."
 license = "MIT"
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
-serde_json = { version = "1.0", features = ["preserve_order"] }
-parquet = "57.2"
-tokio = { version = "1.37", features = ["rt-multi-thread", "sync"] }
-exarrow-rs = "0.12.0"
+clap = { version = "4.6", features = ["derive"] }
+serde_json = { version = "1.0.150", features = ["preserve_order"] }
+parquet = "58.3"
+tokio = { version = "1.53", features = ["rt-multi-thread", "sync"] }
+exarrow-rs = "0.14.0"
 
 [dev-dependencies]
-arrow = "57.2"
-tempfile = "3.10"
+arrow = "58.3"
+tempfile = "3.27"
