@@ -33,10 +33,28 @@ Use this for the one-shot automation path:
 exasol-json-tables ingest-and-wrap \
   --input ./data.json \
   --name customer_events \
+  --if-exists replace \
   --artifact-dir ./dist/exasol-json-tables \
   --exasol-temp-dir /tmp/exasol-json-tables \
   --json
 ```
+
+`--if-exists` controls retries at the whole-workflow level. A workflow owns its source,
+wrapper, helper, and preprocessor schemas:
+
+- `fail` is the default and stops before ingest if any workflow schema already exists.
+- `replace` drops all four workflow schemas and rebuilds them. Use this with a stable
+  `--name` for a logical batch when an unattended retry should restart from scratch.
+- `skip` leaves the database unchanged and exits successfully if any workflow schema
+  exists. This is useful for create-once jobs; it does not repair a partial prior run.
+
+`replace` is destructive for the four derived or explicitly overridden schema names.
+Do not point those schema options at schemas shared with another workflow.
+
+An alternative append-only automation pattern is to use a unique `--name` for every
+attempt, for example `customer_events_20260807_attempt_2`. This preserves earlier
+attempts for inspection but creates a separate set of schemas and artifacts each time,
+so the caller must eventually retire them.
 
 The JSON summary includes:
 
@@ -50,6 +68,10 @@ The JSON summary includes:
   The detailed wrapper package summary
 - `validation`
   The installed-package validation report when validation ran
+
+It also includes `outcome` (`completed` or `skipped`) and `ifExists`. A skipped run
+reports `existingSchemas`; a replacement reports the schemas found in
+`replacedSchemas`.
 
 For wrapper-installing workflows, `objects.publicViews`, `nextActions.publicViews`, and `wrapper.publicViews` expose the actual public view names created inside the wrapper schema. `--name` controls the derived schema/package names, not the public view names themselves.
 
@@ -180,6 +202,7 @@ That makes it practical to branch on:
 
 For ingest workflows, the main machine-readable error classes are now:
 
+- `INGEST-WORKFLOW-ALREADY-EXISTS`
 - `INGEST-JSON-PARSE-ERROR`
 - `INGEST-UNSUPPORTED-INPUT-FORMAT`
 - `INGEST-LOCAL-FILESYSTEM-ERROR`

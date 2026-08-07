@@ -1187,6 +1187,63 @@ def _ensure_schema_exists(
         con.close()
 
 
+def _workflow_schema_names(workflow: Phase5WorkflowConfig) -> list[str]:
+    return list(
+        dict.fromkeys(
+            [
+                str(workflow["preprocessorSchema"]),
+                str(workflow["helperSchema"]),
+                str(workflow["wrapperSchema"]),
+                str(workflow["sourceSchema"]),
+            ]
+        )
+    )
+
+
+def _prepare_ingest_and_wrap_destination(
+    workflow: Phase5WorkflowConfig,
+    if_exists: str,
+    *,
+    validate_server_certificate: bool = False,
+) -> list[str]:
+    schemas = _workflow_schema_names(workflow)
+    schema_literals = ", ".join(f"'{schema}'" for schema in schemas)
+    con = connect_for_generation(
+        str(workflow["dsn"]),
+        str(workflow["user"]),
+        str(workflow["password"]),
+        validate_certificate=validate_server_certificate,
+    )
+    try:
+        rows = con.execute(
+            f"SELECT SCHEMA_NAME FROM EXA_ALL_SCHEMAS WHERE SCHEMA_NAME IN ({schema_literals})"
+        ).fetchall()
+        existing = sorted(str(row[0]) for row in rows)
+        if existing and if_exists == "fail":
+            existing_list = ", ".join(existing)
+            raise CliCommandError(
+                code="INGEST-WORKFLOW-ALREADY-EXISTS",
+                message=f"Workflow destination already exists: {existing_list}",
+                hint=(
+                    "Use --if-exists replace to rebuild it, --if-exists skip to leave it unchanged, "
+                    "or choose a new --name."
+                ),
+                likely_fix=(
+                    "For retryable automation, use a stable logical batch name together with "
+                    "--if-exists replace."
+                ),
+            )
+        if existing and if_exists == "skip":
+            return existing
+        if if_exists == "replace":
+            for schema in schemas:
+                con.execute(f"DROP SCHEMA IF EXISTS {quote_identifier(schema)} CASCADE")
+        con.execute(f"CREATE SCHEMA IF NOT EXISTS {quote_identifier(str(workflow['sourceSchema']))}")
+        return existing
+    finally:
+        con.close()
+
+
 def add_ingest_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", type=Path, required=True, help="Input JSON or NDJSON file.")
     parser.add_argument(
@@ -1349,6 +1406,15 @@ def add_ingest_and_wrap_arguments(parser: argparse.ArgumentParser) -> None:
         "--name",
         default=None,
         help="Workflow name used to derive default schemas, package name, and artifact subdirectory. Default: input filename stem.",
+    )
+    parser.add_argument(
+        "--if-exists",
+        choices=["fail", "replace", "skip"],
+        default="fail",
+        help=(
+            "How to handle any existing workflow schema: fail (default), replace all workflow schemas, "
+            "or skip the workflow without changing the database."
+        ),
     )
     parser.add_argument(
         "--schema-prefix",
@@ -1629,13 +1695,49 @@ def command_wrap_deploy(args: argparse.Namespace) -> DeployReport:
 def command_ingest_and_wrap(args: argparse.Namespace) -> None:
     workflow = _derive_phase5_workflow_config(args)
     run_artifact_dir = workflow["runArtifactDir"]
-    run_artifact_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_schema_exists(
-        dsn=str(workflow["dsn"]),
-        user=str(workflow["user"]),
-        password=str(workflow["password"]),
-        schema=str(workflow["sourceSchema"]),
+    existing_schemas = _prepare_ingest_and_wrap_destination(
+        workflow,
+        args.if_exists,
+        validate_server_certificate=bool(getattr(args, "validate_server_certificate", False)),
     )
+    if existing_schemas and args.if_exists == "skip":
+        package_config_path = run_artifact_dir / f"{workflow['packageName']}_package.json"
+        artifacts = {"packageConfig": str(package_config_path)} if package_config_path.exists() else {}
+        objects = {
+            "sourceSchema": str(workflow["sourceSchema"]),
+            "wrapperSchema": str(workflow["wrapperSchema"]),
+            "helperSchema": str(workflow["helperSchema"]),
+            "preprocessorSchema": str(workflow["preprocessorSchema"]),
+            "preprocessorScript": str(workflow["preprocessorScript"]),
+        }
+        if args.json:
+            _emit_json_summary(
+                _json_success_payload(
+                    "ingest-and-wrap",
+                    warnings=["The workflow was skipped because one or more destination schemas already exist."],
+                    outcome="skipped",
+                    ifExists=args.if_exists,
+                    workflowName=workflow["workflowName"],
+                    runArtifactDir=str(run_artifact_dir),
+                    input=str(args.input.resolve()),
+                    existingSchemas=existing_schemas,
+                    artifacts=artifacts,
+                    objects=objects,
+                    validatedInstalled=False,
+                    validation=None,
+                )
+            )
+        else:
+            print(f"Skipped ingest-and-wrap workflow {workflow['workflowName']}; destination schemas already exist.")
+            print(f"Existing schemas: {', '.join(existing_schemas)}")
+        return
+
+    run_artifact_dir.mkdir(parents=True, exist_ok=True)
+    source_manifest_path = None
+    if not args.no_source_manifest:
+        source_manifest_path = (
+            _resolved(args.manifest_output) or _default_source_manifest_path(args.input.resolve(), run_artifact_dir)
+        ).resolve()
 
     ingest_args = _copy_namespace(
         args,
@@ -1655,7 +1757,7 @@ def command_ingest_and_wrap(args: argparse.Namespace) -> None:
             user=str(workflow["user"]),
             password=str(workflow["password"]),
             source_schema=str(workflow["sourceSchema"]),
-            source_manifest=None,
+            source_manifest=source_manifest_path,
             wrapper_schema=str(workflow["wrapperSchema"]),
             helper_schema=str(workflow["helperSchema"]),
             preprocessor_schema=str(workflow["preprocessorSchema"]),
@@ -1702,6 +1804,9 @@ def command_ingest_and_wrap(args: argparse.Namespace) -> None:
         summary = _json_success_payload(
             "ingest-and-wrap",
             warnings=list(wrapper_summary["warnings"]),
+            outcome="completed",
+            ifExists=args.if_exists,
+            replacedSchemas=existing_schemas if args.if_exists == "replace" else [],
             workflowName=workflow["workflowName"],
             runArtifactDir=str(run_artifact_dir),
             input=str(args.input.resolve()),

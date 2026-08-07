@@ -8,6 +8,8 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ### Added
 
+- Added `ingest-and-wrap --if-exists {fail,replace,skip}` so automated retries can
+  explicitly reject, rebuild, or leave an existing four-schema workflow unchanged.
 - Added `--exasol-http-tls` to the Rust ingest CLI and unified `exasol-json-tables ingest` / `ingest-and-wrap` workflows. This enables TLS for the Exasol HTTP bulk-import transport independently from the control connection TLS settings in the `--exasol` URL.
 - Added `httpTransportTls` to ingest JSON summaries when direct Exasol import is used.
 

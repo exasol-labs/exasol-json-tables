@@ -1774,6 +1774,78 @@ def test_unified_cli_schema_ensure_propagates_certificate_validation() -> None:
     assert calls == [False, True]
 
 
+def test_ingest_and_wrap_destination_if_exists_policies() -> None:
+    workflow = {
+        "workflowName": "retry_batch",
+        "runArtifactDir": Path("artifacts/retry_batch"),
+        "sourceSchema": "EJT_RETRY_BATCH_SRC",
+        "wrapperSchema": "EJT_RETRY_BATCH_VIEW",
+        "helperSchema": "EJT_RETRY_BATCH_VIEW_INTERNAL",
+        "preprocessorSchema": "EJT_RETRY_BATCH_PP",
+        "preprocessorScript": "EJT_RETRY_BATCH_PREPROCESSOR",
+        "packageName": "retry_batch_wrapper",
+        "dsn": "dsn",
+        "user": "user",
+        "password": "password",
+        "exasolUrl": "exasol://user:password@dsn/EJT_RETRY_BATCH_SRC",
+    }
+
+    class DummyResult:
+        def __init__(self, rows) -> None:
+            self.rows = rows
+
+        def fetchall(self):
+            return self.rows
+
+    class DummyConnection:
+        def __init__(self, existing) -> None:
+            self.existing = existing
+            self.executed: list[str] = []
+            self.closed = False
+
+        def execute(self, sql: str):
+            self.executed.append(sql)
+            if sql.startswith("SELECT SCHEMA_NAME"):
+                return DummyResult([(schema,) for schema in self.existing])
+            return DummyResult([])
+
+        def close(self) -> None:
+            self.closed = True
+
+    connections: list[DummyConnection] = []
+    existing = ["EJT_RETRY_BATCH_SRC", "EJT_RETRY_BATCH_VIEW"]
+    original_connect = cli_module.connect_for_generation
+    try:
+        def fake_connect_for_generation(dsn, user, password, schema="SYS", validate_certificate=False):
+            connection = DummyConnection(existing)
+            connections.append(connection)
+            return connection
+
+        cli_module.connect_for_generation = fake_connect_for_generation
+
+        try:
+            cli_module._prepare_ingest_and_wrap_destination(workflow, "fail")
+            raise AssertionError("fail policy should reject an existing workflow")
+        except cli_module.CliCommandError as exc:
+            assert exc.code == "INGEST-WORKFLOW-ALREADY-EXISTS"
+        assert len(connections[-1].executed) == 1
+        assert connections[-1].closed
+
+        skipped = cli_module._prepare_ingest_and_wrap_destination(workflow, "skip")
+        assert skipped == sorted(existing)
+        assert len(connections[-1].executed) == 1
+        assert connections[-1].closed
+
+        replaced = cli_module._prepare_ingest_and_wrap_destination(workflow, "replace")
+        assert replaced == sorted(existing)
+        drop_statements = [sql for sql in connections[-1].executed if sql.startswith("DROP SCHEMA")]
+        assert len(drop_statements) == 4
+        assert connections[-1].executed[-1] == 'CREATE SCHEMA IF NOT EXISTS "EJT_RETRY_BATCH_SRC"'
+        assert connections[-1].closed
+    finally:
+        cli_module.connect_for_generation = original_connect
+
+
 if __name__ == "__main__":
     test_unified_cli_ingest_wrap_validate_with_manifest_handoff()
     test_unified_cli_structured_results_preview_json()
@@ -1792,5 +1864,6 @@ if __name__ == "__main__":
     test_wrapper_generation_connection_ssl_options()
     test_nano_support_connection_ssl_options()
     test_unified_cli_schema_ensure_propagates_certificate_validation()
+    test_ingest_and_wrap_destination_if_exists_policies()
     print("-- unified cli regression --")
     print("verified ingest/wrap/validate orchestration, describe recovery, value-alias regressions, and structured-results preview-json")
