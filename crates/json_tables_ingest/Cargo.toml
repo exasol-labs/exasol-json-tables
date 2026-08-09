@@ -10,7 +10,7 @@ clap = { version = "4.6", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
 parquet = "58.3"
 tokio = { version = "1.53", features = ["rt-multi-thread", "sync"] }
-exarrow-rs = "0.14.0"
+exarrow-rs = "0.16.0"
 
 [dev-dependencies]
 arrow = "58.3"

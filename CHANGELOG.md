@@ -15,7 +15,7 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ### Changed
 
-- Upgraded the Rust ingest engine from `exarrow-rs` `0.9.0` to `0.12.0`.
+- Upgraded the Rust ingest engine from `exarrow-rs` `0.9.0` to `0.16.0`.
 - Direct Exasol ingest can now benefit from `exarrow-rs` native Parquet import automatically on Exasol 2025.1.11 and newer, while older Exasol versions continue to use the existing CSV conversion path.
 - Direct Exasol ingest now relies on `exarrow-rs` automatic schema activation during `connect()`, avoiding the previous explicit `set_schema()` round trip on every ingest connection.
 - Updated ingest documentation to distinguish Exasol control-connection TLS from the HTTP transport TLS used for bulk imports.
