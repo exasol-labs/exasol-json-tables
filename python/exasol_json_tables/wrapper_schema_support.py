@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 STRUCTURAL_COLUMNS = {"_id", "_parent", "_pos"}
 NULL_SUFFIX = "|n"
+EMPTY_SUFFIX = "|empty"
 OBJECT_SUFFIX = "|object"
 ARRAY_SUFFIX = "|array"
 STRING_CAST_SIZE = 2000000
@@ -43,6 +44,7 @@ class Group:
     array_member: ColumnMeta | None = None
     alternates: list[ColumnMeta] = field(default_factory=list)
     null_mask: ColumnMeta | None = None
+    empty_mask: ColumnMeta | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,8 @@ def parse_column_name(column_name: str) -> tuple[str, str, str | None] | None:
         return None
     if column_name.endswith(NULL_SUFFIX):
         return (column_name[: -len(NULL_SUFFIX)], "nullMask", None)
+    if column_name.endswith(EMPTY_SUFFIX):
+        return (column_name[: -len(EMPTY_SUFFIX)], "emptyMask", None)
     if column_name.endswith(OBJECT_SUFFIX):
         return (column_name[: -len(OBJECT_SUFFIX)], "object", None)
     if column_name.endswith(ARRAY_SUFFIX):
@@ -228,6 +232,8 @@ def group_columns(columns: Iterable[ColumnMeta]) -> dict[str, Group]:
             group.alternates.append(column)
         elif kind == "nullMask":
             group.null_mask = column
+        elif kind == "emptyMask":
+            group.empty_mask = column
     return groups
 
 
@@ -257,7 +263,7 @@ def count_non_null_members(group: Group) -> int:
 
 def visible_name_for_group(group: Group, visible_member: ColumnMeta | None) -> str:
     if visible_member is None:
-        if group.null_mask is not None:
+        if group.null_mask is not None or group.empty_mask is not None:
             return group.base_name
         raise ValueError(f"No visible member for group {group.base_name}")
     if count_non_null_members(group) > 1:
@@ -289,7 +295,7 @@ def can_use_native_coalesce(columns: list[ColumnMeta]) -> bool:
 def render_projection_expression(group: Group) -> str:
     visible_member = choose_visible_member(group)
     if visible_member is None:
-        if group.null_mask is not None:
+        if group.null_mask is not None or group.empty_mask is not None:
             return f"CAST(NULL AS VARCHAR({STRING_CAST_SIZE}))"
         raise ValueError(f"No visible member for group {group.base_name}")
     members = ordered_non_null_members(group)
@@ -395,9 +401,9 @@ def generate_public_view_sql(public_schema: str, table_model: TableModel, source
         if base_name in emitted_groups:
             continue
         group = table_model.groups[base_name]
-        if kind == "nullMask":
+        if kind in {"nullMask", "emptyMask"}:
             visible_member = choose_visible_member(group)
-            if visible_member is None and group.null_mask is not None:
+            if visible_member is None and (group.null_mask is not None or group.empty_mask is not None):
                 visible_name = visible_name_for_group(group, visible_member)
                 expression = render_projection_expression(group)
                 select_lines.append(f"  {expression} AS {quote_identifier(visible_name)}")
@@ -489,7 +495,7 @@ def build_table_manifest_entry(
     for group in sorted(table_model.groups.values(), key=lambda item: item.base_name):
         visible_member = choose_visible_member(group)
         visible_name = visible_name_for_group(group, visible_member) if (
-            visible_member is not None or group.null_mask is not None
+            visible_member is not None or group.null_mask is not None or group.empty_mask is not None
         ) else None
         members = ordered_non_null_members(group)
         groups_manifest.append(
@@ -497,6 +503,7 @@ def build_table_manifest_entry(
                 "baseName": group.base_name,
                 "visibleName": visible_name,
                 "nullMaskName": group.null_mask.name if group.null_mask is not None else None,
+                "emptyMaskName": group.empty_mask.name if group.empty_mask is not None else None,
                 "members": [
                     {
                         "name": member.name,
@@ -612,9 +619,10 @@ def generate_metadata_sql(
         for group in sorted(model.groups.values(), key=lambda item: item.base_name):
             visible_member = choose_visible_member(group)
             visible_name = visible_name_for_group(group, visible_member) if (
-                visible_member is not None or group.null_mask is not None
+                visible_member is not None or group.null_mask is not None or group.empty_mask is not None
             ) else None
             null_mask_name = group.null_mask.name if group.null_mask is not None else None
+            empty_mask_name = group.empty_mask.name if group.empty_mask is not None else None
             if group.primary is not None:
                 column_rows.append([
                     root_table,
@@ -686,6 +694,19 @@ def generate_metadata_sql(
                     null_mask_name,
                     "nullMaskOnly",
                     group.null_mask.type_name,
+                    False,
+                    False,
+                    null_mask_name,
+                ])
+            if group.empty_mask is not None:
+                column_rows.append([
+                    root_table,
+                    table_name,
+                    group.base_name,
+                    visible_name,
+                    empty_mask_name,
+                    "emptyMask",
+                    group.empty_mask.type_name,
                     False,
                     False,
                     null_mask_name,
@@ -885,11 +906,14 @@ def load_installed_wrapper_manifest(con, helper_schema: str) -> dict[str, Any]:
                 "baseName": base_name,
                 "visibleName": visible_name,
                 "nullMaskName": null_mask_name,
+                "emptyMaskName": None,
                 "members": [],
             }
             groups_by_table_and_base[group_key] = group_entry
             table_entry["groups"].append(group_entry)
-        if member_kind != "nullMaskOnly":
+        if member_kind == "emptyMask":
+            group_entry["emptyMaskName"] = member_name
+        elif member_kind != "nullMaskOnly":
             group_entry["members"].append(
                 {
                     "name": member_name,

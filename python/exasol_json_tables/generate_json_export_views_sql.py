@@ -183,7 +183,7 @@ def _scalar_group_fragment_expr(
         expr = f'{base_alias}.{quote_identifier(alternate.name)}'
         value_branches.append((f"{expr} IS NOT NULL", _scalar_value_json_expr(quote_string_udf, alternate, expr)))
 
-    if not value_branches and (group.null_mask is None or not include_null_mask):
+    if not value_branches and group.empty_mask is None and (group.null_mask is None or not include_null_mask):
         return None
 
     fragments: list[str] = []
@@ -193,6 +193,10 @@ def _scalar_group_fragment_expr(
     for condition, rendered in value_branches:
         fragments.append(f"WHEN {condition} THEN {property_prefix} || {rendered}")
         presence_terms.append(condition)
+    if group.empty_mask is not None:
+        empty_mask_expr = f'{base_alias}.{quote_identifier(group.empty_mask.name)}'
+        fragments.append(f"WHEN {empty_mask_expr} IS TRUE THEN {property_prefix} || '\"\"'")
+        presence_terms.append(f"{empty_mask_expr} IS TRUE")
     if include_null_mask and group.null_mask is not None:
         null_mask_expr = f'{base_alias}.{quote_identifier(group.null_mask.name)}'
         fragments.append(f"WHEN {null_mask_expr} IS TRUE THEN {property_null}")
@@ -219,6 +223,9 @@ def _value_group_json_expr(
     for alternate in sorted(group.alternates, key=lambda column: column.ordinal):
         expr = f'{base_alias}.{quote_identifier(alternate.name)}'
         branches.append((f"{expr} IS NOT NULL", _scalar_value_json_expr(quote_string_udf, alternate, expr)))
+    if group.empty_mask is not None:
+        empty_mask_expr = f'{base_alias}.{quote_identifier(group.empty_mask.name)}'
+        branches.append((f"{empty_mask_expr} IS TRUE", "'\"\"'"))
     if group.object_member is not None:
         marker_expr = f'{base_alias}.{quote_identifier(group.object_member.name)}'
         if object_alias is None:
@@ -262,6 +269,9 @@ def _value_group_fragment_expr(
     for alternate in sorted(group.alternates, key=lambda column: column.ordinal):
         expr = f'{base_alias}.{quote_identifier(alternate.name)}'
         presence_terms.append(f"{expr} IS NOT NULL")
+    if group.empty_mask is not None:
+        empty_mask_expr = f'{base_alias}.{quote_identifier(group.empty_mask.name)}'
+        presence_terms.append(f"{empty_mask_expr} IS TRUE")
     if group.object_member is not None:
         marker_expr = f'{base_alias}.{quote_identifier(group.object_member.name)}'
         presence_terms.append(f"{marker_expr} IS NOT NULL")
@@ -297,7 +307,7 @@ def _root_groups(model: TableModel) -> list[tuple[str, str]]:
     groups: list[tuple[str, str]] = []
     for group in sorted(model.groups.values(), key=lambda item: item.base_name):
         visible_member = choose_visible_member(group)
-        if visible_member is None and group.null_mask is None:
+        if visible_member is None and group.null_mask is None and group.empty_mask is None:
             continue
         groups.append((group.base_name, visible_name_for_group(group, visible_member)))
     return groups

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import _bootstrap  # noqa: F401
 
 from nano_support import connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
@@ -40,6 +42,42 @@ def main() -> None:
     con = connect()
     try:
         install_source_fixture(con, include_deep_fixture=True)
+        con.execute(
+            f'''
+            CREATE OR REPLACE TABLE {SOURCE_SCHEMA}.BUG063_OPTIONAL_STRINGS (
+              "_id" DECIMAL(18,0) NOT NULL,
+              "k" DECIMAL(10,0),
+              "note" VARCHAR(200),
+              "note|empty" BOOLEAN,
+              "note|n" BOOLEAN
+            )
+            '''
+        )
+        con.execute(
+            f'''
+            INSERT INTO {SOURCE_SCHEMA}.BUG063_OPTIONAL_STRINGS VALUES
+              (1, 1, 'has value', FALSE, FALSE),
+              (2, 2, NULL, FALSE, TRUE),
+              (3, 3, NULL, FALSE, FALSE),
+              (4, 4, NULL, TRUE, FALSE)
+            '''
+        )
+        con.execute(
+            f'''
+            CREATE OR REPLACE TABLE {SOURCE_SCHEMA}.BUG063_EMPTY_MASK_ONLY (
+              "_id" DECIMAL(18,0) NOT NULL,
+              "k" DECIMAL(10,0),
+              "note|empty" BOOLEAN
+            )
+            '''
+        )
+        con.execute(
+            f'''
+            INSERT INTO {SOURCE_SCHEMA}.BUG063_EMPTY_MASK_ONLY VALUES
+              (1, 1, TRUE),
+              (2, 2, FALSE)
+            '''
+        )
         install_wrapper_views(
             con,
             source_schema=SOURCE_SCHEMA,
@@ -52,6 +90,81 @@ def main() -> None:
             [HELPER_SCHEMA],
             schema_name=PREPROCESSOR_SCHEMA,
             script_name=PREPROCESSOR_SCRIPT,
+        )
+
+        optional_string_rows = fetch_all(
+            con,
+            f'''
+            SELECT "k", "note"
+            FROM {WRAPPER_SCHEMA}.BUG063_OPTIONAL_STRINGS
+            ORDER BY "k"
+            ''',
+        )
+        assert_equal(
+            optional_string_rows,
+            [(1, "has value"), (2, None), (3, None), (4, None)],
+            "BUG-063 empty-string mask excluded from logical value",
+        )
+        assert_equal(
+            fetch_all(
+                con,
+                f'SELECT COUNT(*) FROM {WRAPPER_SCHEMA}.BUG063_OPTIONAL_STRINGS WHERE "note" IS NULL',
+            ),
+            [(3,)],
+            "BUG-063 optional-string null filtering",
+        )
+
+        optional_string_json_rows = fetch_all(
+            con,
+            f'''
+            SELECT TO_JSON(*)
+            FROM {WRAPPER_SCHEMA}.BUG063_OPTIONAL_STRINGS
+            ORDER BY "k"
+            ''',
+        )
+        expected_optional_string_documents = [
+            {"k": 1, "note": "has value"},
+            {"k": 2, "note": None},
+            {"k": 3},
+            {"k": 4, "note": ""},
+        ]
+        assert_equal(
+            [json.loads(row[0]) for row in optional_string_json_rows],
+            expected_optional_string_documents,
+            "BUG-063 optional-string TO_JSON semantics",
+        )
+        for row in optional_string_json_rows:
+            if row[0].count('"note":') > 1:
+                raise AssertionError(f"BUG-063 duplicate note key in TO_JSON output: {row[0]}")
+
+        assert_equal(
+            fetch_all(
+                con,
+                f'''
+                SELECT JSON_TYPEOF("note")
+                FROM {WRAPPER_SCHEMA}.BUG063_OPTIONAL_STRINGS
+                ORDER BY "k"
+                ''',
+            ),
+            [("STRING",), ("NULL",), (None,), ("STRING",)],
+            "BUG-063 empty-string JSON type",
+        )
+
+        empty_mask_only_json_rows = fetch_all(
+            con,
+            f'''
+            SELECT TO_JSON(*), TO_JSON("note")
+            FROM {WRAPPER_SCHEMA}.BUG063_EMPTY_MASK_ONLY
+            ORDER BY "k"
+            ''',
+        )
+        assert_equal(
+            [(json.loads(full_row), json.loads(selected)) for full_row, selected in empty_mask_only_json_rows],
+            [
+                ({"k": 1, "note": ""}, {"note": ""}),
+                ({"k": 2}, {}),
+            ],
+            "BUG-063 empty-mask-only TO_JSON semantics",
         )
 
         prepared_selector_con = connect()

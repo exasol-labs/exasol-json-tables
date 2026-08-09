@@ -20,6 +20,13 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 - Direct Exasol ingest now relies on `exarrow-rs` automatic schema activation during `connect()`, avoiding the previous explicit `set_schema()` round trip on every ingest connection.
 - Updated ingest documentation to distinguish Exasol control-connection TLS from the HTTP transport TLS used for bulk imports.
 
+### Fixed
+
+- Fixed wrapper generation for optional string fields encoded with `|empty`
+  masks. Masks are no longer coalesced into logical values as `TRUE`/`FALSE`;
+  `TO_JSON(...)` now reconstructs empty strings, preserves explicit `null`,
+  omits missing properties, and emits each property key only once.
+
 ## [0.1] - 2026-04-23
 
 ### Added

@@ -3389,6 +3389,7 @@ ORDER BY COLUMN_ORDINAL_POSITION
                     add_projection_column(column_names, seen_columns, variant_columns[label])
                 end
             end
+            add_projection_column(column_names, seen_columns, group_config and group_config.emptyMaskName or nil)
         end
         if include_null_mask then
             add_projection_column(column_names, seen_columns, group_config and group_config.nullMaskName or nil)
@@ -3605,6 +3606,10 @@ ORDER BY COLUMN_ORDINAL_POSITION
                 out[#out + 1] = " WHEN " .. render_column_reference(reference_sql, column_name)
                         .. " IS NOT NULL THEN " .. encode_string_literal(label)
             end
+        end
+        if group_config.emptyMaskName ~= nil then
+            out[#out + 1] = " WHEN " .. build_boolean_from_mask(reference_sql, group_config.emptyMaskName)
+                    .. " THEN " .. encode_string_literal("STRING")
         end
         if group_config.nullMaskName ~= nil then
             out[#out + 1] = " WHEN " .. build_boolean_from_mask(reference_sql, group_config.nullMaskName)

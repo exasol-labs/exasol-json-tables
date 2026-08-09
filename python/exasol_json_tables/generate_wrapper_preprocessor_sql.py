@@ -252,6 +252,8 @@ def _build_group_config(manifests: list[dict]) -> WrapperGroupConfig:
                 group_config: dict[str, object] = {}
                 if group["nullMaskName"] is not None:
                     group_config["nullMaskName"] = str(group["nullMaskName"])
+                if group.get("emptyMaskName") is not None:
+                    group_config["emptyMaskName"] = str(group["emptyMaskName"])
                 reference_column_name = _preferred_group_reference_column_name(group)
                 if reference_column_name is not None:
                     group_config["referenceColumnName"] = reference_column_name
