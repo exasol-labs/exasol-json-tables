@@ -388,11 +388,26 @@ def main() -> None:
           CAST("id" AS VARCHAR(10)) AS doc_id,
           CASE WHEN JSON_IS_EXPLICIT_NULL("note") THEN '1' ELSE '0' END AS note_explicit_null,
           CASE WHEN "note" IS NULL AND NOT JSON_IS_EXPLICIT_NULL("note") THEN '1' ELSE '0' END AS note_missing,
-          CASE WHEN JSON_IS_EXPLICIT_NULL("value") THEN '1' ELSE '0' END AS value_explicit_null
+          CASE WHEN JSON_IS_EXPLICIT_NULL("value") THEN '1' ELSE '0' END AS value_explicit_null,
+          CASE WHEN JSON_IS_EXPLICIT_NULL("name") THEN '1' ELSE '0' END AS name_explicit_null
         FROM JSON_VIEW.SAMPLE
         ORDER BY "id"
     """)
-    assert_equal(explicit_null_rows, [("1", "0", "0", "0"), ("2", "1", "0", "0"), ("3", "0", "1", "1")], "root explicit-null semantics")
+    assert_equal(
+        explicit_null_rows,
+        [("1", "0", "0", "0", "0"), ("2", "1", "0", "0", "0"), ("3", "0", "1", "1", "0")],
+        "root explicit-null semantics including field without null mask",
+    )
+    assert_equal(
+        fetch_all('SELECT "id", JSON_IS_EXPLICIT_NULL("name") FROM JSON_VIEW.SAMPLE ORDER BY "id"'),
+        [(1, False), (2, False), (3, False)],
+        "BUG-066 explicit-null helper without null mask",
+    )
+    assert_equal(
+        fetch_all('SELECT "id", JNULL("name") FROM JSON_VIEW.SAMPLE ORDER BY "id"'),
+        [(1, False), (2, False), (3, False)],
+        "BUG-066 JNULL alias without null mask",
+    )
 
     deep_explicit_null_rows = fetch_all(f"""
         SELECT

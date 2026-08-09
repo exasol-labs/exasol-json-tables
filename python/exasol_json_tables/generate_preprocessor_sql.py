@@ -3589,7 +3589,7 @@ ORDER BY COLUMN_ORDINAL_POSITION
     local function build_wrapper_explicit_null_replacement(table_reference, group_config, join_state)
         local null_mask_name = group_config.nullMaskName
         if null_mask_name == nil then
-            return "FALSE"
+            return "(FALSE)"
         end
 
         local reference_sql = helper_reference_sql(table_reference, group_config, join_state, false, true, false)
@@ -4185,7 +4185,10 @@ ORDER BY COLUMN_ORDINAL_POSITION
                             base_table,
                             table_reference_lookup
                         )
-                        local join_state = helper_join_state_for_reference(table_reference)
+                        local join_state = nil
+                        if helper_kind ~= "explicit_null" or group_config.nullMaskName ~= nil then
+                            join_state = helper_join_state_for_reference(table_reference)
+                        end
                         if helper_kind == "explicit_null" then
                             replacement_sql = build_wrapper_explicit_null_replacement(table_reference, group_config, join_state)
                         elseif helper_kind == "variant_typeof" then

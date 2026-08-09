@@ -135,6 +135,8 @@ def main() -> None:
               JSON_TYPEOF(customer."value"),
               JSON_TYPEOF(orders."status"),
               JSON_AS_VARCHAR(orders."status"),
+              JSON_IS_EXPLICIT_NULL(customer."name") AS customer_name_explicit_null,
+              JSON_IS_EXPLICIT_NULL(orders."status") AS order_status_explicit_null,
               CAST(orders."line_items[SIZE]" AS VARCHAR(10)),
               orders."line_items[LAST].sku"
             FROM {WRAPPER_SCHEMA}.SAMPLE customer
@@ -152,10 +154,10 @@ def main() -> None:
     assert_equal(
         multi_collection_rows,
         [
-            ("1", "deep", "NUMBER", "STRING", "open", "2", "B"),
-            ("2", "NULL", "STRING", "STRING", "closed", "1", "C"),
+            ("1", "deep", "NUMBER", "STRING", "open", False, False, "2", "B"),
+            ("2", "NULL", "STRING", "STRING", "closed", False, False, "1", "C"),
         ],
-        "BUG-065 combined-preprocessor helpers on both join sides",
+        "BUG-065/066 combined-preprocessor helpers on both join sides",
     )
 
     authoring_con = connect()

@@ -22,6 +22,9 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ### Fixed
 
+- Fixed `JSON_IS_EXPLICIT_NULL(...)` / `JNULL(...)` for fields without an
+  explicit-null (`|n`) branch. These calls now rewrite directly to `FALSE`
+  without creating a hidden helper projection join.
 - Fixed combined-preprocessor JSON helpers on later sources in a cross-schema
   join. Hidden helper projection joins are now inserted after the wrapper alias
   they reference instead of after the query's first source.
