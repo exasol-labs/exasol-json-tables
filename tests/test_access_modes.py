@@ -52,6 +52,7 @@ def main() -> None:
             CREATE TABLE {SECOND_SOURCE_SCHEMA}.ORDERS (
               "_id" DECIMAL(18,0) NOT NULL,
               "customer_id" DECIMAL(18,0),
+              "status" VARCHAR(100),
               "line_items|array" DECIMAL(18,0)
             )
             '''
@@ -66,7 +67,7 @@ def main() -> None:
             )
             '''
         )
-        con.execute(f"INSERT INTO {SECOND_SOURCE_SCHEMA}.ORDERS VALUES (10, 1, 2), (20, 2, 1)")
+        con.execute(f"INSERT INTO {SECOND_SOURCE_SCHEMA}.ORDERS VALUES (10, 1, 'open', 2), (20, 2, 'closed', 1)")
         con.execute(
             f'''
             INSERT INTO {SECOND_SOURCE_SCHEMA}."ORDERS_line_items_arr" VALUES
@@ -131,6 +132,9 @@ def main() -> None:
             SELECT
               CAST(customer."id" AS VARCHAR(10)),
               COALESCE(customer."meta.info.note", 'NULL'),
+              JSON_TYPEOF(customer."value"),
+              JSON_TYPEOF(orders."status"),
+              JSON_AS_VARCHAR(orders."status"),
               CAST(orders."line_items[SIZE]" AS VARCHAR(10)),
               orders."line_items[LAST].sku"
             FROM {WRAPPER_SCHEMA}.SAMPLE customer
@@ -147,8 +151,11 @@ def main() -> None:
         multi_collection_con.close()
     assert_equal(
         multi_collection_rows,
-        [("1", "deep", "2", "B"), ("2", "NULL", "1", "C")],
-        "combined-preprocessor multi-collection query",
+        [
+            ("1", "deep", "NUMBER", "STRING", "open", "2", "B"),
+            ("2", "NULL", "STRING", "STRING", "closed", "1", "C"),
+        ],
+        "BUG-065 combined-preprocessor helpers on both join sides",
     )
 
     authoring_con = connect()

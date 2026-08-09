@@ -22,6 +22,9 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ### Fixed
 
+- Fixed combined-preprocessor JSON helpers on later sources in a cross-schema
+  join. Hidden helper projection joins are now inserted after the wrapper alias
+  they reference instead of after the query's first source.
 - Documented and regression-tested combined preprocessors spanning several
   independently generated wrapper schemas, enabling JSON path syntax on both
   sides of a cross-collection join in one Exasol session. Repeated

@@ -3451,8 +3451,8 @@ ORDER BY COLUMN_ORDINAL_POSITION
             return existing
         end
 
-        local alias_name = "__jvs_null_" .. tostring(join_state.next_alias_id)
-        join_state.next_alias_id = join_state.next_alias_id + 1
+        local alias_name = "__jvs_null_" .. tostring(join_state.manager.next_alias_id)
+        join_state.manager.next_alias_id = join_state.manager.next_alias_id + 1
         local alias_ref = encode_quoted_identifier(alias_name)
         local projected_alias_by_name = {}
         local row_id_alias = "__jvs_row_id"
@@ -4111,11 +4111,35 @@ ORDER BY COLUMN_ORDINAL_POSITION
                 table_reference_lookup[key] = raw_reference
             end
         end
-        local join_state = {
-            next_alias_id = 1,
-            alias_by_key = {},
-            join_sql_parts = {}
-        }
+        local helper_join_manager = {next_alias_id = 1}
+        local helper_join_insertions = {}
+        local helper_join_states = {}
+        local function helper_join_state_for_reference(table_reference)
+            local insert_after_index = table_reference and table_reference.insert_after_index or nil
+            if insert_after_index == nil and base_table ~= nil then
+                insert_after_index = base_table.insert_after_index
+            end
+            local binding_key = table.concat({
+                normalize_identifier_value(table_reference and table_reference.schema_name or ""),
+                normalize_identifier_value(table_reference and table_reference.table_name or ""),
+                normalize_identifier_value(table_reference and (table_reference.alias_name or table_reference.table_name) or ""),
+                tostring(insert_after_index or "")
+            }, "|")
+            local state = helper_join_states[binding_key]
+            if state ~= nil then
+                return state
+            end
+            if helper_join_insertions[insert_after_index] == nil then
+                helper_join_insertions[insert_after_index] = {}
+            end
+            state = {
+                manager = helper_join_manager,
+                alias_by_key = {},
+                join_sql_parts = helper_join_insertions[insert_after_index]
+            }
+            helper_join_states[binding_key] = state
+            return state
+        end
         local to_json_state = {
             next_alias_id = 1,
             alias_by_key = {},
@@ -4161,6 +4185,7 @@ ORDER BY COLUMN_ORDINAL_POSITION
                             base_table,
                             table_reference_lookup
                         )
+                        local join_state = helper_join_state_for_reference(table_reference)
                         if helper_kind == "explicit_null" then
                             replacement_sql = build_wrapper_explicit_null_replacement(table_reference, group_config, join_state)
                         elseif helper_kind == "variant_typeof" then
@@ -4200,7 +4225,7 @@ ORDER BY COLUMN_ORDINAL_POSITION
                 index = index + 1
             end
         end
-        return replacements, join_state.join_sql_parts, to_json_state.join_insertions
+        return replacements, helper_join_insertions, to_json_state.join_insertions
     end
 
     local function rewrite_helper_query_block_sql(sqltext)
@@ -4210,7 +4235,7 @@ ORDER BY COLUMN_ORDINAL_POSITION
         if base_table ~= nil and path_base_table ~= nil and path_base_table.reference_sql ~= nil then
             base_table.reference_sql = path_base_table.reference_sql
         end
-        local helper_call_replacements, helper_join_sql_parts, to_json_join_insertions =
+        local helper_call_replacements, helper_join_insertions, to_json_join_insertions =
                 collect_helper_call_replacements(sqltext, tokens, base_table)
         local out = {}
         local index = 1
@@ -4226,8 +4251,9 @@ ORDER BY COLUMN_ORDINAL_POSITION
                 index = replacement.closing_paren + 1
             else
                 out[#out + 1] = tokens[index]
-                if base_table ~= nil and index == base_table.insert_after_index and #helper_join_sql_parts > 0 then
-                    out[#out + 1] = table.concat(helper_join_sql_parts)
+                local pending_helper_joins = helper_join_insertions[index]
+                if pending_helper_joins ~= nil then
+                    out[#out + 1] = table.concat(pending_helper_joins)
                 end
                 local pending_to_json_joins = to_json_join_insertions[index]
                 if pending_to_json_joins ~= nil then
