@@ -208,7 +208,15 @@ def add_package_config_argument(parser: argparse.ArgumentParser) -> None:
 
 
 def add_generation_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--source-schema", default="JVS_SRC", help="Physical source schema.")
+    parser.add_argument(
+        "--source-schema",
+        action="append",
+        default=None,
+        help=(
+            "Physical source schema. Exactly one is accepted per wrapper package; "
+            "generate each wrapper separately and compose their manifests into one preprocessor for multi-schema sessions."
+        ),
+    )
     parser.add_argument(
         "--source-manifest",
         type=Path,
@@ -360,7 +368,17 @@ def resolve_configured_path(config_path: Path, relative_or_absolute: str) -> Pat
 
 
 def package_config_from_args(args: argparse.Namespace, paths: dict[str, Path]) -> dict[str, Any]:
-    source_schema = validate_identifier("Source schema", args.source_schema)
+    raw_source_schemas = args.source_schema
+    if isinstance(raw_source_schemas, str):
+        source_schema_values = [raw_source_schemas]
+    else:
+        source_schema_values = list(raw_source_schemas or ["JVS_SRC"])
+    if len(source_schema_values) != 1:
+        raise SystemExit(
+            "--source-schema accepts exactly one value per wrapper package; repeated values are not merged. "
+            "Generate one package per source schema, then generate one combined preprocessor from all wrapper manifests."
+        )
+    source_schema = validate_identifier("Source schema", source_schema_values[0])
     wrapper_schema = validate_identifier("Wrapper schema", args.wrapper_schema)
     helper_schema = validate_identifier("Helper schema", args.helper_schema or f"{args.wrapper_schema}_INTERNAL")
     validate_distinct_schemas(source_schema, wrapper_schema, helper_schema)

@@ -22,6 +22,11 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ### Fixed
 
+- Documented and regression-tested combined preprocessors spanning several
+  independently generated wrapper schemas, enabling JSON path syntax on both
+  sides of a cross-collection join in one Exasol session. Repeated
+  `wrap generate --source-schema` values now fail explicitly instead of silently
+  replacing one another.
 - Fixed wrapper generation for optional string fields encoded with `|empty`
   masks. Masks are no longer coalesced into logical values as `TRUE`/`FALSE`;
   `TO_JSON(...)` now reconstructs empty strings, preserves explicit `null`,

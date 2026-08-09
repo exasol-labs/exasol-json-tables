@@ -32,6 +32,33 @@ rows = stmt.fetchall()
 
 If you want `export_to_pandas()`, first publish an ordinary view or table with explicit casts and SQL-safe aliases, then export that durable object. See [python-dataframes.md](python-dataframes.md).
 
+### Several wrappers in one session
+
+Exasol permits one active SQL preprocessor per session, but a generated JSON
+Tables preprocessor can be configured for several wrapper/helper pairs. This is
+the supported way to use JSON paths on two independently wrapped source schemas
+in the same query. Generate each wrapper package separately, then generate one
+combined preprocessor from their manifests:
+
+```bash
+python3 -m exasol_json_tables.generate_wrapper_preprocessor_sql \
+  --schema JVS_MONGO_PP \
+  --script JSON_MONGO_PREPROCESSOR \
+  --wrapper-schema JSON_CUSTOMERS \
+  --wrapper-schema JSON_ORDERS \
+  --helper-schema JSON_CUSTOMERS_INTERNAL \
+  --helper-schema JSON_ORDERS_INTERNAL \
+  --manifest ./dist/customers_manifest.json \
+  --manifest ./dist/orders_manifest.json \
+  --output ./dist/mongo_combined_preprocessor.sql
+```
+
+The three repeated lists are positional. Execute the generated SQL and activate
+that one script on every connection. The target preprocessor schema must already
+contain `JVS_PREPROCESSOR_LIB`; installing either wrapper with that same
+preprocessor schema creates it. Regenerate the combined script when an included
+wrapper changes.
+
 ## Identifier Discipline
 
 There are two different naming concerns on the wrapper surface:

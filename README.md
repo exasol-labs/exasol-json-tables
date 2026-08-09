@@ -182,6 +182,11 @@ For applications, CI, and managed SQL clients, the normal pattern is to run the 
 
 That keeps wrapper syntax available without asking each user or request handler to remember the activation step manually.
 
+One active preprocessor can cover several independently installed wrappers, so
+JSON paths can be used on both sides of a cross-schema join. Generate a combined
+script from the wrapper manifests as described in
+[Several wrappers in one session](docs/query-surface.md#several-wrappers-in-one-session).
+
 ### 3. Published Permanent Surfaces
 
 When a wrapped family becomes part of a long-lived downstream workflow, use the wrapper as the authoring surface and publish ordinary views or tables from it.

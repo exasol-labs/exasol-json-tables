@@ -1846,6 +1846,28 @@ def test_ingest_and_wrap_destination_if_exists_policies() -> None:
         cli_module.connect_for_generation = original_connect
 
 
+def test_wrap_generate_rejects_repeated_source_schema() -> None:
+    result = subprocess.run(
+        [
+            "python3",
+            str(CLI),
+            "wrap",
+            "generate",
+            "--no-auto-source-manifest",
+            "--source-schema",
+            "MONGO_CUSTOMERS",
+            "--source-schema",
+            "MONGO_ORDERS",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "--source-schema accepts exactly one value per wrapper package" in result.stderr
+    assert "repeated values are not merged" in result.stderr
+
+
 if __name__ == "__main__":
     test_unified_cli_ingest_wrap_validate_with_manifest_handoff()
     test_unified_cli_structured_results_preview_json()
@@ -1865,5 +1887,6 @@ if __name__ == "__main__":
     test_nano_support_connection_ssl_options()
     test_unified_cli_schema_ensure_propagates_certificate_validation()
     test_ingest_and_wrap_destination_if_exists_policies()
+    test_wrap_generate_rejects_repeated_source_schema()
     print("-- unified cli regression --")
     print("verified ingest/wrap/validate orchestration, describe recovery, value-alias regressions, and structured-results preview-json")

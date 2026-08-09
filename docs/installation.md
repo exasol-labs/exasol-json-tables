@@ -92,6 +92,14 @@ If you want to continue from that generated wrapper into a nested modeled result
 
 If your environment already uses another SQL preprocessor, remember that Exasol only allows one active `SQL_PREPROCESSOR_SCRIPT` per session. Activating the JSON Tables preprocessor will replace the currently active one for that session.
 
+One JSON Tables preprocessor can cover several installed wrappers. Generate the
+wrapper packages individually, then pass each wrapper schema, helper schema, and
+generated manifest to `python3 -m
+exasol_json_tables.generate_wrapper_preprocessor_sql`. The repeated lists must
+use matching order. See [query-surface.md](query-surface.md#several-wrappers-in-one-session)
+for a complete cross-schema example. `wrap generate` accepts one
+`--source-schema` per package and rejects repeated values.
+
 In that case, use a small master preprocessor script as the single active entrypoint. Keep the real rewrite logic in helper functions or helper scripts, have the master script call the existing preprocessor logic and the JSON Tables preprocessor logic in the required order, and activate the master script instead of trying to enable multiple preprocessors separately.
 
 ## Access Modes
