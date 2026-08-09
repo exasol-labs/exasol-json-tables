@@ -1,6 +1,16 @@
+<div align="center">
+
 # Exasol JSON Tables
 
-Exasol JSON Tables makes JSON feel natural inside Exasol.
+**Make JSON feel natural inside Exasol.**
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](pyproject.toml)
+[![Rust](https://img.shields.io/badge/Rust-ingest_engine-000000.svg?logo=rust&logoColor=white)](crates/json_tables_ingest)
+
+[Installation](docs/installation.md) · [Query surface](docs/query-surface.md) · [Structured results](docs/structured-results.md) · [Architecture](docs/architecture.md) · [Testing](docs/testing.md)
+
+</div>
 
 It gives you one workflow for:
 
