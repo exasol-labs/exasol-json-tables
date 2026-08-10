@@ -831,9 +831,13 @@ def _describe_query_surface(
             segment_relationships = relationships_by_segment.get(logical_name, [])
             relation_kinds = {str(item["relationKind"]) for item in segment_relationships}
             json_type = _group_json_type(group, relation_kinds)
+            json_types = set(json_type.split("|"))
             quoted_path = quote_identifier(local_path)
             if json_type == "ARRAY":
                 example_expression = f'{sql_reference}.{quote_identifier(local_path + "[SIZE]")}'
+            elif "OBJECT" in json_types:
+                object_helper = "JSON_TYPEOF" if "." in local_path else "TO_JSON"
+                example_expression = f"{object_helper}({sql_reference}.{quoted_path})"
             else:
                 example_expression = f"{sql_reference}.{quoted_path}"
             entry: dict[str, object] = {

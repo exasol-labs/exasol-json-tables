@@ -30,6 +30,10 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ### Fixed
 
+- Fixed `describe ... querySurface` examples for object-valued paths. Their
+  `exampleExpression` now uses runnable `TO_JSON(...)` syntax for top-level
+  objects and `JSON_TYPEOF(...)` for dotted nested objects, instead of a bare
+  object reference that Exasol rejects as an unknown column.
 - Fixed `JSON_IS_EXPLICIT_NULL(...)` / `JNULL(...)` for fields without an
   explicit-null (`|n`) branch. These calls now rewrite directly to `FALSE`
   without creating a hidden helper projection join.

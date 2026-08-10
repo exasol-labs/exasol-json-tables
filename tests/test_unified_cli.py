@@ -940,9 +940,33 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
             assert family_tables["NESTED"]["pathFromRoot"] is None
             assert family_tables["NESTED_meta"]["pathFromRoot"] == "meta"
             assert family_tables["NESTED_meta_info"]["pathFromRoot"] == "meta.info"
+            assert query_surface["child"]["jsonType"] == "NULL|OBJECT"
+            assert query_surface["child"]["exampleExpression"] == 'TO_JSON(s."child")'
+            assert query_surface["meta"]["jsonType"] == "OBJECT"
+            assert query_surface["meta"]["exampleExpression"] == 'TO_JSON(s."meta")'
+            assert query_surface["meta.info"]["jsonType"] == "OBJECT"
+            assert query_surface["meta.info"]["exampleExpression"] == 'JSON_TYPEOF(s."meta.info")'
             assert query_surface["child.a"]["jsonType"] == "NUMBER"
             assert query_surface["child.a"]["exampleExpression"] == 's."child.a"'
             assert query_surface["meta.info.note"]["exampleExpression"] == 's."meta.info.note"'
+
+            con = connect()
+            try:
+                con.execute(wrap_payload["wrapper"]["preprocessor"]["activationSql"].rstrip(";"))
+                object_examples = [
+                    entry
+                    for entry in describe_package_payload["description"]["querySurface"]
+                    if "OBJECT" in entry["jsonType"].split("|")
+                ]
+                assert object_examples
+                for entry in object_examples:
+                    iterator_expression = entry.get("iteratorExpression", "")
+                    con.execute(
+                        f'SELECT {entry["exampleExpression"]} {entry["exampleFrom"]} '
+                        f'{iterator_expression} LIMIT 1'
+                    ).fetchall()
+            finally:
+                con.close()
 
             con = connect()
             try:
@@ -1021,6 +1045,7 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
                 text=True,
             )
             assert "Preprocessor activation: ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT" in describe_wrapper_text_result.stdout
+            assert 'NESTED.meta [OBJECT] TO_JSON(s."meta")' in describe_wrapper_text_result.stdout
             assert 'NESTED.meta.info.note [STRING] s."meta.info.note"' in describe_wrapper_text_result.stdout
 
             describe_wrappers_result = subprocess.run(
