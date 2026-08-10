@@ -94,6 +94,30 @@ def test_unified_cli_ingest_wrap_validate_with_manifest_handoff() -> None:
             assert len(manifest_paths) == 1
             source_manifest_path = manifest_paths[0]
 
+            con = connect()
+            try:
+                provenance_rows = con.execute(
+                    f'''
+                    SELECT TABLE_NAME, TABLE_COMMENT
+                    FROM SYS.EXA_ALL_TABLES
+                    WHERE TABLE_SCHEMA = '{SOURCE_SCHEMA}'
+                    ORDER BY TABLE_NAME
+                    '''
+                ).fetchall()
+            finally:
+                con.close()
+            assert len(provenance_rows) == 5
+            provenance_by_table = {}
+            for table_name, table_comment in provenance_rows:
+                assert table_comment.startswith("COPY provenance ")
+                provenance_by_table[table_name] = json.loads(table_comment.removeprefix("COPY provenance "))
+            assert provenance_by_table["NESTED"]["source"] == str(input_path.resolve())
+            assert provenance_by_table["NESTED"]["sourceConnection"] == "local-file"
+            assert provenance_by_table["NESTED"]["tablePath"] == "root"
+            assert provenance_by_table["NESTED"]["importedAt"].endswith("Z")
+            assert provenance_by_table["NESTED"]["sourceModifiedAt"].endswith("Z")
+            assert provenance_by_table["NESTED_child"]["tablePath"] == "child"
+
             generate = subprocess.run(
                 [
                     "python3",
@@ -891,6 +915,11 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
             assert describe_package_payload["description"]["wrapperSchema"] == package_config["wrapperSchema"]
             assert describe_package_payload["description"]["rootCount"] == 1
             root_description = describe_package_payload["description"]["roots"][0]
+            query_surface = {
+                entry["path"]: entry
+                for entry in describe_package_payload["description"]["querySurface"]
+                if entry["root"] == "NESTED"
+            }
             root_field_tree = {entry["name"]: entry for entry in root_description["fieldTree"]}
             family_tables = {
                 entry["tableName"]: entry for entry in root_description["familyTables"]
@@ -911,6 +940,9 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
             assert family_tables["NESTED"]["pathFromRoot"] is None
             assert family_tables["NESTED_meta"]["pathFromRoot"] == "meta"
             assert family_tables["NESTED_meta_info"]["pathFromRoot"] == "meta.info"
+            assert query_surface["child.a"]["jsonType"] == "NUMBER"
+            assert query_surface["child.a"]["exampleExpression"] == 's."child.a"'
+            assert query_surface["meta.info.note"]["exampleExpression"] == 's."meta.info.note"'
 
             con = connect()
             try:
@@ -968,6 +1000,28 @@ def test_unified_cli_validate_and_describe_json_surfaces() -> None:
             }
             assert described_field_tree["meta"]["childTable"] == "NESTED_meta"
             assert described_family_tables["NESTED_meta_info"]["pathFromRoot"] == "meta.info"
+            assert describe_wrapper_payload["description"]["querySurface"] == describe_package_payload["description"]["querySurface"]
+
+            describe_wrapper_text_result = subprocess.run(
+                [
+                    "python3",
+                    str(CLI),
+                    "describe",
+                    "wrapper",
+                    "--wrapper-schema",
+                    str(package_config["wrapperSchema"]),
+                    "--preprocessor-schema",
+                    str(package_config["preprocessor"]["schema"]),
+                    "--preprocessor-script",
+                    str(package_config["preprocessor"]["script"]),
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            assert "Preprocessor activation: ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT" in describe_wrapper_text_result.stdout
+            assert 'NESTED.meta.info.note [STRING] s."meta.info.note"' in describe_wrapper_text_result.stdout
 
             describe_wrappers_result = subprocess.run(
                 [
@@ -1142,6 +1196,17 @@ def test_unified_cli_ingest_and_wrap_aliases_array_object_value_fields() -> None
                 if table["pathFromRoot"] == "measurements[]"
             )
             assert measurements_table["scalarFields"] == ["value", "unit"]
+            query_surface = {
+                entry["path"]: entry
+                for entry in describe_payload["description"]["querySurface"]
+                if entry["root"] == root_view
+            }
+            assert query_surface["measurements"]["jsonType"] == "ARRAY"
+            assert query_surface["measurements"]["exampleExpression"] == 's."measurements[SIZE]"'
+            assert query_surface["measurements"]["iteratorExpression"] == 'JOIN item IN s."measurements"'
+            assert query_surface["measurements[].value"]["jsonType"] == "NUMBER"
+            assert query_surface["measurements[].value"]["exampleExpression"] == 'item."value"'
+            assert query_surface["measurements[].value"]["iteratorExpression"] == 'JOIN item IN s."measurements"'
 
             con = connect()
             try:

@@ -1224,6 +1224,40 @@ fn exasol_import_uses_schema_table_names() {
 }
 
 #[test]
+fn exasol_import_emits_catalog_provenance_comments() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("nested.json");
+    let format = detect_input_format(&path).expect("format");
+    let stats = scan_all_stats(&path, format).expect("scan");
+    let planned = build_all_schema_plans(&stats);
+
+    let statements = build_provenance_comment_statements(
+        &planned,
+        "NESTED",
+        Path::new("/imports/customer's.json"),
+        "2026-08-10T09:45:00Z",
+        Some("2026-08-10T09:40:00Z"),
+    );
+
+    assert_eq!(statements.len(), planned.len());
+    assert!(statements.iter().any(|statement| {
+        statement.starts_with("COMMENT ON TABLE \"NESTED\" IS 'COPY provenance ")
+            && statement.contains(r#""source":"/imports/customer"#)
+            && statement.contains("customer''s.json")
+            && statement.contains(r#""sourceConnection":"local-file""#)
+            && statement.contains(r#""importedAt":"2026-08-10T09:45:00Z""#)
+            && statement.contains(r#""sourceModifiedAt":"2026-08-10T09:40:00Z""#)
+            && statement.contains(r#""tablePath":"root""#)
+    }));
+    assert!(statements.iter().any(|statement| {
+        statement.starts_with("COMMENT ON TABLE \"NESTED_child\" IS 'COPY provenance ")
+            && statement.contains(r#""tablePath":"child""#)
+    }));
+}
+
+#[test]
 fn exasol_constraints_are_emitted_disabled_explicitly() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")

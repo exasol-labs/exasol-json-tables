@@ -29,6 +29,7 @@
 //!   * Optional flags: `--output-dir DIR` for Parquet/SQL output, `--schema-sql` to emit an Exasol
 //!     DDL file describing all tables/keys.
 
+use chrono::{DateTime, SecondsFormat, Utc};
 use clap::Parser;
 use exarrow_rs::adbc::{Connection, Driver};
 use exarrow_rs::import::ParquetImportOptions;
@@ -152,6 +153,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             &planned_tables,
             &table_files,
             &stem,
+            &args.input,
         )?;
     }
 
@@ -201,6 +203,7 @@ fn import_into_exasol(
     planned_tables: &[PlannedTable],
     table_files: &[TableFile],
     stem: &str,
+    input_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -214,6 +217,7 @@ fn import_into_exasol(
                 planned_tables,
                 table_files,
                 stem,
+                input_path,
             )
             .await
         })
@@ -226,6 +230,7 @@ async fn import_into_exasol_async(
     planned_tables: &[PlannedTable],
     table_files: &[TableFile],
     stem: &str,
+    input_path: &Path,
 ) -> Result<(), DynError> {
     let (create_stmts, constraint_stmts) = build_sql_schema(planned_tables, stem);
     let mut table_name_map = HashMap::new();
@@ -288,7 +293,58 @@ async fn import_into_exasol_async(
         connection.close().await?;
     }
 
+    let imported_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let source_path = input_path
+        .canonicalize()
+        .unwrap_or_else(|_| input_path.to_path_buf());
+    let source_modified_at = std::fs::metadata(&source_path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .map(|modified| DateTime::<Utc>::from(modified).to_rfc3339_opts(SecondsFormat::Secs, true));
+    let comment_stmts = build_provenance_comment_statements(
+        planned_tables,
+        stem,
+        &source_path,
+        &imported_at,
+        source_modified_at.as_deref(),
+    );
+    let mut connection = connect_exasol(exasol_url).await?;
+    for stmt in comment_stmts {
+        connection.execute(stmt).await?;
+    }
+    connection.close().await?;
+
     Ok(())
+}
+
+fn build_provenance_comment_statements(
+    planned_tables: &[PlannedTable],
+    stem: &str,
+    source_path: &Path,
+    imported_at: &str,
+    source_modified_at: Option<&str>,
+) -> Vec<String> {
+    planned_tables
+        .iter()
+        .map(|plan| {
+            let mut provenance = json!({
+                "source": source_path.to_string_lossy(),
+                "sourceConnection": "local-file",
+                "importedAt": imported_at,
+                "tablePath": plan.path.to_string(),
+                "tool": "exasol-json-tables",
+            });
+            if let Some(modified_at) = source_modified_at {
+                provenance["sourceModifiedAt"] = Value::String(modified_at.to_string());
+            }
+            let comment = format!("COPY provenance {provenance}");
+            format!(
+                "COMMENT ON TABLE {} IS '{}';",
+                table_sql_name(&plan.path, stem),
+                comment.replace('\'', "''")
+            )
+        })
+        .collect()
 }
 
 fn sanitize_ident(name: &str) -> String {

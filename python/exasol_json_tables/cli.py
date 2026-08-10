@@ -773,6 +773,157 @@ def _describe_root_fields(
     return field_summary
 
 
+def _member_json_type(member: dict[str, object]) -> str:
+    member_name = str(member["name"])
+    if member_name.endswith("|object"):
+        return "OBJECT"
+    if member_name.endswith("|array"):
+        return "ARRAY"
+    member_type = str(member["type"]).upper()
+    if member_type.startswith(("VARCHAR", "CHAR")):
+        return "STRING"
+    if member_type == "BOOLEAN":
+        return "BOOLEAN"
+    if member_type.startswith(("DECIMAL", "DOUBLE", "REAL", "FLOAT", "INTEGER", "BIGINT", "SMALLINT")):
+        return "NUMBER"
+    return member_type
+
+
+def _group_json_type(group: dict[str, object], relation_kinds: set[str]) -> str:
+    json_types = {_member_json_type(member) for member in cast(list[dict[str, object]], group.get("members", []))}
+    json_types.update(kind.upper() for kind in relation_kinds)
+    if group.get("emptyMaskName") is not None:
+        json_types.add("STRING")
+    if group.get("nullMaskName") is not None:
+        json_types.add("NULL")
+    order = {"NULL": 0, "BOOLEAN": 1, "NUMBER": 2, "STRING": 3, "OBJECT": 4, "ARRAY": 5}
+    return "|".join(sorted(json_types or {"UNKNOWN"}, key=lambda item: (order.get(item, 99), item)))
+
+
+def _describe_query_surface(
+    manifest: dict[str, object],
+    root: dict[str, object],
+    *,
+    table_lookup: dict[str, dict[str, object]],
+) -> list[dict[str, object]]:
+    relationships_by_parent_and_segment = _relationships_by_parent_and_segment(root)
+    relationships_by_parent = _relationships_by_parent(root)
+    public_view = str(root["publicView"])
+    wrapper_schema = str(manifest["publicSchema"])
+    surface: list[dict[str, object]] = []
+
+    def walk(
+        table_name: str,
+        *,
+        canonical_prefix: str,
+        sql_reference: str,
+        local_prefix: str,
+        iterator_clauses: list[str],
+    ) -> None:
+        relationships_by_segment = relationships_by_parent_and_segment.get(table_name, {})
+        for group in _table_groups(table_lookup[table_name]):
+            visible_name = group.get("visibleName")
+            if visible_name in {None, "_id"}:
+                continue
+            logical_name, _ = _logical_field_name_and_kind(str(visible_name))
+            canonical_path = f"{canonical_prefix}{logical_name}"
+            local_path = f"{local_prefix}.{logical_name}" if local_prefix else logical_name
+            segment_relationships = relationships_by_segment.get(logical_name, [])
+            relation_kinds = {str(item["relationKind"]) for item in segment_relationships}
+            json_type = _group_json_type(group, relation_kinds)
+            quoted_path = quote_identifier(local_path)
+            if json_type == "ARRAY":
+                example_expression = f'{sql_reference}.{quote_identifier(local_path + "[SIZE]")}'
+            else:
+                example_expression = f"{sql_reference}.{quoted_path}"
+            entry: dict[str, object] = {
+                "root": public_view,
+                "path": canonical_path,
+                "jsonType": json_type,
+                "exampleExpression": example_expression,
+                "requiresPreprocessor": bool(canonical_prefix or relation_kinds),
+            }
+            if iterator_clauses:
+                entry["iteratorExpression"] = " ".join(iterator_clauses)
+
+            array_relationship = next(
+                (item for item in segment_relationships if item["relationKind"] == "array"),
+                None,
+            )
+            if array_relationship is not None:
+                child_table_name = str(array_relationship["childTable"])
+                element_kind = _infer_array_element_kind(
+                    child_table_name,
+                    table_lookup=table_lookup,
+                    relationships_by_parent=relationships_by_parent,
+                )
+                iterator_alias = "item" if not iterator_clauses else f"item{len(iterator_clauses) + 1}"
+                join_keyword = "JOIN VALUE" if element_kind == "scalar" else "JOIN"
+                iterator_clause = f"{join_keyword} {iterator_alias} IN {sql_reference}.{quoted_path}"
+                entry["iteratorExpression"] = " ".join([*iterator_clauses, iterator_clause])
+            surface.append(entry)
+
+            for relationship in segment_relationships:
+                child_table_name = str(relationship["childTable"])
+                if relationship["relationKind"] == "object":
+                    walk(
+                        child_table_name,
+                        canonical_prefix=f"{canonical_path}.",
+                        sql_reference=sql_reference,
+                        local_prefix=local_path,
+                        iterator_clauses=iterator_clauses,
+                    )
+                elif relationship["relationKind"] == "array":
+                    element_kind = _infer_array_element_kind(
+                        child_table_name,
+                        table_lookup=table_lookup,
+                        relationships_by_parent=relationships_by_parent,
+                    )
+                    iterator_alias = "item" if not iterator_clauses else f"item{len(iterator_clauses) + 1}"
+                    join_keyword = "JOIN VALUE" if element_kind == "scalar" else "JOIN"
+                    iterator_clause = f"{join_keyword} {iterator_alias} IN {sql_reference}.{quoted_path}"
+                    next_clauses = [*iterator_clauses, iterator_clause]
+                    if element_kind == "scalar":
+                        value_group = next(
+                            (
+                                child_group
+                                for child_group in _table_groups(table_lookup[child_table_name])
+                                if child_group.get("visibleName") in {"_value", "value"}
+                            ),
+                            None,
+                        )
+                        if value_group is not None:
+                            surface.append(
+                                {
+                                    "root": public_view,
+                                    "path": f"{canonical_path}[]",
+                                    "jsonType": _group_json_type(value_group, set()),
+                                    "exampleExpression": iterator_alias,
+                                    "iteratorExpression": " ".join(next_clauses),
+                                    "requiresPreprocessor": True,
+                                }
+                            )
+                    else:
+                        walk(
+                            child_table_name,
+                            canonical_prefix=f"{canonical_path}[].",
+                            sql_reference=iterator_alias,
+                            local_prefix="",
+                            iterator_clauses=next_clauses,
+                        )
+
+    walk(
+        str(root["tableName"]),
+        canonical_prefix="",
+        sql_reference="s",
+        local_prefix="",
+        iterator_clauses=[],
+    )
+    for entry in surface:
+        entry["exampleFrom"] = f'FROM "{wrapper_schema}"."{public_view}" s'
+    return surface
+
+
 def _describe_wrapper_manifest(
     manifest: dict[str, object],
     *,
@@ -780,6 +931,7 @@ def _describe_wrapper_manifest(
 ) -> dict[str, object]:
     table_lookup = {str(table["tableName"]): table for table in _manifest_tables(manifest)}
     roots: list[dict[str, object]] = []
+    query_surface: list[dict[str, object]] = []
     for root in sorted(_manifest_roots(manifest), key=lambda item: str(item["publicView"])):
         root_table = table_lookup[str(root["tableName"])]
         root_fields = _describe_root_fields(root_table, root, table_lookup=table_lookup)
@@ -812,16 +964,37 @@ def _describe_wrapper_manifest(
                 "exampleQueries": example_queries,
             }
         )
+        query_surface.extend(_describe_query_surface(manifest, root, table_lookup=table_lookup))
     description: dict[str, object] = {
         "sourceSchema": manifest["sourceSchema"],
         "wrapperSchema": manifest["publicSchema"],
         "helperSchema": manifest["helperSchema"],
         "rootCount": len(roots),
         "roots": roots,
+        "querySurface": query_surface,
     }
     if preprocessor is not None:
         description["preprocessor"] = preprocessor
     return description
+
+
+def _print_wrapper_description(description: dict[str, object]) -> None:
+    print(f'Wrapper schema: {description["wrapperSchema"]}')
+    print(f'Helper schema: {description["helperSchema"]}')
+    print(f'Roots: {", ".join(_description_public_views(description))}')
+    preprocessor = cast(dict[str, object] | None, description.get("preprocessor"))
+    if preprocessor is None:
+        print("Preprocessor activation: unavailable (pass --preprocessor-schema and --preprocessor-script)")
+    else:
+        print(f'Preprocessor activation: {preprocessor["activationSql"]}')
+    print("Query surface:")
+    for entry in cast(list[dict[str, object]], description["querySurface"]):
+        print(
+            f'  {entry["root"]}.{entry["path"]} [{entry["jsonType"]}] '
+            f'{entry["exampleExpression"]}'
+        )
+        if "iteratorExpression" in entry:
+            print(f'    {entry["iteratorExpression"]}')
 
 
 def _wrapper_discovery_metadata(
@@ -2032,9 +2205,7 @@ def command_describe(args: argparse.Namespace) -> None:
             )
         else:
             print(f"Package config: {config_path}")
-            print(f'Wrapper schema: {description["wrapperSchema"]}')
-            print(f'Helper schema: {description["helperSchema"]}')
-            print(f'Roots: {", ".join(_description_public_views(description))}')
+            _print_wrapper_description(description)
     elif args.describe_command == "wrapper":
         con = connect_for_generation(
             args.dsn,
@@ -2092,9 +2263,7 @@ def command_describe(args: argparse.Namespace) -> None:
             )
         else:
             description = wrapper_entry["description"]
-            print(f'Wrapper schema: {description["wrapperSchema"]}')
-            print(f'Helper schema: {description["helperSchema"]}')
-            print(f'Roots: {", ".join(_description_public_views(description))}')
+            _print_wrapper_description(description)
     elif args.describe_command == "wrappers":
         con = connect_for_generation(
             args.dsn,

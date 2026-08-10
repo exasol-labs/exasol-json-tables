@@ -74,6 +74,13 @@ cargo run --manifest-path crates/json_tables_ingest/Cargo.toml -- \
   --manifest-output ./out/data.source_manifest.json
 ```
 
+When ingest writes copied tables into Exasol, it also stamps every table with a
+`COPY provenance {...}` comment. `SYS.EXA_ALL_TABLES.TABLE_COMMENT` therefore
+exposes the source file, the `local-file` source connection kind, the import
+timestamp, the source file modification timestamp when available, and the JSON
+path represented by each generated table. The comment intentionally excludes
+Exasol connection credentials.
+
 That manifest is useful because the wrapper layer can consume it directly instead of re-introspecting the live source schema.
 
 ### Upload Directly Into Exasol

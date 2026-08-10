@@ -148,6 +148,11 @@ The response includes:
 - `discovery` metadata showing whether the helper schema was autodiscovered
 - `installedState` from live catalog metadata
 - the wrapped roots, fields, recursive `fieldTree` data, per-root `familyTables`, and example queries
+- a flat `description.querySurface` with each root, canonical JSON path, JSON type, copyable example expression, and any required array iterator expression
+
+The same query surface and the required `ALTER SESSION` statement are printed by the
+plain-text command. This is the quickest discovery route when catalog columns expose
+storage markers such as `owner|object` rather than query paths such as `owner.team`.
 
 If you do not provide the preprocessor schema and script, the describe output still works, but it cannot emit `activationSql`.
 

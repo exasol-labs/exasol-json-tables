@@ -8,6 +8,14 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ### Added
 
+- Added automatic catalog provenance for copied JSON sources. Exasol ingest now
+  stamps each generated local table with its source file, source connection
+  kind, import timestamp, source modification timestamp, and JSON table path in
+  `EXA_ALL_TABLES.TABLE_COMMENT`.
+- Added a flat query-path discovery surface to `describe package` and
+  `describe wrapper`. JSON output now includes `description.querySurface` with
+  roots, canonical paths, JSON types, example expressions, and array iterator
+  syntax; plain-text output prints the same paths and preprocessor activation SQL.
 - Added `ingest-and-wrap --if-exists {fail,replace,skip}` so automated retries can
   explicitly reject, rebuild, or leave an existing four-schema workflow unchanged.
 - Added `--exasol-http-tls` to the Rust ingest CLI and unified `exasol-json-tables ingest` / `ingest-and-wrap` workflows. This enables TLS for the Exasol HTTP bulk-import transport independently from the control connection TLS settings in the `--exasol` URL.
