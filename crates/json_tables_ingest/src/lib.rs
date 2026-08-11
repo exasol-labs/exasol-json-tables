@@ -146,15 +146,22 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     }
     let table_files = write_all_tables(&args.input, format, &planned_tables, &output_dir, &stem)?;
 
-    if let Some(exasol_url) = args.exasol.as_deref() {
-        import_into_exasol(
+    let provenance_comments = if let Some(exasol_url) = args.exasol.as_deref() {
+        Some(import_into_exasol(
             exasol_url,
             args.exasol_http_tls,
             &planned_tables,
             &table_files,
             &stem,
             &args.input,
-        )?;
+        )?)
+    } else {
+        None
+    };
+    if let (Some(manifest_output), Some(comments)) =
+        (args.manifest_output.as_ref(), provenance_comments.as_ref())
+    {
+        write_source_manifest_with_comments(&planned_tables, manifest_output, &stem, comments)?;
     }
 
     if args.exasol.is_some() && args.exasol_cleanup {
@@ -204,7 +211,7 @@ fn import_into_exasol(
     table_files: &[TableFile],
     stem: &str,
     input_path: &Path,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Vec<(String, String)>, Box<dyn Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -231,7 +238,7 @@ async fn import_into_exasol_async(
     table_files: &[TableFile],
     stem: &str,
     input_path: &Path,
-) -> Result<(), DynError> {
+) -> Result<Vec<(String, String)>, DynError> {
     let (create_stmts, constraint_stmts) = build_sql_schema(planned_tables, stem);
     let mut table_name_map = HashMap::new();
     for plan in planned_tables {
@@ -301,7 +308,7 @@ async fn import_into_exasol_async(
         .and_then(|metadata| metadata.modified())
         .ok()
         .map(|modified| DateTime::<Utc>::from(modified).to_rfc3339_opts(SecondsFormat::Secs, true));
-    let comment_stmts = build_provenance_comment_statements(
+    let provenance_comments = build_provenance_comments(
         planned_tables,
         stem,
         &source_path,
@@ -309,21 +316,23 @@ async fn import_into_exasol_async(
         source_modified_at.as_deref(),
     );
     let mut connection = connect_exasol(exasol_url).await?;
-    for stmt in comment_stmts {
-        connection.execute(stmt).await?;
+    for (table_name, comment) in &provenance_comments {
+        connection
+            .execute(provenance_comment_statement(table_name, comment))
+            .await?;
     }
     connection.close().await?;
 
-    Ok(())
+    Ok(provenance_comments)
 }
 
-fn build_provenance_comment_statements(
+fn build_provenance_comments(
     planned_tables: &[PlannedTable],
     stem: &str,
     source_path: &Path,
     imported_at: &str,
     source_modified_at: Option<&str>,
-) -> Vec<String> {
+) -> Vec<(String, String)> {
     planned_tables
         .iter()
         .map(|plan| {
@@ -337,14 +346,20 @@ fn build_provenance_comment_statements(
             if let Some(modified_at) = source_modified_at {
                 provenance["sourceModifiedAt"] = Value::String(modified_at.to_string());
             }
-            let comment = format!("COPY provenance {provenance}");
-            format!(
-                "COMMENT ON TABLE {} IS '{}';",
-                table_sql_name(&plan.path, stem),
-                comment.replace('\'', "''")
+            (
+                table_raw_name(&plan.path, stem),
+                format!("COPY provenance {provenance}"),
             )
         })
         .collect()
+}
+
+fn provenance_comment_statement(table_name: &str, comment: &str) -> String {
+    format!(
+        "COMMENT ON TABLE {} IS '{}';",
+        sanitize_ident(table_name),
+        comment.replace('\'', "''")
+    )
 }
 
 fn sanitize_ident(name: &str) -> String {
@@ -434,6 +449,32 @@ fn write_source_manifest(
     }
     std::fs::write(output_path, serde_json::to_string_pretty(&manifest)? + "\n")?;
     println!("Wrote source manifest to {:?}", output_path);
+    Ok(())
+}
+
+fn write_source_manifest_with_comments(
+    plans: &[PlannedTable],
+    output_path: &Path,
+    stem: &str,
+    comments: &[(String, String)],
+) -> Result<(), Box<dyn Error>> {
+    let mut manifest = build_source_manifest(plans, stem);
+    let comments_by_table: HashMap<&str, &str> = comments
+        .iter()
+        .map(|(table_name, comment)| (table_name.as_str(), comment.as_str()))
+        .collect();
+    if let Some(tables) = manifest["tables"].as_array_mut() {
+        for table in tables {
+            let Some(table_name) = table["tableName"].as_str() else {
+                continue;
+            };
+            if let Some(comment) = comments_by_table.get(table_name) {
+                table["tableComment"] = Value::String((*comment).to_string());
+            }
+        }
+    }
+    std::fs::write(output_path, serde_json::to_string_pretty(&manifest)? + "\n")?;
+    println!("Updated source manifest provenance at {:?}", output_path);
     Ok(())
 }
 

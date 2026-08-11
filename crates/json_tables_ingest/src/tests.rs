@@ -1233,13 +1233,17 @@ fn exasol_import_emits_catalog_provenance_comments() {
     let stats = scan_all_stats(&path, format).expect("scan");
     let planned = build_all_schema_plans(&stats);
 
-    let statements = build_provenance_comment_statements(
+    let comments = build_provenance_comments(
         &planned,
         "NESTED",
         Path::new("/imports/customer's.json"),
         "2026-08-10T09:45:00Z",
         Some("2026-08-10T09:40:00Z"),
     );
+    let statements: Vec<String> = comments
+        .iter()
+        .map(|(table_name, comment)| provenance_comment_statement(table_name, comment))
+        .collect();
 
     assert_eq!(statements.len(), planned.len());
     assert!(statements.iter().any(|statement| {
@@ -1255,6 +1259,25 @@ fn exasol_import_emits_catalog_provenance_comments() {
         statement.starts_with("COMMENT ON TABLE \"NESTED_child\" IS 'COPY provenance ")
             && statement.contains(r#""tablePath":"child""#)
     }));
+
+    let dir = tempdir().expect("tempdir");
+    let manifest_path = dir.path().join("nested.source_manifest.json");
+    write_source_manifest_with_comments(&planned, &manifest_path, "NESTED", &comments)
+        .expect("manifest with comments");
+    let manifest: Value = serde_json::from_str(
+        &fs::read_to_string(manifest_path).expect("read source manifest with comments"),
+    )
+    .expect("parse source manifest with comments");
+    let root_table = manifest["tables"]
+        .as_array()
+        .expect("tables")
+        .iter()
+        .find(|table| table["tableName"] == "NESTED")
+        .expect("root table");
+    assert!(root_table["tableComment"]
+        .as_str()
+        .expect("table comment")
+        .starts_with("COPY provenance "));
 }
 
 #[test]

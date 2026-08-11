@@ -131,6 +131,10 @@ def test_ingest_manifest_can_drive_wrapper_generation() -> None:
             manifest = json.loads(manifest_path.read_text())
             assert manifest["format"] == "exasol-json-tables-source-manifest"
             assert any(table["tableName"] == "NESTED" for table in manifest["tables"])
+            root_manifest_table = next(
+                table for table in manifest["tables"] if table["tableName"] == "NESTED"
+            )
+            assert root_manifest_table["tableComment"].startswith("COPY provenance ")
 
             package_config_path = run_wrapper_package_generate(manifest_path, output_dir)
             package_config = json.loads(package_config_path.read_text())
@@ -141,6 +145,22 @@ def test_ingest_manifest_can_drive_wrapper_generation() -> None:
 
             con = connect()
             try:
+                source_comment = con.execute(
+                    f'''
+                    SELECT TABLE_COMMENT
+                    FROM SYS.EXA_ALL_TABLES
+                    WHERE TABLE_SCHEMA = '{SOURCE_SCHEMA}' AND TABLE_NAME = 'NESTED'
+                    '''
+                ).fetchval()
+                wrapper_comment = con.execute(
+                    f'''
+                    SELECT VIEW_COMMENT
+                    FROM SYS.EXA_ALL_VIEWS
+                    WHERE VIEW_SCHEMA = '{WRAPPER_SCHEMA}' AND VIEW_NAME = 'NESTED'
+                    '''
+                ).fetchval()
+                assert source_comment == root_manifest_table["tableComment"]
+                assert wrapper_comment == source_comment
                 con.execute(
                     f'ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = "{PREPROCESSOR_SCHEMA}"."{PREPROCESSOR_SCRIPT}"'
                 )

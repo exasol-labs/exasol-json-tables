@@ -170,6 +170,19 @@ def fetch_source_columns(con, source_schema: str) -> dict[str, list[ColumnMeta]]
     return tables
 
 
+def fetch_source_table_comments(con, source_schema: str) -> dict[str, str]:
+    rows = con.execute(
+        f"""
+        SELECT TABLE_NAME, TABLE_COMMENT
+        FROM SYS.EXA_ALL_TABLES
+        WHERE TABLE_SCHEMA = '{source_schema.upper()}'
+          AND TABLE_COMMENT IS NOT NULL
+        ORDER BY TABLE_NAME
+        """
+    ).fetchall()
+    return {str(row[0]): str(row[1]) for row in rows}
+
+
 def parse_type_metadata(type_name: str) -> tuple[int | None, int | None, int | None]:
     upper = type_name.upper()
     varchar_match = VARCHAR_RE.match(upper)
@@ -211,6 +224,14 @@ def source_columns_from_manifest(source_manifest: dict[str, Any], source_schema:
     if not tables:
         raise SystemExit("Source manifest does not describe any tables.")
     return tables
+
+
+def source_table_comments_from_manifest(source_manifest: dict[str, Any]) -> dict[str, str]:
+    return {
+        str(table_spec["tableName"]): str(table_spec["tableComment"])
+        for table_spec in source_manifest.get("tables", [])
+        if table_spec.get("tableComment") is not None
+    }
 
 
 def group_columns(columns: Iterable[ColumnMeta]) -> dict[str, Group]:
@@ -387,7 +408,13 @@ def build_root_families(root_tables: list[str], relationships: list[Relationship
     return root_by_table
 
 
-def generate_public_view_sql(public_schema: str, table_model: TableModel, source_schema: str) -> str:
+def generate_public_view_sql(
+    public_schema: str,
+    table_model: TableModel,
+    source_schema: str,
+    *,
+    source_comment: str | None = None,
+) -> str:
     select_lines: list[str] = []
     emitted_groups: set[str] = set()
     for column in table_model.columns:
@@ -421,11 +448,14 @@ def generate_public_view_sql(public_schema: str, table_model: TableModel, source
         emitted_groups.add(base_name)
 
     select_sql = ",\n".join(select_lines)
-    return (
+    statement = (
         f"CREATE OR REPLACE VIEW {quote_qualified(public_schema, table_model.name)} AS\n"
         f"SELECT\n{select_sql}\n"
         f"FROM {quote_qualified(source_schema, table_model.name)}"
     )
+    if source_comment is not None:
+        statement += f"\nCOMMENT IS {sql_literal(source_comment)}"
+    return statement
 
 
 def generate_helper_view_sql(helper_schema: str, source_schema: str, table_name: str) -> str:
@@ -744,11 +774,13 @@ def generate_wrapper_artifacts(
     public_schema = public_schema.upper()
     helper_schema = helper_schema.upper()
     source_columns = fetch_source_columns(con, source_schema)
+    source_table_comments = fetch_source_table_comments(con, source_schema)
     return generate_wrapper_artifacts_from_source_columns(
         source_columns,
         source_schema=source_schema,
         public_schema=public_schema,
         helper_schema=helper_schema,
+        source_table_comments=source_table_comments,
     )
 
 
@@ -758,6 +790,7 @@ def generate_wrapper_artifacts_from_source_columns(
     source_schema: str,
     public_schema: str,
     helper_schema: str,
+    source_table_comments: dict[str, str] | None = None,
 ) -> WrapperArtifacts:
     table_models = build_table_models(source_columns)
     relationships = build_relationships(table_models)
@@ -771,7 +804,14 @@ def generate_wrapper_artifacts_from_source_columns(
         f"CREATE SCHEMA {quote_identifier(helper_schema)}",
     ]
     for root_table in root_tables:
-        statements.append(generate_public_view_sql(public_schema, table_models[root_table], source_schema))
+        statements.append(
+            generate_public_view_sql(
+                public_schema,
+                table_models[root_table],
+                source_schema,
+                source_comment=(source_table_comments or {}).get(root_table),
+            )
+        )
     for table_name in sorted(table_models):
         statements.append(generate_helper_view_sql(helper_schema, source_schema, table_name))
     statements.extend(
@@ -816,6 +856,7 @@ def generate_wrapper_artifacts_from_source_manifest(
         source_schema=source_schema.upper(),
         public_schema=public_schema.upper(),
         helper_schema=helper_schema.upper(),
+        source_table_comments=source_table_comments_from_manifest(source_manifest),
     )
 
 

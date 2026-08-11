@@ -30,6 +30,9 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ### Fixed
 
+- Propagated copied-source provenance from ingest manifests and source-table
+  comments to public wrapper-view comments, making freshness visible in
+  `EXA_ALL_VIEWS.VIEW_COMMENT` on the surface consumers actually query.
 - Fixed `describe ... querySurface` examples for object-valued paths. Their
   `exampleExpression` now uses runnable `TO_JSON(...)` syntax for top-level
   objects and `JSON_TYPEOF(...)` for dotted nested objects, instead of a bare

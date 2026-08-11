@@ -34,6 +34,11 @@ def main() -> None:
     con = connect()
     try:
         install_source_fixture(con, include_deep_fixture=True)
+        live_source_comment = (
+            'COPY provenance {"source":"live-generation.json","sourceConnection":"local-file",'
+            '"importedAt":"2026-08-11T08:00:00Z","tablePath":"root","tool":"exasol-json-tables"}'
+        )
+        con.execute(f"COMMENT ON TABLE JVS_SRC.SAMPLE IS '{live_source_comment}'")
         manifest = install_wrapper_views(
             con,
             source_schema="JVS_SRC",
@@ -47,6 +52,14 @@ def main() -> None:
         assert_equal(manifest["helperSchema"], HELPER_WRAPPER_SCHEMA, "manifest helper schema")
         manifest_roots = sorted(root["tableName"] for root in manifest["roots"])
         assert_equal(manifest_roots, ["DEEPDOC", "SAMPLE"], "manifest root tables")
+        wrapper_view_comment = con.execute(
+            f"""
+            SELECT VIEW_COMMENT
+            FROM SYS.EXA_ALL_VIEWS
+            WHERE VIEW_SCHEMA = '{PUBLIC_WRAPPER_SCHEMA}' AND VIEW_NAME = 'SAMPLE'
+            """
+        ).fetchval()
+        assert_equal(wrapper_view_comment, live_source_comment, "live source wrapper provenance")
 
         public_tables = con.execute(f"""
             SELECT DISTINCT COLUMN_TABLE

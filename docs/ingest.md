@@ -81,6 +81,12 @@ timestamp, the source file modification timestamp when available, and the JSON
 path represented by each generated table. The comment intentionally excludes
 Exasol connection credentials.
 
+When a wrapper package is generated from that source manifest, the root source
+table's comment is copied onto the public wrapper view. Consumers can therefore
+read the same provenance and freshness timestamps from
+`SYS.EXA_ALL_VIEWS.VIEW_COMMENT` without knowing about the internal `_SRC`
+schema.
+
 That manifest is useful because the wrapper layer can consume it directly instead of re-introspecting the live source schema.
 
 ### Upload Directly Into Exasol
