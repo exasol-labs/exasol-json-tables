@@ -1,6 +1,6 @@
 [package]
 name = "json_to_parquet"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "CLI tool to convert JSON input into Parquet output files."
 license = "MIT"

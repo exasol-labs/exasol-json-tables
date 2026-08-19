@@ -1,10 +1,12 @@
 # Changelog
 
-This project does not publish tagged release notes yet, so changes accumulate here under `Unreleased` until the next formal version cut.
+Changes accumulate under `Unreleased` until the next formal version cut.
 
 The format is loosely based on Keep a Changelog and focuses on user-visible behavior, migration-relevant changes, and operational fixes.
 
 ## [Unreleased]
+
+## [0.2] - 2026-08-19
 
 ### Added
 
