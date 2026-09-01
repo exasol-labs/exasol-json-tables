@@ -26,6 +26,17 @@ SELECT "event_id" FROM ANALYTICS.EVENTS;
 
 If a column was created as `"event_id"`, then the unquoted `event_id` resolves as `EVENT_ID` and does not match.
 
+## Generated Flattened Views
+
+If you only need SQL-friendly names, you may not have to build them by hand.
+Every wrapper package also generates a `_FLAT` schema whose views already apply
+the conventions on this page: UPPERCASE names, no quoting, no reserved words,
+nested paths folded into single columns. See [flat-views.md](flat-views.md) for
+the exact flattening rules.
+
+The rest of this page still applies whenever you publish your own durable views
+from wrapper queries.
+
 ## Practical Rule Of Thumb
 
 Use these defaults:

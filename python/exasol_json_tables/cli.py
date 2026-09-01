@@ -65,8 +65,24 @@ class WrapperPreprocessorSummary(TypedDict, total=False):
 class WrapperGeneratedFilesSummary(TypedDict):
     manifest: str
     viewsSql: str
+    flatViewsSql: str | None
     preprocessorLibrarySql: str | None
     preprocessorSql: str
+
+
+class WrapperFlatViewSummary(TypedDict):
+    view: str
+    kind: str
+    jsonPath: str
+    columnCount: int
+
+
+class WrapperFlatSummary(TypedDict, total=False):
+    schema: str
+    activationRequired: bool
+    views: list[WrapperFlatViewSummary]
+    joinKeys: list[str]
+    smokeTestSql: str
 
 
 class WrapperResultFamilySummary(TypedDict):
@@ -87,12 +103,14 @@ class WrapperSummary(TypedDict, total=False):
     resultFamily: WrapperResultFamilySummary
     publicViews: list[str]
     smokeTestSql: str
+    flat: WrapperFlatSummary
 
 
 class WrapperArtifactsPayload(TypedDict, total=False):
     packageConfig: str
     manifest: str
     viewsSql: str
+    flatViewsSql: str | None
     preprocessorLibrarySql: str | None
     preprocessorSql: str
     sourceManifest: str
@@ -105,10 +123,12 @@ class WrapperObjectsPayload(TypedDict, total=False):
     sourceSchema: str
     wrapperSchema: str
     helperSchema: str
+    flatSchema: str
     preprocessorSchema: str
     preprocessorScript: str
     preprocessorLibraryScript: str | None
     publicViews: list[str]
+    flatViews: list[str]
 
 
 class WrapperNextActionsPayload(TypedDict, total=False):
@@ -116,6 +136,10 @@ class WrapperNextActionsPayload(TypedDict, total=False):
     activationRequired: bool
     publicViews: list[str]
     smokeTestSql: str
+    flatSchema: str
+    flatViews: list[str]
+    flatSmokeTestSql: str
+    joinKeys: list[str]
 
 
 class WrapperDiscoveryMetadata(TypedDict):
@@ -141,6 +165,7 @@ class DerivedWorkflowNames(TypedDict):
     sourceSchema: str
     wrapperSchema: str
     helperSchema: str
+    flatSchema: str
     preprocessorSchema: str
     preprocessorScript: str
     packageName: str
@@ -161,6 +186,7 @@ class Phase5WorkflowConfig(TypedDict):
     sourceSchema: str
     wrapperSchema: str
     helperSchema: str
+    flatSchema: str | None
     preprocessorSchema: str
     preprocessorScript: str
     packageName: str
@@ -286,6 +312,7 @@ def _build_wrapper_summary_from_config_path(config_path: Path) -> WrapperSummary
         config_path, config["generatedFiles"]["manifest"]
     ).resolve()
     preprocessor_library_sql_path = wrapper_package_tool.resolve_preprocessor_library_sql_path(config_path, config)
+    flat_views_sql_path = wrapper_package_tool.resolve_flat_views_sql_path(config_path, config)
     summary: WrapperSummary = {
         "packageConfig": str(config_path),
         "sourceSchema": config["sourceSchema"],
@@ -302,6 +329,9 @@ def _build_wrapper_summary_from_config_path(config_path: Path) -> WrapperSummary
             "manifest": str(manifest_path),
             "viewsSql": str(
                 wrapper_package_tool.resolve_configured_path(config_path, config["generatedFiles"]["viewsSql"]).resolve()
+            ),
+            "flatViewsSql": (
+                str(flat_views_sql_path) if flat_views_sql_path is not None else None
             ),
             "preprocessorLibrarySql": (
                 str(preprocessor_library_sql_path)
@@ -336,7 +366,51 @@ def _build_wrapper_summary_from_config_path(config_path: Path) -> WrapperSummary
         manifest = wrapper_package_tool.load_manifest_and_validate(config, manifest_path)
         summary["publicViews"] = [str(root["publicView"]) for root in sorted(manifest["roots"], key=lambda item: item["publicView"])]
         summary["smokeTestSql"] = wrapper_package_tool.build_smoke_test_query(config, manifest)
+        flat_summary = _build_wrapper_flat_summary(manifest)
+        if flat_summary is not None:
+            summary["flat"] = flat_summary
     return summary
+
+
+def _build_wrapper_flat_summary(manifest: dict[str, object]) -> WrapperFlatSummary | None:
+    flat_manifest = wrapper_package_tool.flat_manifest_for_manifest(manifest)
+    if flat_manifest is None:
+        return None
+    entities = cast(list[dict[str, object]], flat_manifest["entities"])
+    flat_summary: WrapperFlatSummary = {
+        "schema": str(flat_manifest["schema"]),
+        "activationRequired": False,
+        "views": [
+            {
+                "view": str(entity["view"]),
+                "kind": str(entity["kind"]),
+                "jsonPath": str(entity["jsonPath"]),
+                "columnCount": len(cast(list[object], entity["columns"])),
+            }
+            for entity in entities
+        ],
+        "joinKeys": wrapper_package_tool.build_join_key_lines(flat_manifest),
+    }
+    flat_smoke_test_sql = wrapper_package_tool.build_flat_smoke_test_query(flat_manifest)
+    if flat_smoke_test_sql is not None:
+        flat_summary["smokeTestSql"] = flat_smoke_test_sql
+    return flat_summary
+
+
+def _print_flat_surface_summary(summary: WrapperSummary) -> None:
+    flat_summary = summary.get("flat")
+    if flat_summary is None:
+        return
+    view_names = [entry["view"] for entry in flat_summary["views"]]
+    print(
+        f'Flattened views (no ALTER SESSION needed) in {flat_summary["schema"]}: '
+        + ", ".join(view_names)
+    )
+    join_keys = flat_summary.get("joinKeys") or []
+    if join_keys:
+        print("Join keys:")
+        for line in join_keys:
+            print(f"  {line}")
 
 
 def _build_wrapper_artifacts(summary: WrapperSummary) -> WrapperArtifactsPayload:
@@ -345,6 +419,7 @@ def _build_wrapper_artifacts(summary: WrapperSummary) -> WrapperArtifactsPayload
         "packageConfig": summary["packageConfig"],
         "manifest": generated_files["manifest"],
         "viewsSql": generated_files["viewsSql"],
+        "flatViewsSql": generated_files["flatViewsSql"],
         "preprocessorLibrarySql": generated_files["preprocessorLibrarySql"],
         "preprocessorSql": generated_files["preprocessorSql"],
     }
@@ -368,6 +443,10 @@ def _build_wrapper_objects(summary: WrapperSummary) -> WrapperObjectsPayload:
     }
     if "publicViews" in summary:
         objects["publicViews"] = summary["publicViews"]
+    flat_summary = summary.get("flat")
+    if flat_summary is not None:
+        objects["flatSchema"] = flat_summary["schema"]
+        objects["flatViews"] = [entry["view"] for entry in flat_summary["views"]]
     return objects
 
 
@@ -381,6 +460,13 @@ def _build_wrapper_next_actions(summary: WrapperSummary) -> WrapperNextActionsPa
         next_actions["publicViews"] = summary["publicViews"]
     if "smokeTestSql" in summary:
         next_actions["smokeTestSql"] = summary["smokeTestSql"]
+    flat_summary = summary.get("flat")
+    if flat_summary is not None:
+        next_actions["flatSchema"] = flat_summary["schema"]
+        next_actions["flatViews"] = [entry["view"] for entry in flat_summary["views"]]
+        next_actions["joinKeys"] = flat_summary.get("joinKeys") or []
+        if "smokeTestSql" in flat_summary:
+            next_actions["flatSmokeTestSql"] = flat_summary["smokeTestSql"]
     return next_actions
 
 
@@ -1256,6 +1342,7 @@ def _derived_workflow_names(raw_name: str, schema_prefix: str) -> DerivedWorkflo
         "sourceSchema": f"{stem}_SRC",
         "wrapperSchema": f"{stem}_VIEW",
         "helperSchema": f"{stem}_VIEW_INTERNAL",
+        "flatSchema": f"{stem}_FLAT",
         "preprocessorSchema": f"{stem}_PP",
         "preprocessorScript": f"{stem}_PREPROCESSOR",
         "packageName": f"{slug}_wrapper",
@@ -1365,16 +1452,15 @@ def _ensure_schema_exists(
 
 
 def _workflow_schema_names(workflow: Phase5WorkflowConfig) -> list[str]:
-    return list(
-        dict.fromkeys(
-            [
-                str(workflow["preprocessorSchema"]),
-                str(workflow["helperSchema"]),
-                str(workflow["wrapperSchema"]),
-                str(workflow["sourceSchema"]),
-            ]
-        )
-    )
+    names = [
+        str(workflow["preprocessorSchema"]),
+        str(workflow["helperSchema"]),
+        str(workflow["wrapperSchema"]),
+    ]
+    if workflow["flatSchema"] is not None:
+        names.append(str(workflow["flatSchema"]))
+    names.append(str(workflow["sourceSchema"]))
+    return list(dict.fromkeys(names))
 
 
 def _prepare_ingest_and_wrap_destination(
@@ -1505,6 +1591,11 @@ def add_wrap_install_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--views-sql", type=Path, default=None, help="Override views SQL path.")
     parser.add_argument("--preprocessor-sql", type=Path, default=None, help="Override preprocessor SQL path.")
     parser.add_argument("--skip-views", action="store_true", help="Skip wrapper/helper SQL installation.")
+    parser.add_argument(
+        "--skip-flat-views",
+        action="store_true",
+        help="Skip installation of the preprocessor-free flattened views.",
+    )
     parser.add_argument("--skip-source-family", action="store_true", help="Skip durable result-family installation.")
     parser.add_argument("--skip-preprocessor", action="store_true", help="Skip preprocessor SQL installation.")
     parser.add_argument(
@@ -1601,6 +1692,18 @@ def add_ingest_and_wrap_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-schema", default=None, help="Override the derived source schema name.")
     parser.add_argument("--wrapper-schema", default=None, help="Override the derived public wrapper schema name.")
     parser.add_argument("--helper-schema", default=None, help="Override the derived helper schema name.")
+    parser.add_argument(
+        "--flat-schema",
+        default=None,
+        help="Override the derived schema for the preprocessor-free flattened views.",
+    )
+    parser.add_argument(
+        "--no-flat-views",
+        dest="flat_views",
+        action="store_false",
+        default=True,
+        help="Do not generate or install the preprocessor-free flattened views.",
+    )
     parser.add_argument("--preprocessor-schema", default=None, help="Override the derived preprocessor schema name.")
     parser.add_argument("--preprocessor-script", default=None, help="Override the derived preprocessor script name.")
     parser.add_argument("--package-name", default=None, help="Override the derived package file prefix.")
@@ -1834,6 +1937,11 @@ def _derive_phase5_workflow_config(args: argparse.Namespace) -> Phase5WorkflowCo
         "sourceSchema": connection["sourceSchema"],
         "wrapperSchema": validate_identifier("Wrapper schema", args.wrapper_schema or defaults["wrapperSchema"]),
         "helperSchema": validate_identifier("Helper schema", args.helper_schema or defaults["helperSchema"]),
+        "flatSchema": (
+            validate_identifier("Flat schema", args.flat_schema or defaults["flatSchema"])
+            if getattr(args, "flat_views", True)
+            else None
+        ),
         "preprocessorSchema": validate_identifier(
             "Preprocessor schema",
             args.preprocessor_schema or defaults["preprocessorSchema"],
@@ -1884,6 +1992,7 @@ def command_ingest_and_wrap(args: argparse.Namespace) -> None:
             "sourceSchema": str(workflow["sourceSchema"]),
             "wrapperSchema": str(workflow["wrapperSchema"]),
             "helperSchema": str(workflow["helperSchema"]),
+            "flatSchema": workflow["flatSchema"],
             "preprocessorSchema": str(workflow["preprocessorSchema"]),
             "preprocessorScript": str(workflow["preprocessorScript"]),
         }
@@ -1937,6 +2046,8 @@ def command_ingest_and_wrap(args: argparse.Namespace) -> None:
             source_manifest=source_manifest_path,
             wrapper_schema=str(workflow["wrapperSchema"]),
             helper_schema=str(workflow["helperSchema"]),
+            flat_schema=workflow["flatSchema"],
+            flat_views=workflow["flatSchema"] is not None,
             preprocessor_schema=str(workflow["preprocessorSchema"]),
             preprocessor_script=str(workflow["preprocessorScript"]),
             output_dir=run_artifact_dir,
@@ -1965,6 +2076,7 @@ def command_ingest_and_wrap(args: argparse.Namespace) -> None:
             views_sql=None,
             preprocessor_sql=None,
             skip_views=False,
+            skip_flat_views=False,
             skip_source_family=False,
             skip_preprocessor=False,
             activate_session=args.activate_session,
@@ -2012,6 +2124,7 @@ def command_ingest_and_wrap(args: argparse.Namespace) -> None:
         )
         if "publicViews" in wrapper_summary:
             print(f'Public views: {", ".join(wrapper_summary["publicViews"])}')
+        _print_flat_surface_summary(wrapper_summary)
 
 
 def _resolve_wrap_generation_args(args: argparse.Namespace) -> argparse.Namespace:
@@ -2210,6 +2323,7 @@ def command_describe(args: argparse.Namespace) -> None:
         else:
             print(f"Package config: {config_path}")
             _print_wrapper_description(description)
+            _print_flat_surface_summary(wrapper_summary)
     elif args.describe_command == "wrapper":
         con = connect_for_generation(
             args.dsn,

@@ -8,7 +8,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](pyproject.toml)
 [![Rust](https://img.shields.io/badge/Rust-ingest_engine-000000.svg?logo=rust&logoColor=white)](crates/json_tables_ingest)
 
-[Installation](docs/installation.md) · [Query surface](docs/query-surface.md) · [Structured results](docs/structured-results.md) · [Architecture](docs/architecture.md) · [Testing](docs/testing.md)
+[Installation](docs/installation.md) · [Query surface](docs/query-surface.md) · [Flattened views](docs/flat-views.md) · [Structured results](docs/structured-results.md) · [Architecture](docs/architecture.md) · [Testing](docs/testing.md)
 
 </div>
 
@@ -63,6 +63,11 @@ That surface supports:
 - rowset expansion for arrays
 - explicit-null helpers
 - JSON-aware variant helpers
+
+Alongside it you also get a **flattened view per entity** that needs no
+preprocessor and no session state, with UPPERCASE columns that are safe to type
+unquoted. That is the surface for BI tools, dashboards, pooled connections and
+generated SQL. See [docs/flat-views.md](docs/flat-views.md).
 
 ### Reshape
 
@@ -197,7 +202,22 @@ JSON paths can be used on both sides of a cross-schema join. Generate a combined
 script from the wrapper manifests as described in
 [Several wrappers in one session](docs/query-surface.md#several-wrappers-in-one-session).
 
-### 3. Published Permanent Surfaces
+### 3. Flattened Views
+
+Every wrapper package also generates ordinary views in a `_FLAT` schema, with
+UPPERCASE unquoted-safe column names and nested objects folded in:
+
+```sql
+SELECT o.ORDER_ID, o.CUSTOMER_ADDRESS_CITY, i.SKU, i.QTY
+FROM EJT_ORDERS_FLAT.ORDERS o
+JOIN EJT_ORDERS_FLAT.ORDERS_ITEMS i ON i.PARENT_ID = o.ROW_ID
+ORDER BY o.ORDER_ID, i.ARRAY_INDEX;
+```
+
+No activation, no quoted identifiers. Use this when the consumer cannot run
+`ALTER SESSION`. See [docs/flat-views.md](docs/flat-views.md).
+
+### 4. Published Permanent Surfaces
 
 When a wrapped family becomes part of a long-lived downstream workflow, use the wrapper as the authoring surface and publish ordinary views or tables from it.
 
@@ -224,6 +244,7 @@ For automation and autonomous agents, the major workflow commands also support `
 - Python notebooks / pandas / polars: [docs/python-dataframes.md](docs/python-dataframes.md)
 - Ingest guide: [docs/ingest.md](docs/ingest.md)
 - Query surface reference: [docs/query-surface.md](docs/query-surface.md)
+- Flattened views (no preprocessor): [docs/flat-views.md](docs/flat-views.md)
 - Structured results: [docs/structured-results.md](docs/structured-results.md)
 - Automation: [docs/automation.md](docs/automation.md)
 - Identifier conventions: [docs/identifier-conventions.md](docs/identifier-conventions.md)

@@ -136,6 +136,12 @@ exasol-json-tables ingest-and-wrap \
   --name customer_events
 ```
 
+That also creates `EJT_CUSTOMER_EVENTS_FLAT`: preprocessor-free views with
+UPPERCASE unquoted-safe columns, for consumers that cannot run `ALTER SESSION`.
+The command prints those views and the join keys between them; the same data is
+in `nextActions.joinKeys` under `--json` and in the manifest's `relationships`.
+See `docs/flat-views.md`.
+
 ## Validation
 
 Use the smallest relevant validation:

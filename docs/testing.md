@@ -102,6 +102,22 @@ Verifies:
 - helper-based variant semantics
 - deep recursive traversal
 
+## Flattened Views
+
+```bash
+python3 tests/test_flat_views.py
+```
+
+Verifies:
+
+- the JSON-path to SQL identifier flattening rules, including reserved words,
+  illegal leading characters, the 128-character limit, and collision suffixes
+- flattened entity shape: folded objects, array entity views, and join keys
+- that generated views are queryable on a session with no preprocessor
+  activation, using plain unquoted UPPERCASE identifiers
+- that the CLI reports the flattened views and the manifest's join keys
+- `--no-flat-views`
+
 ## Preprocessor Refactor Baseline
 
 ```bash

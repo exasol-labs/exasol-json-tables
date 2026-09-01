@@ -137,6 +137,27 @@ Use the activation SQL emitted by:
 
 The regression behind this pattern is [tests/test_access_modes.py](../tests/test_access_modes.py).
 
+### Flattened Views
+
+Use this when the consumer cannot run `ALTER SESSION` at all: BI tools,
+dashboard servers, pooled connections that you do not own, and generated SQL.
+
+Every wrapper package also generates ordinary views in a `_FLAT` schema, with
+UPPERCASE unquoted-safe column names, nested objects folded into the owning
+entity, and arrays kept as separate views joined on plain key columns:
+
+```sql
+SELECT o.ORDER_ID, o.CUSTOMER_ADDRESS_CITY, i.SKU, i.QTY
+FROM EJT_ORDERS_FLAT.ORDERS o
+JOIN EJT_ORDERS_FLAT.ORDERS_ITEMS i ON i.PARENT_ID = o.ROW_ID
+ORDER BY o.ORDER_ID, i.ARRAY_INDEX;
+```
+
+Turn the surface off with `--no-flat-views`, or place it elsewhere with
+`--flat-schema`. The regression behind this mode is
+[tests/test_flat_views.py](../tests/test_flat_views.py). For the flattening
+rules, see [flat-views.md](flat-views.md).
+
 ### Published Views And Materialized Tables
 
 When a wrapped family becomes part of a stable downstream workflow, the better long-lived pattern is:
@@ -292,4 +313,5 @@ That discovery surface is intentionally limited to wrapper packages. Ordinary pu
 - Workflow overview: [README.md](../README.md)
 - Ingest details: [ingest.md](ingest.md)
 - Query surface: [query-surface.md](query-surface.md)
+- Flattened views: [flat-views.md](flat-views.md)
 - Structured results: [structured-results.md](structured-results.md)
