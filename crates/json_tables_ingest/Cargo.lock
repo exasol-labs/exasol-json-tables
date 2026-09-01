@@ -977,6 +977,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "json_tables_core"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "json_to_parquet"
 version = "0.2.0"
 dependencies = [
@@ -984,6 +991,7 @@ dependencies = [
  "chrono",
  "clap",
  "exarrow-rs",
+ "json_tables_core",
  "parquet",
  "serde_json",
  "tempfile",

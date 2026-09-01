@@ -132,6 +132,21 @@ For a fuller set of conventions, see [identifier-conventions.md](identifier-conv
 
 `TO_JSON` is the primary final outlet when you want JSON back out of a query.
 
+MongoDB Virtual Schema roots can additionally expose `TO_JSON()` with no
+arguments. This returns the connector's complete source document as canonical
+MongoDB Extended JSON, including fields or BSON branches absent from the
+inferred relational schema:
+
+```sql
+SELECT TO_JSON()
+FROM MONGO_VS."PEOPLE";
+```
+
+The same zero-argument form works through the generated JSON Tables wrapper.
+It is deliberately source-specific: use `TO_JSON(*)` or
+`TO_JSON(column, ...)` for ordinary views/tables and wrapped structured-result
+families. Materialize or wrap a derived query before serializing it.
+
 The examples below use the uppercase fixture views such as `JSON_VIEW.SAMPLE`. Real installed wrapper roots often keep the ingested table name, which may be lowercase. In that case, quote the public view exactly, for example:
 
 ```sql

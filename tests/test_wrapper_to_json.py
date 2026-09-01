@@ -84,11 +84,31 @@ def install_big_number_fixture(con) -> None:
     )
 
 
+def install_mongodb_source_json_fixture(con) -> None:
+    con.execute(
+        '''
+        CREATE OR REPLACE TABLE MONGO_RAW (
+          "_id" DECIMAL(18,0) NOT NULL,
+          "known" VARCHAR(100),
+          "__mongodb_source_json" VARCHAR(2000000)
+        )
+        '''
+    )
+    con.execute(
+        '''
+        INSERT INTO MONGO_RAW VALUES
+          (1, 'sampled', '{"known":"sampled","outlier_only":{"nested":[1,true,null]}}'),
+          (2, 'ordinary', '{"known":"ordinary","$bson":{"$oid":"64b64c1f3dce4f58d74f97a1"}}')
+        '''
+    )
+
+
 def main() -> None:
     con = connect()
     try:
         install_source_fixture(con, include_deep_fixture=True)
         install_big_number_fixture(con)
+        install_mongodb_source_json_fixture(con)
         install_wrapper_views(
             con,
             source_schema=SOURCE_SCHEMA,
@@ -106,6 +126,30 @@ def main() -> None:
         sample_expected = sample_fixture_documents()
         deepdoc_expected = deepdoc_fixture_documents()
         bigdoc_expected = bigdoc_fixture_documents()
+        source_json_expected = [
+            {"known": "sampled", "outlier_only": {"nested": [1, True, None]}},
+            {"known": "ordinary", "$bson": {"$oid": "64b64c1f3dce4f58d74f97a1"}},
+        ]
+
+        source_json_rows = fetch_json_rows(
+            con,
+            f'SELECT TO_JSON() FROM {SOURCE_SCHEMA}.MONGO_RAW ORDER BY "_id"',
+        )
+        wrapped_source_json_rows = fetch_json_rows(
+            con,
+            f'SELECT TO_JSON() FROM {WRAPPER_SCHEMA}.MONGO_RAW ORDER BY "_id"',
+        )
+        reconstructed_source_rows = fetch_json_rows(
+            con,
+            f'SELECT TO_JSON(*) FROM {WRAPPER_SCHEMA}.MONGO_RAW ORDER BY "_id"',
+        )
+        assert_equal(source_json_rows, source_json_expected, "source-table TO_JSON()")
+        assert_equal(wrapped_source_json_rows, source_json_expected, "wrapped-root TO_JSON()")
+        assert_equal(
+            reconstructed_source_rows,
+            [{"known": "sampled"}, {"known": "ordinary"}],
+            "TO_JSON(*) remains inferred reconstruction",
+        )
 
         sample_full_rows = fetch_json_rows(
             con,
@@ -312,6 +356,10 @@ def main() -> None:
             ORDER BY s."_id"
             """,
         )
+        derived_zero_arg_error = fetch_error_text(
+            con,
+            f'SELECT TO_JSON() FROM (SELECT "known" FROM {WRAPPER_SCHEMA}.MONGO_RAW) derived_rows',
+        )
 
         assert_contains(
             joined_unqualified_error,
@@ -337,6 +385,11 @@ def main() -> None:
             mixed_root_error,
             "All TO_JSON subset arguments must resolve to the same row source.",
             "mixed-root TO_JSON error",
+        )
+        assert_contains(
+            derived_zero_arg_error,
+            "Materialize or wrap a derived result before serializing it with TO_JSON(*).",
+            "derived-table zero-argument TO_JSON error",
         )
     finally:
         try:

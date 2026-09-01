@@ -6,6 +6,35 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+### Changed
+
+- Split the Rust ingest engine into two crates. The normalisation core — the
+  table contract, schema inference, the document traversal, DDL generation and
+  the source manifest — now lives in
+  [crates/json_tables_core](crates/json_tables_core), with no file, Parquet or
+  driver dependencies. [crates/json_tables_ingest](crates/json_tables_ingest)
+  keeps the `json_to_parquet` CLI: reading local files, staging Parquet, and
+  importing over `exarrow-rs`.
+
+  The core reads from any `BufRead` and writes through a `RowSink` trait, so the
+  same normalisation can back an in-database loader that streams its source and
+  emits rows without buffering the family. Provenance is no longer hard-coded to
+  `local-file`; a caller supplies its own source kind.
+
+  No user-visible behavior changes: the CLI's flags, generated Parquet, DDL,
+  manifest and provenance comments are byte-identical, and the manifest still
+  reports `"generator": "json_to_parquet"`.
+
+### Added
+
+- Added zero-argument `TO_JSON()` for MongoDB Virtual Schema roots and their
+  generated wrapper views. It returns the connector's complete canonical
+  Extended JSON source document, including fields outside the inferred schema,
+  while `TO_JSON(*)` and subset forms retain their existing reconstruction
+  semantics for modeled and derived results.
+- Added support for the MongoDB connector's `sourceDocumentColumn` manifest
+  extension during offline wrapper generation.
+
 ## [0.2] - 2026-08-19
 
 ### Added

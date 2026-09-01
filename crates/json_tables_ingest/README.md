@@ -1,8 +1,14 @@
 # json_to_parquet
 
-`json_to_parquet` is the current Rust ingest engine inside **Exasol JSON Tables**.
+`json_to_parquet` is the local-file ingest CLI inside **Exasol JSON Tables**.
 
 Command-line tool for importing semi-structured JSON into Exasol.
+
+The normalisation itself — the table contract, schema inference, the document
+traversal, DDL generation and the source manifest — lives in
+[`json_tables_core`](../json_tables_core). This crate is the I/O half: reading
+local files, staging Parquet, and importing over `exarrow-rs`. Anything an
+in-database loader would also need belongs in the core crate rather than here.
 
 ## Background
 
@@ -114,8 +120,11 @@ The command-line app is build in Rust, so you will need the [rust toolset](https
 cargo build
 cargo test
 
+# The normalisation core has its own suite
+cargo test --manifest-path ../json_tables_core/Cargo.toml
+
 # Optional Exasol-backed end-to-end tests
-# Defaults to local ExaNano at exasol://sys:exasol@127.0.0.1:8563
+# Defaults to a local Exasol Personal deployment at exasol://sys:exasol@127.0.0.1:8563
 cargo test exasol_e2e -- --ignored
 
 # Override the target Exasol instance if needed

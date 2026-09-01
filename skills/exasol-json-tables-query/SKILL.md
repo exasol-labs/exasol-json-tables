@@ -128,6 +128,9 @@ The preprocessor is not optional sugar from a product perspective. It is part of
 
 ### `TO_JSON(...)` semantics
 
+- on MongoDB Virtual Schema roots that expose the source-document contract,
+  `TO_JSON()` returns the untouched source payload; it also works through the
+  generated wrapper root
 - on wrapper roots, `TO_JSON(*)` recursively serializes the whole row
 - on wrapper roots, `TO_JSON("field1", "field2")` recursively serializes only the selected top-level branches
 - in joined wrapper queries, require qualified top-level subset arguments such as `TO_JSON(s."id", s."meta")`

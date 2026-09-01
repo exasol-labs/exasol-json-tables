@@ -301,8 +301,10 @@ def _build_visible_column_config(manifests: list[dict]) -> WrapperVisibleColumnC
 def _build_to_json_config(manifests: list[dict]) -> WrapperToJsonConfig:
     config: WrapperToJsonConfig = {}
     for manifest in manifests:
+        source_schema = validate_identifier("Manifest source schema", manifest["sourceSchema"])
         public_schema = validate_identifier("Manifest public schema", manifest["publicSchema"])
         helper_schema = validate_identifier("Manifest helper schema", manifest["helperSchema"])
+        source_schema_tables = config.setdefault(source_schema, {})
         public_schema_tables = config.setdefault(public_schema, {})
         helper_schema_tables = config.setdefault(helper_schema, {})
         helper_udf_names = helper_names(helper_schema)
@@ -319,6 +321,9 @@ def _build_to_json_config(manifests: list[dict]) -> WrapperToJsonConfig:
 
         for table in manifest["tables"]:
             table_name = validate_identifier("Manifest table name", table["tableName"])
+            source_json_column = None
+            if table_name in root_table_names:
+                source_json_column = roots_by_table[table_name].get("sourceJsonColumn")
             argument_to_fragment: dict[str, str] = {}
             display_name_by_argument: dict[str, str] = {}
             for group in table["groups"]:
@@ -353,7 +358,13 @@ def _build_to_json_config(manifests: list[dict]) -> WrapperToJsonConfig:
                 "optionalFragmentsFunction": helper_udf_names.json_object_from_optional_fragments,
                 "fragmentColumnByArgumentName": argument_to_fragment,
                 "displayNameByArgumentName": display_name_by_argument,
+                "sourceJsonColumn": source_json_column,
             }
+
+            if source_json_column is not None:
+                source_schema_tables[table_name] = {
+                    "sourceJsonColumn": source_json_column,
+                }
 
         for root_table, root_names in export_root_names.items():
             root = roots_by_table[root_table]
@@ -384,6 +395,7 @@ def _build_to_json_config(manifests: list[dict]) -> WrapperToJsonConfig:
                 "optionalFragmentsFunction": helper_udf_names.json_object_from_optional_fragments,
                 "fragmentColumnByArgumentName": root_argument_to_fragment,
                 "displayNameByArgumentName": root_display_name_by_argument,
+                "sourceJsonColumn": root.get("sourceJsonColumn"),
             }
     return config
 

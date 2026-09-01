@@ -14,6 +14,7 @@ import pyexasol
 ROOT = Path(__file__).resolve().parents[2]
 
 STRUCTURAL_COLUMNS = {"_id", "_parent", "_pos"}
+SOURCE_JSON_COLUMN = "__mongodb_source_json"
 NULL_SUFFIX = "|n"
 EMPTY_SUFFIX = "|empty"
 OBJECT_SUFFIX = "|object"
@@ -201,6 +202,18 @@ def source_columns_from_manifest(source_manifest: dict[str, Any], source_schema:
             f"got {source_manifest.get('format')!r}."
         )
     tables: dict[str, list[ColumnMeta]] = {}
+    root_table_names = {
+        str(root["tableName"])
+        for root in source_manifest.get("roots", [])
+        if root.get("tableName") is not None
+    }
+    if not root_table_names:
+        root_table_names = {
+            str(table["tableName"])
+            for table in source_manifest.get("tables", [])
+            if not table.get("pathSegments")
+        }
+    source_json_column = source_manifest.get("sourceDocumentColumn")
     for table_spec in source_manifest.get("tables", []):
         table_name = str(table_spec["tableName"])
         columns: list[ColumnMeta] = []
@@ -220,6 +233,21 @@ def source_columns_from_manifest(source_manifest: dict[str, Any], source_schema:
                 )
             )
         columns.sort(key=lambda column: column.ordinal)
+        if source_json_column is not None and table_name in root_table_names:
+            source_json_name = str(source_json_column)
+            if all(column.name != source_json_name for column in columns):
+                columns.append(
+                    ColumnMeta(
+                        schema=source_schema,
+                        table=table_name,
+                        name=source_json_name,
+                        type_name="VARCHAR(2000000)",
+                        ordinal=max((column.ordinal for column in columns), default=0) + 1,
+                        size=2000000,
+                        precision=None,
+                        scale=None,
+                    )
+                )
         tables[table_name] = columns
     if not tables:
         raise SystemExit("Source manifest does not describe any tables.")
@@ -237,6 +265,8 @@ def source_table_comments_from_manifest(source_manifest: dict[str, Any]) -> dict
 def group_columns(columns: Iterable[ColumnMeta]) -> dict[str, Group]:
     groups: dict[str, Group] = {}
     for column in columns:
+        if column.name == SOURCE_JSON_COLUMN:
+            continue
         parsed = parse_column_name(column.name)
         if parsed is None:
             continue
@@ -418,6 +448,9 @@ def generate_public_view_sql(
     select_lines: list[str] = []
     emitted_groups: set[str] = set()
     for column in table_model.columns:
+        if column.name == SOURCE_JSON_COLUMN:
+            select_lines.append(f"  {quote_identifier(column.name)}")
+            continue
         if column.name in STRUCTURAL_COLUMNS:
             select_lines.append(f"  {quote_identifier(column.name)}")
             continue
@@ -502,6 +535,11 @@ def build_manifest(
             "publicView": root_table,
             "familyTables": sorted(table_name for table_name, family_root in root_by_table.items() if family_root == root_table),
             "relationships": relationships_by_root[root_table],
+            **(
+                {"sourceJsonColumn": SOURCE_JSON_COLUMN}
+                if any(column.name == SOURCE_JSON_COLUMN for column in table_models[root_table].columns)
+                else {}
+            ),
         }
         for root_table in root_tables
     ]

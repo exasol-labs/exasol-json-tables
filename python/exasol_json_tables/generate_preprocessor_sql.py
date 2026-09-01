@@ -3931,6 +3931,12 @@ ORDER BY COLUMN_ORDINAL_POSITION
             end
             return build_regular_to_json_object_call(target_table_reference, column_names)
         end
+        if root_config.fullJsonColumn == nil or root_config.fullJsonColumn == "" then
+            raise_function_error(
+                function_name,
+                "TO_JSON(*) on source-family tables would expose internal contract columns. Query the wrapper view instead."
+            )
+        end
         local export_ref = build_to_json_projection_join(
             target_table_reference,
             root_config,
@@ -4064,10 +4070,33 @@ ORDER BY COLUMN_ORDINAL_POSITION
             to_json_state
     )
         if not has_expression_argument(tokens, opening_paren, closing_paren) then
-            raise_function_error(
-                function_name,
-                'Expected TO_JSON(*) or one or more top-level property references such as "id", "meta", or root_alias."meta".'
-            )
+            if query_has_top_level_user_join(original_sqltext) then
+                raise_function_error(
+                    function_name,
+                    "TO_JSON() requires one MongoDB root row source and is not supported in joined queries."
+                )
+            end
+            if base_table == nil or base_table.kind == "derived_source" then
+                raise_function_error(
+                    function_name,
+                    "TO_JSON() requires a MongoDB root table or its JSON Tables wrapper view. Materialize or wrap a derived result before serializing it with TO_JSON(*)."
+                )
+            end
+            if base_table.kind == "iterator_value" then
+                raise_function_error(
+                    function_name,
+                    "TO_JSON() is not supported on iterator rows. Use TO_JSON(iterator_alias.*) instead."
+                )
+            end
+            local root_config = lookup_to_json_root_config(base_table.schema_name, base_table.table_name)
+            local source_json_column = root_config and root_config.sourceJsonColumn or nil
+            if source_json_column == nil or source_json_column == "" then
+                raise_function_error(
+                    function_name,
+                    "TO_JSON() is only available for MongoDB roots that expose the source-document contract. Use TO_JSON(*) to serialize this row."
+                )
+            end
+            return table_reference_sql(base_table) .. "." .. encode_quoted_identifier(source_json_column)
         end
 
         local argument_ranges, split_error = split_call_argument_ranges(tokens, opening_paren, closing_paren)

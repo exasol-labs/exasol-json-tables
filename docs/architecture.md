@@ -205,18 +205,34 @@ text as the primary storage model.
 
 ## Ingest Layer
 
-The ingest layer lives in the Rust crate:
+The ingest layer is two Rust crates, split along an I/O boundary:
 
-- [crates/json_tables_ingest](../crates/json_tables_ingest)
+- [crates/json_tables_core](../crates/json_tables_core) — the normalisation core
+- [crates/json_tables_ingest](../crates/json_tables_ingest) — the `json_to_parquet` CLI
 
-Responsibilities:
+The core owns everything that is true regardless of where the JSON comes from or
+where the rows go:
 
-- scan JSON / NDJSON
-- infer the table-family layout
-- emit Parquet staging files
-- optionally emit SQL DDL
-- optionally upload the result directly into Exasol
-- optionally emit a source-manifest JSON artifact
+- the shared table contract (paths, column plans, identity, null masks)
+- schema inference from a stream of documents
+- the document traversal that produces rows
+- Exasol DDL for the planned family
+- the source manifest and provenance comments
+
+It reads from any `BufRead` and writes through a `RowSink` trait. Writes always
+target the most recently started row of a table, so a sink can flush each row as
+it is produced instead of buffering the family.
+
+The CLI crate owns the I/O half:
+
+- reading local JSON / NDJSON files
+- buffering the family in memory and staging Parquet files
+- writing the SQL DDL and manifest artifacts
+- uploading into Exasol over `exarrow-rs`
+
+That split is what lets a second front end — an in-database loader running as a
+Rust UDF, reading from cloud storage — reuse the normalisation without inheriting
+the CLI's assumption that its input is a file and its output is Parquet.
 
 ## Query Layer
 
@@ -269,9 +285,10 @@ Both remain supported. The manifest path is additive, not a replacement for intr
 
 ## Repository Shape
 
-The project is implemented in two main code areas:
+The project is implemented in three main code areas:
 
-- Rust ingest engine: [crates/json_tables_ingest](../crates/json_tables_ingest)
+- Rust normalisation core: [crates/json_tables_core](../crates/json_tables_core)
+- Rust ingest CLI: [crates/json_tables_ingest](../crates/json_tables_ingest)
 - Python query/reshape package: [python/exasol_json_tables](../python/exasol_json_tables)
 
 The installed user-facing command is:

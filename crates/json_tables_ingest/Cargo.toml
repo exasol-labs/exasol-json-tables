@@ -6,6 +6,7 @@ description = "CLI tool to convert JSON input into Parquet output files."
 license = "MIT"
 
 [dependencies]
+json_tables_core = { path = "../json_tables_core" }
 chrono = "0.4.45"
 clap = { version = "4.6", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
