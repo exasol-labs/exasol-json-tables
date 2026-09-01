@@ -100,7 +100,7 @@ exasol-json-tables ingest \
 
 When you use `--exasol`, the CLI creates the target source schema first if it does not already exist. That makes direct ingest behave like the one-shot workflow instead of failing late after local scan and staging work.
 
-The Exasol control connection TLS settings live in the `--exasol` URL. The bulk import HTTP transport has a separate TLS switch. Keep it disabled for local Docker/Nano, and add `--exasol-http-tls` for production or SaaS targets that expect TLS on the data channel.
+The Exasol control connection TLS settings live in the `--exasol` URL. The bulk import HTTP transport has a separate TLS switch. Keep it disabled for a local Exasol Personal or Docker deployment, and add `--exasol-http-tls` for production or SaaS targets that expect TLS on the data channel.
 
 If you want to stage via a temp directory and clean it up afterward:
 

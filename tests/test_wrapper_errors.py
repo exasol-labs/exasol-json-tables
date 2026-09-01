@@ -5,7 +5,7 @@ import subprocess
 
 import _bootstrap  # noqa: F401
 
-from nano_support import ROOT, connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
+from personal_support import ROOT, connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
 
 
 def assert_contains_all(text: str, fragments: list[str], label: str) -> None:

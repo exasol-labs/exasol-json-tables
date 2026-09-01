@@ -36,6 +36,17 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ### Changed
 
+- Made **Exasol Personal** the documented default deployment target and removed the
+  ExaNano-era references. The fixture-helper module is renamed
+  `nano_support` → `personal_support` (with the `tools/` compatibility wrapper renamed to match), and
+  `tools/test_nano_preprocessor_parser_lane.py` is now
+  `tools/test_preprocessor_parser_lane.py`. [docs/installation.md](docs/installation.md) and
+  [docs/testing.md](docs/testing.md) now describe `exasol install local`, the TLS requirement on the
+  control connection, and how that relates to the separate `--exasol-http-tls` bulk-import switch.
+
+  Dated reports under `plans/` and `docs/user-studies/` still say ExaNano where that is what the
+  measurements ran against; those are historical records and were left as written.
+
 - Split the Rust ingest engine into two crates. The normalisation core — the
   table contract, schema inference, the document traversal, DDL generation and
   the source manifest — now lives in

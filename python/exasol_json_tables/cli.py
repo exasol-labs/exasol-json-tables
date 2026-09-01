@@ -1451,7 +1451,7 @@ def add_ingest_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--exasol-http-tls",
         action="store_true",
-        help="Use TLS for the Exasol HTTP import transport. Keep disabled for local Docker/Nano.",
+        help="Use TLS for the Exasol HTTP import transport. Keep disabled for a local Exasol Personal or Docker deployment.",
     )
     parser.add_argument("--exasol-temp-dir", type=Path, default=None, help="Exasol staging directory.")
     parser.add_argument("--exasol-cleanup", action="store_true", help="Clean up staged Parquet files after upload.")

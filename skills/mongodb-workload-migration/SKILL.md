@@ -1,6 +1,6 @@
 ---
 name: mongodb-workload-migration
-description: Use when migrating MongoDB query or aggregation workloads into the Exasol wrapper-view plus preprocessor architecture in this repository. Covers MQL-to-SQL translation patterns, analytics-focused migration strategy, known wrapper strengths and limits, official MongoDB source patterns, and Nano validation workflow for ported workloads.
+description: Use when migrating MongoDB query or aggregation workloads into the Exasol wrapper-view plus preprocessor architecture in this repository. Covers MQL-to-SQL translation patterns, analytics-focused migration strategy, known wrapper strengths and limits, official MongoDB source patterns, and the local-deployment validation workflow for ported workloads.
 ---
 
 # MongoDB Workload Migration
@@ -31,7 +31,7 @@ Do not use this skill for generic JSON querying unless the problem is specifical
    - are they plain JSON or Extended JSON (EJSON)?
    - does the payload still use MongoDB `_id` as a user-facing field?
    - do timestamp, ObjectId, and 64-bit integer values still appear as nested wrappers such as `$date`, `$oid`, or `$numberLong`?
-4. Test one representative query on Nano before making broad claims about portability.
+4. Test one representative query against a live deployment before making broad claims about portability.
 
 In this repository, inspect first:
 
@@ -161,7 +161,7 @@ This is one of the wrapper architecture’s strongest migration destinations.
 
 ## Repo-Specific Strengths
 
-These are validated in this repository against Nano:
+These are validated in this repository against a live deployment:
 
 - Correlated `EXISTS (SELECT 1 FROM item IN row."items" ...)` works.
 - Array-dot misuse such as `"items.value"` fails with explicit guidance.
@@ -347,7 +347,7 @@ For MongoDB migration tasks, agents should proactively tell the user:
 - wrapper SQL is usually a strong destination for analytics
 - if the user still needs nested Mongo-like payloads, the supported final-output path is structured results plus `TO_JSON(...)`
 
-## What To Validate On Nano
+## What To Validate Against A Live Deployment
 
 For a serious migration task, validate all three:
 

@@ -2,7 +2,7 @@
 
 import _bootstrap  # noqa: F401
 
-from nano_support import connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
+from personal_support import connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
 from result_family_materializer import (
     materialized_family_result_from_dict,
     materialized_family_result_to_dict,

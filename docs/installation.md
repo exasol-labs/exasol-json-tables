@@ -14,7 +14,8 @@ For the full workflow, you need:
 
 - Python 3.10 or newer
 - Rust and Cargo, if you want to run the ingest stage from this repo
-- access to an Exasol database
+- access to an Exasol database — the default local target is **Exasol Personal**
+  (`exasol install local`), and any Exasol 8 / 2025+ deployment works
 
 If you only want to install wrapper views on top of an existing source schema, the Python package is enough. The Rust ingest engine is only needed for JSON/NDJSON ingestion.
 
@@ -71,7 +72,7 @@ That command:
 4. installs it
 5. validates it
 
-If you do not pass explicit connection arguments, this path assumes the local Nano-style defaults described below. For other environments, provide `--dsn`, `--user`, `--password`, or an explicit ingest `--exasol` URL.
+If you do not pass explicit connection arguments, this path assumes the local Exasol Personal defaults described below. For other environments, provide `--dsn`, `--user`, `--password`, or an explicit ingest `--exasol` URL.
 
 `--name` controls the derived schema/package names for the workflow. The installed public view names still come from the ingested root tables. The command's JSON output, smoke-test SQL, and `describe ... --json` responses all report those actual public view names explicitly.
 
@@ -202,16 +203,27 @@ So the practical rule is:
 
 There are two common ways to run the workflow.
 
-### Local Nano Defaults
+### Local Exasol Personal Defaults
 
-Many tests and examples assume a local Exasol Nano instance at:
+The default deployment target is a local **Exasol Personal** instance at:
 
 - host: `127.0.0.1`
 - port: `8563`
 - user: `sys`
 - password: `exasol`
 
-The wrapper-side helpers default to that environment.
+The wrapper-side helpers default to that environment. Set one up with the `exasol` CLI:
+
+```bash
+exasol install local     # initialize, configure, and deploy in one step
+exasol status            # confirm "database_ready"
+exasol connect           # interactive SQL session
+```
+
+Exasol Personal requires TLS on the control connection. The repo's helpers and the ingest CLI
+already default to TLS there (`--tls` is on by default, certificate validation off), so the local
+defaults work unchanged. The bulk-import HTTP transport is a separate switch and stays unencrypted
+locally — see `--exasol-http-tls`.
 
 ### Explicit Connection Arguments
 

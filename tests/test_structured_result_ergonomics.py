@@ -6,7 +6,7 @@ import subprocess
 import _bootstrap  # noqa: F401
 
 from in_session_wrapper_installer import install_wrapper_surface_in_session
-from nano_support import ROOT, connect, install_source_fixture, install_wrapper_views
+from personal_support import ROOT, connect, install_source_fixture, install_wrapper_views
 from result_family_materializer import (
     materialize_result_family,
     result_family_spec_from_dict,

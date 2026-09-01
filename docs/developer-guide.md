@@ -36,7 +36,7 @@ They are intentionally thin wrappers over the package modules, not a second impl
 - structured result-family materializer: [python/exasol_json_tables/result_family_materializer.py](../python/exasol_json_tables/result_family_materializer.py)
 - structured result preview/export CLI logic: [python/exasol_json_tables/structured_result_tool.py](../python/exasol_json_tables/structured_result_tool.py)
 - in-session wrapper installer: [python/exasol_json_tables/in_session_wrapper_installer.py](../python/exasol_json_tables/in_session_wrapper_installer.py)
-- Nano fixture helpers: [python/exasol_json_tables/nano_support.py](../python/exasol_json_tables/nano_support.py)
+- Local-deployment fixture helpers: [python/exasol_json_tables/personal_support.py](../python/exasol_json_tables/personal_support.py)
 - compatibility CLI wrappers and developer glue: [tools](../tools)
 - executable regressions and studies: [tests](../tests)
 
@@ -94,7 +94,7 @@ If you are trying to understand:
   Start with [python/exasol_json_tables/wrapper_package_tool.py](../python/exasol_json_tables/wrapper_package_tool.py)
 
 - how the SQL surface is rewritten
-  Start with [python/exasol_json_tables/generate_preprocessor_sql.py](../python/exasol_json_tables/generate_preprocessor_sql.py), [tests/test_preprocessor_refactor_phase0.py](../tests/test_preprocessor_refactor_phase0.py), and the focused parser lane [tools/test_nano_preprocessor_parser_lane.py](../tools/test_nano_preprocessor_parser_lane.py)
+  Start with [python/exasol_json_tables/generate_preprocessor_sql.py](../python/exasol_json_tables/generate_preprocessor_sql.py), [tests/test_preprocessor_refactor_phase0.py](../tests/test_preprocessor_refactor_phase0.py), and the focused parser lane [tools/test_preprocessor_parser_lane.py](../tools/test_preprocessor_parser_lane.py)
 
 - how final JSON output is generated
   Start with [python/exasol_json_tables/generate_preprocessor_sql.py](../python/exasol_json_tables/generate_preprocessor_sql.py), [python/exasol_json_tables/generate_json_export_helper_sql.py](../python/exasol_json_tables/generate_json_export_helper_sql.py), and [python/exasol_json_tables/generate_json_export_views_sql.py](../python/exasol_json_tables/generate_json_export_views_sql.py)

@@ -48,7 +48,7 @@ Start with:
 Most important tests:
 
 - `tests/test_preprocessor_library_builder.py`
-- `tools/test_nano_preprocessor_parser_lane.py`
+- `tools/test_preprocessor_parser_lane.py`
 - `tests/test_preprocessor_refactor_phase0.py`
 - `tests/test_preprocessor_early_out.py`
 - `tests/test_wrapper_surface.py`
@@ -156,7 +156,7 @@ The preprocessor is not optional sugar from a product perspective. It is part of
 Use these as the main regression surface:
 
 - dedicated parser-heavy lane:
-  - `python3 tools/test_nano_preprocessor_parser_lane.py`
+  - `python3 tools/test_preprocessor_parser_lane.py`
 - preprocessor parser/stability baseline:
   - `python3 tests/test_preprocessor_refactor_phase0.py`
 - wrapper semantics:
@@ -176,7 +176,7 @@ Use these as the main regression surface:
 - variant edge cases:
   - `python3 tests/test_wrapper_variant_semantics.py`
 
-Run Nano-backed tests sequentially when they rebuild the same schemas.
+Run deployment-backed tests sequentially when they rebuild the same schemas.
 
 ## Guidance For Agents
 

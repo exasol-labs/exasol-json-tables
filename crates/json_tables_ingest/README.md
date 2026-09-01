@@ -75,7 +75,7 @@ When `--exasol` is provided, the tool uploads the generated Parquet files to Exa
 parallel using multiple HTTP connections for higher throughput.
 
 The Exasol control connection TLS setting in the `--exasol` URL is separate from the HTTP
-transport used for bulk imports. Local Docker/Nano setups normally keep the HTTP import
+transport used for bulk imports. A local Exasol Personal or Docker deployment normally keeps the HTTP import
 transport unencrypted. For production or SaaS targets, pass `--exasol-http-tls`.
 
 The generated `PRIMARY KEY` and `FOREIGN KEY` constraints are emitted as `DISABLE` in Exasol.

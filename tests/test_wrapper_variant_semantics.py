@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import _bootstrap  # noqa: F401
 
-from nano_support import connect, install_wrapper_preprocessor, install_wrapper_views
+from personal_support import connect, install_wrapper_preprocessor, install_wrapper_views
 
 
 SOURCE_SCHEMA = "JVS_VARIANT_SRC"

@@ -19,7 +19,7 @@ from generate_json_export_helper_sql import (
     helper_names,
     install_json_export_helpers,
 )
-from nano_support import ROOT, connect
+from personal_support import ROOT, connect
 
 
 SCHEMA = "JVS_JSON_EXPORT_HELPER_TEST"

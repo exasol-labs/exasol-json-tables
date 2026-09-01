@@ -441,7 +441,7 @@ Measured lesson from this repository:
 
 - for local Exasol tables, the expensive part of path and rowset queries was usually the
   underlying join pattern and automatic index creation, not the wrapper view layer itself
-- the virtual-schema path added a small recurring `PUSHDOWN` cost on Nano
+- the virtual-schema path added a small recurring `PUSHDOWN` cost on the local deployment
 - the most expensive wrapper-view pattern was hidden semantic recovery that required an extra
   self-join back to the root table
 

@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 # Keep this lane intentionally focused on parser-sensitive and rewrite-sensitive behavior.
-# These tests should stay sequential because they share Nano-backed fixture schemas.
+# These tests should stay sequential because they share deployment-backed fixture schemas.
 PARSER_LANE_TESTS = [
     "tests/test_preprocessor_refactor_phase0.py",
     "tests/test_preprocessor_early_out.py",

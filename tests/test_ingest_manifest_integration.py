@@ -10,7 +10,7 @@ from pathlib import Path
 
 import _bootstrap  # noqa: F401
 
-from nano_support import ROOT, connect
+from personal_support import ROOT, connect
 
 
 SOURCE_SCHEMA = "JVS_INGEST_MANIFEST_SRC"

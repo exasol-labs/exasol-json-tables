@@ -4,7 +4,7 @@ import _bootstrap  # noqa: F401
 
 from generate_json_export_views_sql import json_export_view_name
 from in_session_wrapper_installer import install_wrapper_surface_in_session
-from nano_support import connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
+from personal_support import connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
 from result_family_materializer import (
     ResultTableSpec,
     SynthesizedFamilySpec,

@@ -7,7 +7,7 @@ import subprocess
 
 import _bootstrap  # noqa: F401
 
-from nano_support import ROOT, connect, install_source_fixture
+from personal_support import ROOT, connect, install_source_fixture
 
 
 PACKAGE_DIR = ROOT / "dist" / "wrapper_evaluation"

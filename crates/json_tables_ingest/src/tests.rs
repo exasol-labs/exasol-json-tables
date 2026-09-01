@@ -1475,7 +1475,7 @@ fn record_batches_to_string_rows(batches: &[RecordBatch]) -> Vec<Vec<Option<Stri
 }
 
 #[test]
-#[ignore = "requires a running Exasol instance; uses JSON_TO_PARQUET_EXASOL_BASE_URL or local ExaNano defaults"]
+#[ignore = "requires a running Exasol instance; uses JSON_TO_PARQUET_EXASOL_BASE_URL or local Exasol Personal defaults"]
 fn exasol_e2e_imports_nested_objects_into_related_tables() {
     let schema = ExasolE2eSchema::create("nested_objects").expect("create e2e schema");
     let input_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1585,7 +1585,7 @@ fn exasol_e2e_imports_nested_objects_into_related_tables() {
 }
 
 #[test]
-#[ignore = "requires a running Exasol instance; uses JSON_TO_PARQUET_EXASOL_BASE_URL or local ExaNano defaults"]
+#[ignore = "requires a running Exasol instance; uses JSON_TO_PARQUET_EXASOL_BASE_URL or local Exasol Personal defaults"]
 fn exasol_e2e_imports_ndjson_and_preserves_array_order() {
     let schema = ExasolE2eSchema::create("sample_ndjson").expect("create e2e schema");
     let input_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

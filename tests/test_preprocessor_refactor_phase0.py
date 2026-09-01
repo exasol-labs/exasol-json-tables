@@ -9,7 +9,7 @@ import subprocess
 import _bootstrap  # noqa: F401
 
 from _fixture_expected_json import sample_fixture_documents
-from nano_support import ROOT, connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
+from personal_support import ROOT, connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
 
 
 SOURCE_SCHEMA = "JVS_SRC"

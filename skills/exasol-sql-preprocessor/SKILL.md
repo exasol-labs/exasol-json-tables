@@ -50,7 +50,7 @@ If you are working in this repository, also inspect:
 - `tools/generate_wrapper_preprocessor_sql.py`
 - `tools/generate_wrapper_views_sql.py`
 - `tools/wrapper_package_tool.py`
-- `tools/test_nano_preprocessor_parser_lane.py`
+- `tools/test_preprocessor_parser_lane.py`
 - regenerate wrapper artifacts under `dist/exasol-json-tables/` when you need concrete generated SQL or package examples
 - `tests/test_preprocessor_library_builder.py`
 - `tests/test_preprocessor_refactor_phase0.py`
@@ -386,7 +386,7 @@ Why this matters:
 - first execution can pay a significant `INDEX CREATE` cost
 - subsequent executions can be much cheaper
 
-This repository’s Nano benchmarks showed:
+This repository’s local-deployment benchmarks showed:
 
 - wrapper views were effectively free in steady state for path and rowset queries
 - hidden self-joins used for semantic recovery were the main cold-start risk
@@ -424,7 +424,7 @@ Validate it against a live Exasol instance because the most important boundaries
 
 If you are working in this repository, the main live checks are:
 
-- `python3 tools/test_nano_preprocessor_parser_lane.py`
+- `python3 tools/test_preprocessor_parser_lane.py`
 - `python3 tests/test_preprocessor_refactor_phase0.py`
 - `python3 tests/test_wrapper_surface.py`
 - `python3 tests/test_wrapper_errors.py`
@@ -448,7 +448,7 @@ If you change the generated Lua:
 
 1. patch the generator, not only the generated SQL
 2. regenerate the example SQL files
-3. rerun the Nano tests that cover the changed behavior
+3. rerun the deployment-backed tests that cover the changed behavior
 
 ## Known Pitfalls
 

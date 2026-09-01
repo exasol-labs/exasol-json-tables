@@ -17,7 +17,7 @@ from generate_json_export_views_sql import (
     json_export_root_names_from_wrapper_manifest,
     json_export_view_name,
 )
-from nano_support import ROOT, connect, install_source_fixture, install_wrapper_views
+from personal_support import ROOT, connect, install_source_fixture, install_wrapper_views
 from wrapper_schema_support import ColumnMeta, quote_identifier
 
 

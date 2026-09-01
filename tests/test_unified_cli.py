@@ -13,9 +13,9 @@ from typing import Optional
 import _bootstrap  # noqa: F401
 
 from exasol_json_tables import cli as cli_module
-from exasol_json_tables import nano_support as nano_support_module
+from exasol_json_tables import personal_support as personal_support_module
 from exasol_json_tables import wrapper_schema_support
-from nano_support import ROOT, connect, install_source_fixture, install_wrapper_views
+from personal_support import ROOT, connect, install_source_fixture, install_wrapper_views
 
 
 CLI = ROOT / "tools" / "exasol_json_tables.py"
@@ -1818,9 +1818,9 @@ def test_wrapper_generation_connection_ssl_options() -> None:
     assert "websocket_sslopt" not in captured[1]
 
 
-def test_nano_support_connection_ssl_options() -> None:
+def test_personal_support_connection_ssl_options() -> None:
     captured: list[dict[str, object]] = []
-    original_connect = nano_support_module.pyexasol.connect
+    original_connect = personal_support_module.pyexasol.connect
     try:
         def fake_connect(**kwargs):
             captured.append(kwargs)
@@ -1828,10 +1828,10 @@ def test_nano_support_connection_ssl_options() -> None:
                 pass
             return DummyConnection()
 
-        nano_support_module.pyexasol.connect = fake_connect
-        nano_support_module.connect()
+        personal_support_module.pyexasol.connect = fake_connect
+        personal_support_module.connect()
     finally:
-        nano_support_module.pyexasol.connect = original_connect
+        personal_support_module.pyexasol.connect = original_connect
 
     assert captured[0]["websocket_sslopt"]["cert_reqs"] == ssl.CERT_NONE
 
@@ -1974,7 +1974,7 @@ if __name__ == "__main__":
     test_unified_cli_forwards_exasol_http_tls_to_rust_ingest()
     test_unified_cli_ingest_error_codes()
     test_wrapper_generation_connection_ssl_options()
-    test_nano_support_connection_ssl_options()
+    test_personal_support_connection_ssl_options()
     test_unified_cli_schema_ensure_propagates_certificate_validation()
     test_ingest_and_wrap_destination_if_exists_policies()
     test_wrap_generate_rejects_repeated_source_schema()

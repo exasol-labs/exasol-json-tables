@@ -11,7 +11,7 @@ from typing import Optional
 
 import _bootstrap  # noqa: F401
 
-from nano_support import ROOT, connect
+from personal_support import ROOT, connect
 
 
 CLI = ROOT / "tools" / "exasol_json_tables.py"

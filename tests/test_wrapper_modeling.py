@@ -2,7 +2,7 @@
 
 import _bootstrap  # noqa: F401
 
-from nano_support import connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
+from personal_support import connect, install_source_fixture, install_wrapper_preprocessor, install_wrapper_views
 
 
 PUBLIC_WRAPPER_SCHEMA = "JSON_VIEW"
@@ -236,7 +236,7 @@ end
         con.close()
 
     print("-- wrapper modeling regression --")
-    print("Phase 4 modeling and BI patterns passed against Nano.")
+    print("Phase 4 modeling and BI patterns passed against the local deployment.")
 
 
 if __name__ == "__main__":

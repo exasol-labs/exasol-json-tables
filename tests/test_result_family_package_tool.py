@@ -5,7 +5,7 @@ import subprocess
 
 import _bootstrap  # noqa: F401
 
-from nano_support import ROOT, connect, install_source_fixture, install_wrapper_views
+from personal_support import ROOT, connect, install_source_fixture, install_wrapper_views
 
 
 PACKAGE_DIR = ROOT / "dist" / "result_family_package_tool_test"

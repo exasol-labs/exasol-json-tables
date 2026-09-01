@@ -10,14 +10,26 @@ Install the Python test dependencies first:
 python3 -m pip install -r requirements-dev.txt
 ```
 
-The Nano-backed tests expect a local Exasol Nano instance on `127.0.0.1:8563` with:
+Most tests run against a live database. The default target is a local **Exasol Personal**
+deployment on `127.0.0.1:8563` with:
 
 - user: `sys`
 - password: `exasol`
 
-Some tests do not need Nano and only validate local packaging or module behavior.
+Install and start one with the `exasol` CLI:
 
-Important: many Nano-backed tests reuse shared schemas and fixtures, so they should be run sequentially rather than in parallel.
+```bash
+exasol install local     # first time: initialize, configure, and deploy
+exasol status            # confirm "database_ready"
+```
+
+The control connection requires TLS, which the repo's helpers already handle
+(`personal_support.connect()` passes the right `pyexasol` options). The bulk-import HTTP
+transport is separate and stays unencrypted locally; see `--exasol-http-tls`.
+
+Some tests need no database at all and only validate local packaging or module behavior.
+
+Important: many deployment-backed tests reuse shared schemas and fixtures, so they should be run sequentially rather than in parallel.
 
 ## Static Validation
 
@@ -85,7 +97,7 @@ Verifies:
 
 - Rust ingest emits a source-manifest JSON artifact
 - wrapper package generation consumes that manifest instead of live source-schema introspection
-- the installed wrapper surface still supports deep path queries on Nano
+- the installed wrapper surface still supports deep path queries against the live deployment
 
 ## Wrapper Surface
 
@@ -128,17 +140,17 @@ Verifies:
 - the shared preprocessor library is assembled from a named module inventory
 - module markers are emitted into the generated runtime body
 - the shared library output has no unresolved builder placeholders
-- the authoritative builder path remains explicit before Nano-backed parser tests run
+- the authoritative builder path remains explicit before the deployment-backed parser tests run
 
 ## Preprocessor Parser Lane
 
 ```bash
-python3 tools/test_nano_preprocessor_parser_lane.py
+python3 tools/test_preprocessor_parser_lane.py
 ```
 
 Use this as the dedicated parser-heavy regression lane before and during preprocessor/parser refactors.
 
-It runs the parser-sensitive Nano-backed tests sequentially:
+It runs the parser-sensitive deployment-backed tests sequentially:
 
 - `tests/test_preprocessor_refactor_phase0.py`
 - `tests/test_preprocessor_early_out.py`

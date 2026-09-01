@@ -10,7 +10,7 @@ import _bootstrap  # noqa: F401
 
 from _fixture_expected_json import sample_fixture_documents
 from generate_json_export_views_sql import json_export_view_name
-from nano_support import ROOT, connect, install_source_fixture
+from personal_support import ROOT, connect, install_source_fixture
 
 
 PACKAGE_DIR = ROOT / "dist" / "wrapper_package_tool_test"
