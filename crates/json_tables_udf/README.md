@@ -50,10 +50,14 @@ INGEST_JSON  ──connect-back──>  CREATE TABLE …            (control)
 | Locator | Read by | Notes |
 |---|---|---|
 | `bfs:/buckets/…` (or `/buckets/…`) | the UDF, from the BucketFS mount | Re-readable |
-| `table://SCHEMA.TABLE[.COLUMN]` | the UDF, over connect-back | Re-readable; one document or one text chunk per row |
+| `table://SCHEMA.TABLE[.COLUMN]` | the UDF, over connect-back | Re-readable; one document or one text chunk per row. The column defaults to `DOC`; identifiers are matched exactly |
 | `exatunnel://host:port` | the UDF, over plain HTTP | **A file on the client's machine**, streamed through Exasol's bulk tunnel |
 | `http://host:port/path` | the UDF, over plain HTTP | Any internal HTTP source |
 | `s3://bucket/key`, `https://host/object` | the **database**, via `IMPORT … AT` | Credentials come from the named `CONNECTION`; no signing code here |
+
+A table source is checked against the catalog before it is read, so a missing table, a missing
+column, a case mismatch or a non-text column is reported against the source rather than as a query
+failure from the loader's own `SELECT`.
 
 A source that can only be read once (a tunnel, a cloud object) is materialised
 into a landing table first, because the loader needs the source again for every

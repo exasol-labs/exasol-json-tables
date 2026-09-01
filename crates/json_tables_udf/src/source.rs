@@ -230,6 +230,109 @@ pub fn documents_of(
     Ok((format, cursor))
 }
 
+/// One column of the source table as the catalog describes it.
+struct SourceColumn {
+    table: String,
+    name: String,
+    type_name: String,
+}
+
+/// Verify that `schema.table.column` exists and can hold JSON text, reporting
+/// anything wrong against the *source* rather than as a query failure.
+///
+/// Identifiers are matched exactly, because the loader quotes them in its own
+/// SQL. Exasol folds unquoted names to upper case, so a case mismatch is a
+/// likely mistake — especially against ingest-created families, whose table
+/// names are lower case — and it gets its own message.
+fn check_table_source(
+    connection: &mut Box<dyn ExaConnection>,
+    schema: &str,
+    table: &str,
+    column: &str,
+) -> Result<(), UdfError> {
+    let sql = format!(
+        "SELECT COLUMN_TABLE, COLUMN_NAME, COLUMN_TYPE FROM SYS.EXA_ALL_COLUMNS \
+         WHERE UPPER(COLUMN_SCHEMA) = UPPER({}) AND UPPER(COLUMN_TABLE) = UPPER({}) \
+         ORDER BY COLUMN_ORDINAL_POSITION",
+        quote_literal(schema),
+        quote_literal(table)
+    );
+
+    let mut found: Vec<SourceColumn> = Vec::new();
+    connection.query_for_each(&sql, &mut |row: Vec<Value>| {
+        let text = |value: Option<&Value>| match value {
+            Some(Value::String(text)) => text.clone(),
+            _ => String::new(),
+        };
+        found.push(SourceColumn {
+            table: text(row.first()),
+            name: text(row.get(1)),
+            type_name: text(row.get(2)),
+        });
+        Ok(())
+    })?;
+
+    if found.is_empty() {
+        return Err(user(format!(
+            "source table {schema}.{table} does not exist, or the loader's CONNECTION cannot see it"
+        )));
+    }
+
+    // The catalog matched case-insensitively; the loader's SQL will not.
+    if !found.iter().any(|c| c.table == table) {
+        let actual = &found[0].table;
+        return Err(user(format!(
+            "source table {schema}.{table} does not exist, but {schema}.{actual} does. \
+             Identifiers are matched exactly — unquoted names in Exasol are upper case, and \
+             ingest creates lower-case table names"
+        )));
+    }
+
+    let columns: Vec<&SourceColumn> = found.iter().filter(|c| c.table == table).collect();
+    let Some(matched) = columns.iter().find(|c| c.name == column) else {
+        let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+        let hint = match columns.iter().find(|c| c.name.eq_ignore_ascii_case(column)) {
+            Some(near) => format!("did you mean {}? ", near.name),
+            None => String::new(),
+        };
+        return Err(user(format!(
+            "source table {schema}.{table} has no column {column}; {hint}\
+             name the column as table://{schema}.{table}.COLUMN. Columns: {}",
+            summarise(&names)
+        )));
+    };
+
+    if !is_text_type(&matched.type_name) {
+        return Err(user(format!(
+            "column {column} of {schema}.{table} is {}; the loader reads JSON text, so it needs a \
+             CHAR or VARCHAR column",
+            matched.type_name
+        )));
+    }
+
+    Ok(())
+}
+
+/// `VARCHAR(2000000) UTF8`, `CHAR(10) ASCII` — the catalog spells the size and
+/// character set into the type, so match on the leading keyword.
+fn is_text_type(type_name: &str) -> bool {
+    let upper = type_name.trim().to_ascii_uppercase();
+    upper.starts_with("VARCHAR") || upper.starts_with("CHAR")
+}
+
+/// Keep a column list readable when a table is wide.
+fn summarise(names: &[&str]) -> String {
+    const MAX: usize = 12;
+    if names.len() <= MAX {
+        return names.join(", ");
+    }
+    format!(
+        "{}, … ({} more)",
+        names[..MAX].join(", "),
+        names.len() - MAX
+    )
+}
+
 fn read_table_text(
     connection: &mut Box<dyn ExaConnection>,
     schema: &str,
@@ -237,6 +340,13 @@ fn read_table_text(
     column: &str,
     order_by: Option<&str>,
 ) -> Result<String, UdfError> {
+    // Check the source against the catalog first. Without this, a missing table
+    // or column arrives as a protocol error from the loader's own SELECT
+    // ("object DOC not found"), which reads like a bug in the loader rather than
+    // a statement about the caller's table — and `DOC` is the default, so it is
+    // the first thing a new caller hits.
+    check_table_source(connection, schema, table, column)?;
+
     let order = match order_by {
         Some(order) => format!(" ORDER BY {}", quote_ident(order)),
         None => String::new(),

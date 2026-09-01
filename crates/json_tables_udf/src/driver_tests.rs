@@ -21,6 +21,9 @@ impl ExaConnection for FakeConnection {
         if sql.starts_with("SELECT CURRENT_TIMESTAMP") {
             return f(vec![Value::String("2026-09-01T10:00:00Z".to_string())]);
         }
+        if sql.contains("EXA_ALL_COLUMNS") {
+            return catalog_row(f);
+        }
         let text = self
             .table_text
             .clone()
@@ -37,6 +40,16 @@ impl ExaConnection for FakeConnection {
         self.statements.push(sql.to_string());
         Ok(if sql.starts_with("INSERT INTO") { 7 } else { 0 })
     }
+}
+
+/// The catalog answer for the landing table these tests read from
+/// (`table://LAND.DOCS.CHUNK`), so the source pre-check passes.
+fn catalog_row(f: &mut dyn FnMut(Vec<Value>) -> Result<(), UdfError>) -> Result<(), UdfError> {
+    f(vec![
+        Value::String("DOCS".to_string()),
+        Value::String("CHUNK".to_string()),
+        Value::String("VARCHAR(2000000) UTF8".to_string()),
+    ])
 }
 
 const DOCS: &str =
@@ -76,6 +89,9 @@ fn ingest_recording(source: &Source, opts: Options, table_text: Option<String>) 
             self.0.lock().expect("log").push(sql.to_string());
             if sql.starts_with("SELECT CURRENT_TIMESTAMP") {
                 return f(vec![Value::String("2026-09-01T10:00:00Z".to_string())]);
+            }
+            if sql.contains("EXA_ALL_COLUMNS") {
+                return catalog_row(f);
             }
             let text = self
                 .1

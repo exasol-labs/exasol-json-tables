@@ -203,7 +203,9 @@ orders_tags_arr             200000  loaded
 
 - `bfs:/buckets/...` — a file on the BucketFS mount.
 - `table://SCHEMA.TABLE[.COLUMN]` — JSON text already in the database, one
-  document (or one chunk) per row.
+  document (or one chunk) per row. The column defaults to `DOC`. Identifiers are matched exactly, so
+  a family created by ingest — whose table names are lower case — needs
+  `table://SCHEMA.orders.PAYLOAD`, not `table://SCHEMA.ORDERS.PAYLOAD`.
 - `exatunnel://host:port` — **a file on the client's machine**, streamed through
   Exasol's bulk tunnel. The client opens the tunnel and passes the address; the
   UDF reads it.

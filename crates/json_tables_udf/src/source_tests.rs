@@ -150,3 +150,121 @@ fn a_bucketfs_source_reads_a_real_file() {
     assert!(format!("{err:?}").contains("cannot read"), "{err:?}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// BUG-135: a missing table or column used to surface as a protocol error from
+/// the loader's own SELECT ("object DOC not found"), which points at the wrong
+/// layer. These cover the catalog pre-check that replaces it.
+mod table_source_diagnostics {
+    use super::*;
+    use exasol_udf_sdk::connect_back::ExaConnection;
+    use exasol_udf_sdk::value::Value;
+
+    /// Answers the catalog query with a fixed column list.
+    struct Catalog {
+        rows: Vec<(&'static str, &'static str, &'static str)>,
+    }
+
+    impl ExaConnection for Catalog {
+        fn query_for_each(
+            &mut self,
+            sql: &str,
+            f: &mut dyn FnMut(Vec<Value>) -> Result<(), UdfError>,
+        ) -> Result<(), UdfError> {
+            assert!(sql.contains("EXA_ALL_COLUMNS"), "unexpected query: {sql}");
+            for (table, name, ty) in &self.rows {
+                f(vec![
+                    Value::String((*table).to_string()),
+                    Value::String((*name).to_string()),
+                    Value::String((*ty).to_string()),
+                ])?;
+            }
+            Ok(())
+        }
+
+        fn execute(&mut self, _sql: &str) -> Result<u64, UdfError> {
+            Ok(0)
+        }
+    }
+
+    fn check(
+        rows: Vec<(&'static str, &'static str, &'static str)>,
+        table: &str,
+        column: &str,
+    ) -> Result<(), String> {
+        let mut connection: Box<dyn ExaConnection> = Box::new(Catalog { rows });
+        check_table_source(&mut connection, "SRC", table, column).map_err(|err| format!("{err:?}"))
+    }
+
+    const ORDERS: [(&str, &str, &str); 3] = [
+        ("orders", "ID", "DECIMAL(18,0)"),
+        ("orders", "PAYLOAD", "VARCHAR(2000000) UTF8"),
+        ("orders", "CREATED_AT", "TIMESTAMP"),
+    ];
+
+    #[test]
+    fn an_existing_text_column_passes() {
+        assert!(check(ORDERS.to_vec(), "orders", "PAYLOAD").is_ok());
+    }
+
+    #[test]
+    fn the_default_doc_column_names_the_source_and_the_option() {
+        let err = check(ORDERS.to_vec(), "orders", "DOC").unwrap_err();
+        assert!(err.contains("SRC.orders has no column DOC"), "{err}");
+        assert!(err.contains("table://SRC.orders.COLUMN"), "{err}");
+        // The columns that do exist are the thing the caller needs next.
+        assert!(err.contains("ID, PAYLOAD, CREATED_AT"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_table_is_reported_as_a_missing_table() {
+        let err = check(vec![], "nope", "DOC").unwrap_err();
+        assert!(err.contains("SRC.nope does not exist"), "{err}");
+        assert!(err.contains("CONNECTION"), "{err}");
+    }
+
+    #[test]
+    fn a_case_mismatch_on_the_table_says_so() {
+        // Ingest creates lower-case table names, so this is a likely mistake.
+        let err = check(ORDERS.to_vec(), "ORDERS", "PAYLOAD").unwrap_err();
+        assert!(
+            err.contains("SRC.ORDERS does not exist, but SRC.orders does"),
+            "{err}"
+        );
+        assert!(err.contains("upper case"), "{err}");
+    }
+
+    #[test]
+    fn a_case_mismatch_on_the_column_suggests_the_real_one() {
+        let err = check(ORDERS.to_vec(), "orders", "payload").unwrap_err();
+        assert!(err.contains("did you mean PAYLOAD?"), "{err}");
+    }
+
+    #[test]
+    fn a_non_text_column_explains_what_the_loader_needs() {
+        let err = check(ORDERS.to_vec(), "orders", "ID").unwrap_err();
+        assert!(err.contains("is DECIMAL(18,0)"), "{err}");
+        assert!(err.contains("CHAR or VARCHAR"), "{err}");
+    }
+
+    #[test]
+    fn a_wide_table_gets_a_summarised_column_list() {
+        let mut rows: Vec<(&'static str, &'static str, &'static str)> = Vec::new();
+        for name in [
+            "C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09", "C10", "C11", "C12",
+            "C13", "C14",
+        ] {
+            rows.push(("wide", name, "VARCHAR(10) UTF8"));
+        }
+        let err = check(rows, "wide", "DOC").unwrap_err();
+        assert!(err.contains("C12, … (2 more)"), "{err}");
+        assert!(!err.contains("C13"), "{err}");
+    }
+
+    #[test]
+    fn char_and_varchar_are_both_accepted() {
+        assert!(is_text_type("VARCHAR(2000000) UTF8"));
+        assert!(is_text_type("CHAR(10) ASCII"));
+        assert!(!is_text_type("DECIMAL(18,0)"));
+        assert!(!is_text_type("TIMESTAMP"));
+    }
+}

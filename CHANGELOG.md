@@ -36,6 +36,17 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ### Fixed
 
+- Fixed the diagnostics for a `table://` source in the in-database loader (BUG-135). A table source is
+  now checked against the catalog before it is read, so the six ways a locator can be wrong each name
+  the source and the fix instead of surfacing as `Protocol error: object DOC not found` from the
+  loader's own `SELECT`: a missing table, a missing column (with the columns that do exist listed), a
+  case mismatch on the table or on the column (with the actual name suggested), and a column that is
+  not `CHAR`/`VARCHAR`. The column still defaults to `DOC`, and that default is now documented where
+  the locator is.
+
+  Case mismatches matter more here than they look: ingest creates lower-case table names, and Exasol
+  folds unquoted identifiers to upper case.
+
 - Fixed non-reproducible generated DDL (BUG-134). `--schema-sql` emitted the object-link
   `ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY` statements in whatever order the process's hash seed
   produced, so the same input yielded a differently-ordered file on every run — ten runs of one binary
