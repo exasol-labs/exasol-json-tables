@@ -471,8 +471,15 @@ fn write_all_tables(
         write_document(&mut buffers, obj)
     })?;
 
-    // Write each table to disk.
-    for (path, table) in buffers.tables() {
+    // Write each table to disk, in path order. The buffers are keyed by a
+    // `HashMap`, whose iteration order Rust randomises per process; taking it
+    // as-is made the progress output — and the order the staging files appear —
+    // differ on every run for the same input. The files themselves were always
+    // byte-identical, but unstable output cannot be diffed or checksummed.
+    let mut tables: Vec<_> = buffers.tables().collect();
+    tables.sort_by_key(|(path, _)| path.to_string());
+
+    for (path, table) in tables {
         let file_name = match path.file_suffix() {
             None => format!("{stem}.parquet"),
             Some(suffix) => format!("{stem}.{suffix}.parquet"),

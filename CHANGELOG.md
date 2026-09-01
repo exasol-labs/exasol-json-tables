@@ -34,6 +34,20 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 - Added support for the MongoDB connector's `sourceDocumentColumn` manifest
   extension during offline wrapper generation.
 
+### Fixed
+
+- Fixed non-reproducible generated DDL (BUG-134). `--schema-sql` emitted the object-link
+  `ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY` statements in whatever order the process's hash seed
+  produced, so the same input yielded a differently-ordered file on every run — ten runs of one binary
+  gave ten distinct checksums on a 19-table family. The schema was never wrong, but the artefact could
+  not be checksummed or diffed, which matters because generated DDL is what a DBA reviews and what CI
+  compares against a stored copy. Foreign keys are now emitted in constraint-name order.
+
+  The same root cause made the CLI's progress output unstable: staging files were written in
+  `HashMap` order, so the `Wrote Parquet file for table …` lines varied per run. They are now written
+  in table-path order. The Parquet files themselves, the source manifest, and the `CREATE TABLE`
+  order were already stable and are unchanged.
+
 ### Changed
 
 - Made **Exasol Personal** the documented default deployment target and removed the

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use crate::contract::{
     column_sql_type, sanitize_ident, table_sql_name, table_token, PathKind, PlannedTable,
+    PropertyColumns,
 };
 
 /// `CREATE TABLE` statements plus the constraint statements to apply afterwards.
@@ -85,7 +86,17 @@ pub fn build_sql_schema(plans: &[PlannedTable], stem: &str) -> (Vec<String>, Vec
             }
         }
 
-        for (prop, cols) in &plan.properties {
+        // Sorted, because `properties` is a `HashMap` and Rust randomises its
+        // iteration order per process. Emitting in that order made the generated
+        // DDL unreproducible: the same input produced a differently-ordered file
+        // on every run, so the artefact could not be checksummed or diffed even
+        // though the schema it describes was identical. Constraint names are
+        // `fk_<table>_<property>` and the table part is fixed inside this loop, so
+        // ordering by property name orders the statements by constraint name.
+        let mut properties: Vec<(&String, &PropertyColumns)> = plan.properties.iter().collect();
+        properties.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+        for (prop, cols) in properties {
             if let Some(object_fk) = cols.object_fk.as_ref() {
                 let child_path = plan.path.child_object(prop);
                 if let Some(child_name) = name_map.get(&child_path) {

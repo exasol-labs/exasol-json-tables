@@ -403,3 +403,50 @@ fn integer_values_route_to_a_merged_number_column() {
         other => panic!("unexpected column kind: {other:?}"),
     }
 }
+
+/// BUG-134: the generated DDL was unreproducible because the object-link foreign
+/// keys came out of a `HashMap` in whatever order that process's hasher seed
+/// produced. Ten runs of one binary on one input gave ten different files.
+///
+/// A test that simply builds twice in one process cannot catch this — the seed is
+/// fixed for a process, so both builds agree. The invariant to assert is the one
+/// that makes the artefact diffable: within a table, foreign keys are emitted in
+/// constraint-name order.
+#[test]
+fn foreign_keys_are_emitted_in_a_stable_order() {
+    // Sibling object properties whose alphabetical order differs from their
+    // first-seen order, so an accidental "insertion order" fix would fail too.
+    let input = r#"[{"id": 1, "zulu": {"v": 1}, "alpha": {"v": 1}, "mike": {"v": 1},
+                     "bravo": {"v": 1}, "yankee": {"v": 1}}]"#;
+    let plans = plan_for(input);
+    let (_, constraints) = crate::ddl::build_sql_schema(&plans, "doc");
+
+    let fks: Vec<&String> = constraints
+        .iter()
+        .filter(|stmt| stmt.contains("FOREIGN KEY"))
+        .collect();
+    assert_eq!(fks.len(), 5, "one per object property: {fks:#?}");
+
+    let names: Vec<&str> = fks
+        .iter()
+        .map(|stmt| {
+            stmt.split("ADD CONSTRAINT ")
+                .nth(1)
+                .and_then(|rest| rest.split(' ').next())
+                .expect("constraint name")
+        })
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(names, sorted, "foreign keys must be emitted in name order");
+}
+
+/// The whole statement list must be reproducible, not just the foreign keys.
+#[test]
+fn the_generated_ddl_is_identical_for_identical_input() {
+    let input = r#"[{"id": 1, "zulu": {"v": 1}, "alpha": {"v": 1},
+                     "items": [{"sku": "a", "meta": {"m": 1}}]}]"#;
+    let first = crate::ddl::build_sql_schema(&plan_for(input), "doc");
+    let second = crate::ddl::build_sql_schema(&plan_for(input), "doc");
+    assert_eq!(first, second);
+}
