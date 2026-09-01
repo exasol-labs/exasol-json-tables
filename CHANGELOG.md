@@ -6,6 +6,34 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+### Added
+
+- Added in-database ingest: [crates/json_tables_udf](crates/json_tables_udf), a
+  Rust UDF that loads JSON into the table contract with no client in the data
+  path. `SELECT JSON_TABLES.INGEST_JSON(source, target_schema, connection, options)`
+  infers the family, creates the tables, loads them and stamps provenance in one
+  statement, emitting one report row per table. `PLAN_JSON` returns the plan and
+  DDL for review; `LOAD_TABLE` emits one table's rows and is usable directly.
+
+  Sources: a BucketFS file, JSON already held in a table, an HTTP stream —
+  including Exasol's bulk tunnel, which streams a file from the client's own
+  machine — and cloud storage (`s3://`, `https://`) fetched by the database itself
+  through a named `CONNECTION`, so object-store credentials never enter the UDF.
+
+  The loader shares its normalisation with the CLI: a family loaded by the UDF is
+  identical to a CLI-loaded one down to the row, and the existing wrapper package
+  installs over it unchanged. On a single-node deployment it is *slower* than the
+  CLI, because it parses the source once per target table; its purpose is making
+  ingest a database operation rather than a client one.
+
+- Added zero-argument `TO_JSON()` for MongoDB Virtual Schema roots and their
+  generated wrapper views. It returns the connector's complete canonical
+  Extended JSON source document, including fields outside the inferred schema,
+  while `TO_JSON(*)` and subset forms retain their existing reconstruction
+  semantics for modeled and derived results.
+- Added support for the MongoDB connector's `sourceDocumentColumn` manifest
+  extension during offline wrapper generation.
+
 ### Changed
 
 - Split the Rust ingest engine into two crates. The normalisation core — the
@@ -24,16 +52,6 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
   No user-visible behavior changes: the CLI's flags, generated Parquet, DDL,
   manifest and provenance comments are byte-identical, and the manifest still
   reports `"generator": "json_to_parquet"`.
-
-### Added
-
-- Added zero-argument `TO_JSON()` for MongoDB Virtual Schema roots and their
-  generated wrapper views. It returns the connector's complete canonical
-  Extended JSON source document, including fields outside the inferred schema,
-  while `TO_JSON(*)` and subset forms retain their existing reconstruction
-  semantics for modeled and derived results.
-- Added support for the MongoDB connector's `sourceDocumentColumn` manifest
-  extension during offline wrapper generation.
 
 ## [0.2] - 2026-08-19
 

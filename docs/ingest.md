@@ -167,6 +167,77 @@ That contract is what powers the later stages:
 - arrays can be addressed by position or expanded into rows
 - structured results can reuse the same contract on output, and wrapped families can emit final JSON through `TO_JSON(...)`
 
+## In-Database Ingest (Rust UDF)
+
+Ingest can also run **inside** Exasol, as a Rust UDF, with no client in the data
+path. That path lives in [crates/json_tables_udf](../crates/json_tables_udf) and
+shares its normalisation with the CLI, so both produce the same contract.
+
+Install once (see the crate README for the build and BucketFS upload):
+
+```sql
+-- crates/json_tables_udf/sql/install.sql
+CREATE OR REPLACE CONNECTION JSON_TABLES_SELF TO '127.0.0.1:8563' USER 'sys' IDENTIFIED BY '...';
+CREATE OR REPLACE RUST SCALAR SCRIPT JSON_TABLES.INGEST_JSON(...) EMITS (...) AS
+%connection JSON_TABLES_SELF;
+%udf_object /buckets/bfsdefault/rust/libjson_tables_udf.so;
+/
+```
+
+Then ingest is one statement, and its result is the run report:
+
+```sql
+SELECT JSON_TABLES.INGEST_JSON('bfs:/buckets/bfsdefault/rust/orders.ndjson',
+                               'EJT_ORDERS_SRC', 'JSON_TABLES_SELF',
+                               '{"replace": true}');
+
+TABLE_NAME             ROWS_LOADED  STATUS
+orders                      100000  loaded
+orders_flags                100000  loaded
+orders_items_arr            300000  loaded
+orders_events_arr           200000  loaded
+orders_tags_arr             200000  loaded
+```
+
+### Sources
+
+- `bfs:/buckets/...` — a file on the BucketFS mount.
+- `table://SCHEMA.TABLE[.COLUMN]` — JSON text already in the database, one
+  document (or one chunk) per row.
+- `exatunnel://host:port` — **a file on the client's machine**, streamed through
+  Exasol's bulk tunnel. The client opens the tunnel and passes the address; the
+  UDF reads it.
+- `http://host:port/path` — any internal HTTP source.
+- `s3://bucket/key` or `https://host/object` — fetched by the **database** using
+  the named `CONNECTION`, so credentials stay in Exasol.
+
+### Reviewing the plan before loading
+
+```sql
+SELECT JSON_TABLES.PLAN_JSON('bfs:/buckets/bfsdefault/rust/orders.ndjson', NULL, NULL);
+-- emits (plan, ddl): the inferred plan, and the DDL the driver would run
+```
+
+### What to expect
+
+On a small single-node deployment the UDF is **slower** than the CLI for the same
+file — it parses the source once per target table, so a five-table family reads it
+six times (measured 5.8s against the CLI's 4.8s for 100k documents). Its value is
+not speed on one node; it is that ingest becomes a database operation:
+schedulable, grantable, with no client in the data path, and parsing that scales
+with the cluster rather than one client process.
+
+### Wrapping a UDF-loaded family
+
+Nothing changes. The family is contract-identical to a CLI-loaded one, so the
+wrapper package is generated and installed exactly as above:
+
+```bash
+exasol-json-tables wrap generate --source-schema EJT_ORDERS_SRC \
+  --wrapper-schema EJT_ORDERS_VIEW --no-auto-source-manifest ...
+exasol-json-tables wrap install --package-config .../orders_package.json
+```
+
 ## Next Step After Ingest
 
 Once the source schema exists, install the wrapper surface on top of it:

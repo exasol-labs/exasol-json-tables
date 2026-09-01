@@ -1,0 +1,21 @@
+[package]
+name = "json_tables_udf"
+version = "0.2.0"
+edition = "2021"
+description = "In-database JSON Tables loader: an Exasol Rust UDF that ingests JSON into the shared table contract."
+license = "MIT"
+
+[lib]
+# cdylib is the deployable artifact; rlib keeps the logic unit-testable on the host.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+json_tables_core = { path = "../json_tables_core" }
+# 0.23 exposes connect-back unconditionally; `emit-arrow` is its only feature
+# and this loader does not need Arrow.
+exasol-udf-sdk = "=0.21.3"
+exasol-udf-macros = "=0.21.3"
+serde_json = { version = "1.0.150", features = ["preserve_order"] }
+
+[profile.release]
+strip = true
