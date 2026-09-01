@@ -209,6 +209,68 @@ def main() -> None:
             ["JVS-ITER-ERROR", "Scalar VALUE iterators cannot be used as the root"],
             "value iterator root error",
         )
+        # VALUE binds an array's scalar element, so over an array of objects there is
+        # nothing to bind. Before this was checked the generated SQL asked for a `_value`
+        # the table does not have and the database reported the internal iterator alias.
+        assert_query_error(
+            con,
+            '''
+            SELECT s."id", item."label"
+            FROM JSON_VIEW.SAMPLE s
+            JOIN VALUE item IN s."items"
+            ''',
+            [
+                "JVS-ITER-ERROR",
+                '"items": VALUE iteration requires an array of scalars',
+                'JOIN item IN s."items"',
+            ],
+            "value iterator over object array error",
+        )
+        assert_query_error(
+            con,
+            '''
+            SELECT s."id"
+            FROM JSON_VIEW.SAMPLE s
+            LEFT JOIN VALUE item IN s."items"
+            ''',
+            ["JVS-ITER-ERROR", "is an array of objects"],
+            "left value iterator over object array error",
+        )
+        assert_query_error(
+            con,
+            '''
+            SELECT s."id"
+            FROM JSON_VIEW.SAMPLE s
+            JOIN item IN s."items"
+            JOIN VALUE nested IN item."nested.items"
+            ''',
+            ["JVS-ITER-ERROR", '"nested.items": VALUE iteration requires an array of scalars'],
+            "nested value iterator over object array error",
+        )
+        # The forms that do work must keep working: the row iterator over the same array,
+        # and VALUE over an array that does carry `_value`.
+        assert_query_rows(
+            con,
+            '''
+            SELECT CAST(s."id" AS VARCHAR(10)), item."label"
+            FROM JSON_VIEW.SAMPLE s
+            JOIN item IN s."items"
+            ORDER BY 1, 2
+            ''',
+            [("1", "A"), ("1", "B"), ("2", "C")],
+            "row iterator over object array still works",
+        )
+        assert_query_rows(
+            con,
+            '''
+            SELECT CAST(s."id" AS VARCHAR(10)), tag
+            FROM JSON_VIEW.SAMPLE s
+            JOIN VALUE tag IN s."tags"
+            ORDER BY 1, 2
+            ''',
+            [("1", "blue"), ("1", "red"), ("2", "green")],
+            "value iterator over scalar array still works",
+        )
         assert_query_error(
             con,
             '''

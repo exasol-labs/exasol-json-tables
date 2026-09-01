@@ -306,6 +306,20 @@ JOIN VALUE tag IN s."tags"
 ORDER BY s."id", tag._index;
 ```
 
+`VALUE` binds the array's scalar element, so it only applies to an array that has
+one — an array of objects has properties, not a value. Asking for `VALUE` over an
+array of objects is refused by name:
+
+```
+JVS-ITER-ERROR: "items": VALUE iteration requires an array of scalars, and "items"
+is an array of objects. Drop VALUE and select the element properties instead, for
+example JOIN item IN s."items" with item."<property>".
+```
+
+An array of scalars that also carries properties — the value-object shape, where the
+element table has `_value` alongside its own columns — supports both forms: `VALUE`
+for the element, and a row iterator for the properties.
+
 ## Iterator-Row Semantics
 
 Object-array iterator rows can use JSON helpers too:

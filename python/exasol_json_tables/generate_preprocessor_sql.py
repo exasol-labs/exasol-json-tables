@@ -2294,7 +2294,45 @@ ARRAY_ITERATION_LUA = """
         return object_steps, steps[#steps], nil
     end
 
-    local function build_iterator_relation_sql(qualified_table_name, iterator_source)
+    local function build_iterator_relation_sql(qualified_table_name, iterator_source, root_binding, array_child_table_name)
+        -- VALUE iteration binds the array's scalar element, which only exists where the
+        -- array child table carries the contract's `_value` column. Over an array of
+        -- objects there is nothing to bind, so refuse it by name here: without this the
+        -- generated SQL asks for a `_value` that does not exist and the database reports
+        -- the internal alias instead. A property that happens to be called "value" is an
+        -- ordinary property, so the physical column name is what decides. A build with no
+        -- group metadata (marker mode) cannot judge and is left alone.
+        if iterator_source.is_value and root_binding ~= nil and array_child_table_name ~= nil then
+            local schema_name = root_binding.helper_schema_name or root_binding.schema_name
+            local schema_tables = GROUP_CONFIG_BY_SCHEMA_AND_TABLE[normalize_identifier_value(schema_name)]
+            local table_groups = schema_tables and schema_tables[normalize_identifier_value(array_child_table_name)] or nil
+            local function is_element_column(column_name)
+                return column_name == "_value"
+                        or (column_name ~= nil and string.sub(column_name, 1, 7) == "_value|")
+            end
+            local described = false
+            local has_element_column = false
+            for _, group_config in pairs(table_groups or {}) do
+                described = true
+                if is_element_column(group_config.referenceColumnName) then
+                    has_element_column = true
+                end
+                for _, column_name in pairs(group_config.variantColumns or {}) do
+                    if is_element_column(column_name) then
+                        has_element_column = true
+                    end
+                end
+            end
+            if described and not has_element_column then
+                raise_iterator_error(
+                    '"' .. iterator_source.path .. '": VALUE iteration requires an array of scalars, and "'
+                        .. iterator_source.path .. '" is an array of objects. Drop VALUE and select the'
+                        .. ' element properties instead, for example JOIN ' .. iterator_source.alias_name
+                        .. ' IN ' .. iterator_source.root_alias_name .. '."' .. iterator_source.path
+                        .. '" with ' .. iterator_source.alias_name .. '."<property>".'
+                )
+            end
+        end
         local relation_alias = iterator_source.reference_sql
         local inner_alias_name = "__jvs_iter_src"
         local inner_alias = encode_quoted_identifier(inner_alias_name)
@@ -2379,7 +2417,9 @@ ARRAY_ITERATION_LUA = """
         out[#out + 1] = join_keyword
                 .. build_iterator_relation_sql(
                         qualify_table_name_for_iterator(root_binding, array_child_table_name),
-                        iterator_source
+                        iterator_source,
+                        root_binding,
+                        array_child_table_name
                 )
                 .. " ON (" .. current_row_id .. " = " .. iterator_source.reference_sql
                 .. "." .. encode_quoted_identifier("_parent") .. ")"
@@ -2422,7 +2462,9 @@ ARRAY_ITERATION_LUA = """
             out[#out + 1] = "FROM "
                     .. build_iterator_relation_sql(
                             qualify_table_name_for_iterator(root_binding, array_child_table_name),
-                            iterator_source
+                            iterator_source,
+                            root_binding,
+                            array_child_table_name
                     )
             correlation_filter_sql = "(" .. current_row_id .. " = " .. iterator_source.reference_sql
                     .. "." .. encode_quoted_identifier("_parent") .. ")"
@@ -2459,7 +2501,9 @@ ARRAY_ITERATION_LUA = """
         out[#out + 1] = " INNER JOIN "
                 .. build_iterator_relation_sql(
                         qualify_table_name_for_iterator(root_binding, array_child_table_name),
-                        iterator_source
+                        iterator_source,
+                        root_binding,
+                        array_child_table_name
                 )
                 .. " ON (" .. current_row_id .. " = " .. iterator_source.reference_sql
                 .. "." .. encode_quoted_identifier("_parent") .. ")"
