@@ -1159,7 +1159,7 @@ fn emits_exasol_schema_with_keys() {
     let stats = scan_all_stats(&input_path, format).expect("scan");
     let planned = build_all_schema_plans(&stats);
 
-    write_sql_schema(&planned, dir.path(), stem).expect("schema");
+    write_sql_schema(&planned, dir.path(), stem, &[]).expect("schema");
     let ddl = std::fs::read_to_string(dir.path().join(format!("{stem}.sql"))).expect("read ddl");
 
     assert!(
@@ -1224,6 +1224,67 @@ fn exasol_import_uses_schema_table_names() {
 }
 
 #[test]
+fn the_schema_sql_artifact_carries_the_provenance_comments() {
+    // A family deployed by applying the DDL by hand must end up as well described as
+    // one imported directly, or it becomes a family a consumer can only guess about.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("nested.json");
+    let format = detect_input_format(&path).expect("format");
+    let stats = scan_all_stats(&path, format).expect("scan");
+    let planned = build_all_schema_plans(&stats);
+    let comments = local_file_provenance_comments(&planned, "nested", &path);
+
+    let dir = tempdir().expect("tempdir");
+    write_sql_schema(&planned, dir.path(), "nested", &comments).expect("schema");
+    let ddl = std::fs::read_to_string(dir.path().join("nested.sql")).expect("read ddl");
+
+    for (table_name, _) in &comments {
+        assert!(
+            ddl.contains(&format!(
+                "COMMENT ON TABLE \"{table_name}\" IS 'COPY provenance "
+            )),
+            "{table_name} is unstamped in the DDL artifact"
+        );
+    }
+    assert!(ddl.contains(r#""contractVersion":1"#), "{ddl}");
+    let create_at = ddl.find("CREATE TABLE").expect("create");
+    let comment_at = ddl.find("COMMENT ON TABLE").expect("comment");
+    assert!(create_at < comment_at, "comments must follow the creates");
+}
+
+#[test]
+fn a_manifest_written_without_an_import_still_carries_the_provenance_comments() {
+    // The wrapper generator stamps the public view from `tableComment`, so a local-only
+    // manifest that omitted it produced an unstamped wrapper.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("nested.json");
+    let format = detect_input_format(&path).expect("format");
+    let stats = scan_all_stats(&path, format).expect("scan");
+    let planned = build_all_schema_plans(&stats);
+    let comments = local_file_provenance_comments(&planned, "NESTED", &path);
+
+    let dir = tempdir().expect("tempdir");
+    let manifest_path = dir.path().join("nested.source_manifest.json");
+    write_source_manifest(&planned, &manifest_path, "NESTED", &comments).expect("manifest");
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).expect("read manifest"))
+            .expect("parse manifest");
+
+    for table in manifest["tables"].as_array().expect("tables") {
+        let table_name = table["tableName"].as_str().expect("tableName");
+        let comment = table["tableComment"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{table_name} has no tableComment"));
+        assert!(comment.starts_with("COPY provenance "), "{comment}");
+        assert!(comment.contains(r#""contractVersion":1"#), "{comment}");
+    }
+}
+
+#[test]
 fn exasol_import_emits_catalog_provenance_comments() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -1233,13 +1294,10 @@ fn exasol_import_emits_catalog_provenance_comments() {
     let stats = scan_all_stats(&path, format).expect("scan");
     let planned = build_all_schema_plans(&stats);
 
-    let comments = build_provenance_comments(
-        &planned,
-        "NESTED",
-        Path::new("/imports/customer's.json"),
-        "2026-08-10T09:45:00Z",
-        Some("2026-08-10T09:40:00Z"),
-    );
+    let provenance = Provenance::local_file("/imports/customer's.json", "2026-08-10T09:45:00Z")
+        .with_source_modified_at(Some("2026-08-10T09:40:00Z"));
+    let comments =
+        json_tables_core::manifest::build_provenance_comments(&planned, "NESTED", &provenance);
     let statements: Vec<String> = comments
         .iter()
         .map(|(table_name, comment)| provenance_comment_statement(table_name, comment))
@@ -1263,7 +1321,7 @@ fn exasol_import_emits_catalog_provenance_comments() {
 
     let dir = tempdir().expect("tempdir");
     let manifest_path = dir.path().join("nested.source_manifest.json");
-    write_source_manifest_with_comments(&planned, &manifest_path, "NESTED", &comments)
+    write_source_manifest(&planned, &manifest_path, "NESTED", &comments)
         .expect("manifest with comments");
     let manifest: Value = serde_json::from_str(
         &fs::read_to_string(manifest_path).expect("read source manifest with comments"),
@@ -1314,7 +1372,7 @@ fn writes_source_manifest_with_expected_tables_and_relationships() {
     let format = detect_input_format(&path).expect("format");
     let stats = scan_all_stats(&path, format).expect("scan");
     let planned = build_all_schema_plans(&stats);
-    write_source_manifest(&planned, &output_path, "NESTED").expect("manifest");
+    write_source_manifest(&planned, &output_path, "NESTED", &[]).expect("manifest");
 
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(&output_path).expect("read manifest"))

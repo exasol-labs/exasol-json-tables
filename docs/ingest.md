@@ -74,9 +74,10 @@ cargo run --manifest-path crates/json_tables_ingest/Cargo.toml -- \
   --manifest-output ./out/data.source_manifest.json
 ```
 
-When ingest writes copied tables into Exasol, it also stamps every table with a
-`COPY provenance {...}` comment. `SYS.EXA_ALL_TABLES.TABLE_COMMENT` therefore
-exposes the source file, the `local-file` source connection kind, the import
+Ingest stamps every table it describes with a `COPY provenance {...}` comment —
+whether it loads the tables itself or only emits the DDL and the manifest (see
+[Every Route Stamps](#every-route-stamps)). `SYS.EXA_ALL_TABLES.TABLE_COMMENT`
+therefore exposes the source file, the `local-file` source connection kind, the import
 timestamp, the source file modification timestamp when available, the JSON
 path represented by each generated table, and the contract version. The comment
 intentionally excludes Exasol connection credentials.
@@ -94,6 +95,30 @@ parses column names should check it and refuse a version it does not know rather
 than misread the encoding; the value is bumped whenever a marker, separator or
 structural column changes meaning. See
 [The Shared Table Contract](architecture.md#the-shared-table-contract).
+
+### Every Route Stamps
+
+An unstamped family is one a consumer can only guess about, so the comment is not
+tied to the direct-import path. The same comments are derived once per run and
+travel on every artifact:
+
+| Route | Where the provenance lands |
+| --- | --- |
+| `--exasol` direct import | `COMMENT ON TABLE`, executed after the load |
+| `--schema-sql` | a `-- Provenance` section of `<stem>.sql`, after the creates |
+| `--manifest-output` | `tableComment` on every entry of the source manifest |
+| `INGEST_JSON` (in-database) | `COMMENT ON TABLE`, executed after the load |
+| A materialized result family | `COMMENT ON TABLE`, with `"sourceConnection":"result-family"` |
+
+Keep the `-- Provenance` statements with the `CREATE TABLE` statements when you
+apply the DDL by hand: dropping them is what produces a family the catalog cannot
+describe. Because the manifest carries `tableComment`, a wrapper package generated
+from a purely local run stamps its public view too — the generator copies the root
+table's comment onto the view either way.
+
+The one deliberate exception is `PLAN_JSON`, whose DDL is a review artifact rather
+than a deployment one: it has no load to timestamp. Use `INGEST_JSON` to create the
+tables for real, and it stamps them.
 
 When a wrapper package is generated from that source manifest, the root source
 table's comment is copied onto the public wrapper view. Consumers can therefore

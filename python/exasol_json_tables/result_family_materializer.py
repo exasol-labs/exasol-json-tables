@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import re
 from typing import Any, Literal, Union
 
+from .provenance import RESULT_FAMILY_CONNECTION, stamp_family_provenance
 from .wrapper_schema_support import (
     Relationship,
     build_relationships,
@@ -154,6 +155,43 @@ def _create_table_as_select(
             {select_sql}
             """
         )
+
+
+def _stamp_family_provenance(
+    con,
+    *,
+    target_schema: str,
+    root_table: str,
+    created_tables: list[str],
+    family_description: FamilyDescription,
+    source: str,
+    table_kind: TableKind,
+) -> None:
+    """Record where a materialized family came from.
+
+    A materialized family is the same contract as an ingested one and the same
+    consumers read it, so it carries the same provenance comment. Local temporary
+    tables are skipped: they are session-scoped and cannot be commented on.
+    """
+    if table_kind != "table":
+        return
+    stamp_family_provenance(
+        con,
+        schema=target_schema,
+        root_table=root_table,
+        tables=created_tables,
+        relationships=family_description.relationships,
+        source=source,
+        source_connection=RESULT_FAMILY_CONNECTION,
+    )
+
+
+def _synthesized_family_source(family_spec: SynthesizedFamilySpec) -> str:
+    """A locator for a family built from SQL: the schemas its selects read from."""
+    referenced: set[str] = set()
+    for table_spec in family_spec.table_specs:
+        referenced.update(_extract_schema_names_from_sql(table_spec.select_sql))
+    return "query://" + ",".join(sorted(referenced))
 
 
 def _extract_schema_names_from_sql(sql: str) -> set[str]:
@@ -612,6 +650,15 @@ def materialize_family_preserving_subset(
         family_description = describe_source_families(con, target_schema)
         if root_table not in family_description.root_tables:
             raise AssertionError(f"Expected {root_table} to be a root table in {target_schema}")
+        _stamp_family_provenance(
+            con,
+            target_schema=target_schema,
+            root_table=root_table,
+            created_tables=sorted(created_tables),
+            family_description=family_description,
+            source=f"table://{source_helper_schema}.{root_table}",
+            table_kind=table_kind,
+        )
         return MaterializedFamilyResult(
             source_schema=target_schema,
             root_table=root_table,
@@ -863,6 +910,15 @@ def materialize_synthesized_family(
                 f"got roots {family_description.root_tables!r}"
             )
         created_tables = [table_spec.table_name for table_spec in family_spec.table_specs]
+        _stamp_family_provenance(
+            con,
+            target_schema=target_schema,
+            root_table=family_spec.root_table,
+            created_tables=created_tables,
+            family_description=family_description,
+            source=_synthesized_family_source(family_spec),
+            table_kind=table_kind,
+        )
         return MaterializedFamilyResult(
             source_schema=target_schema,
             root_table=family_spec.root_table,

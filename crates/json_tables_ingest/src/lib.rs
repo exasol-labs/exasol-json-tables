@@ -125,32 +125,36 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
 
     let planned_tables = build_all_schema_plans(&table_stats);
 
+    // Provenance is derived once, before anything is written, so the DDL artifact,
+    // the source manifest and the stamped tables all carry the same comment. Every
+    // route out of here therefore stamps: whoever applies the SQL by hand ends up
+    // with the same catalog metadata as a direct `--exasol` import.
+    let provenance_comments = local_file_provenance_comments(&planned_tables, &stem, &args.input);
+
     // Stage 2: derive schema from stats and write Parquet tables (root + subtables).
     std::fs::create_dir_all(&output_dir)?;
     if args.schema_sql {
-        write_sql_schema(&planned_tables, &output_dir, &stem)?;
+        write_sql_schema(&planned_tables, &output_dir, &stem, &provenance_comments)?;
     }
     if let Some(manifest_output) = args.manifest_output.as_ref() {
-        write_source_manifest(&planned_tables, manifest_output, &stem)?;
+        write_source_manifest(
+            &planned_tables,
+            manifest_output,
+            &stem,
+            &provenance_comments,
+        )?;
     }
     let table_files = write_all_tables(&args.input, format, &planned_tables, &output_dir, &stem)?;
 
-    let provenance_comments = if let Some(exasol_url) = args.exasol.as_deref() {
-        Some(import_into_exasol(
+    if let Some(exasol_url) = args.exasol.as_deref() {
+        import_into_exasol(
             exasol_url,
             args.exasol_http_tls,
             &planned_tables,
             &table_files,
             &stem,
-            &args.input,
-        )?)
-    } else {
-        None
-    };
-    if let (Some(manifest_output), Some(comments)) =
-        (args.manifest_output.as_ref(), provenance_comments.as_ref())
-    {
-        write_source_manifest_with_comments(&planned_tables, manifest_output, &stem, comments)?;
+            &provenance_comments,
+        )?;
     }
 
     if args.exasol.is_some() && args.exasol_cleanup {
@@ -199,8 +203,8 @@ fn import_into_exasol(
     planned_tables: &[PlannedTable],
     table_files: &[TableFile],
     stem: &str,
-    input_path: &Path,
-) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+    provenance_comments: &[(String, String)],
+) -> Result<(), Box<dyn Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -213,7 +217,7 @@ fn import_into_exasol(
                 planned_tables,
                 table_files,
                 stem,
-                input_path,
+                provenance_comments,
             )
             .await
         })
@@ -226,8 +230,8 @@ async fn import_into_exasol_async(
     planned_tables: &[PlannedTable],
     table_files: &[TableFile],
     stem: &str,
-    input_path: &Path,
-) -> Result<Vec<(String, String)>, DynError> {
+    provenance_comments: &[(String, String)],
+) -> Result<(), DynError> {
     let (create_stmts, constraint_stmts) = build_sql_schema(planned_tables, stem);
     let mut table_name_map = HashMap::new();
     for plan in planned_tables {
@@ -289,6 +293,26 @@ async fn import_into_exasol_async(
         connection.close().await?;
     }
 
+    let mut connection = connect_exasol(exasol_url).await?;
+    for (table_name, comment) in provenance_comments {
+        connection
+            .execute(provenance_comment_statement(table_name, comment))
+            .await?;
+    }
+    connection.close().await?;
+
+    Ok(())
+}
+
+/// Provenance for a file read from the machine running the CLI.
+///
+/// An in-database loader builds [`Provenance`] itself with its own source kind
+/// (`s3`, a landing table, a client tunnel) and calls the core builder directly.
+fn local_file_provenance_comments(
+    planned_tables: &[PlannedTable],
+    stem: &str,
+    input_path: &Path,
+) -> Vec<(String, String)> {
     let imported_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let source_path = input_path
         .canonicalize()
@@ -297,38 +321,9 @@ async fn import_into_exasol_async(
         .and_then(|metadata| metadata.modified())
         .ok()
         .map(|modified| DateTime::<Utc>::from(modified).to_rfc3339_opts(SecondsFormat::Secs, true));
-    let provenance_comments = build_provenance_comments(
-        planned_tables,
-        stem,
-        &source_path,
-        &imported_at,
-        source_modified_at.as_deref(),
-    );
-    let mut connection = connect_exasol(exasol_url).await?;
-    for (table_name, comment) in &provenance_comments {
-        connection
-            .execute(provenance_comment_statement(table_name, comment))
-            .await?;
-    }
-    connection.close().await?;
-
-    Ok(provenance_comments)
-}
-
-/// Provenance for a file read from the machine running the CLI.
-///
-/// An in-database loader builds [`Provenance`] itself with its own source kind
-/// (`s3`, a landing table, a client tunnel) and calls the core builder directly.
-fn build_provenance_comments(
-    planned_tables: &[PlannedTable],
-    stem: &str,
-    source_path: &Path,
-    imported_at: &str,
-    source_modified_at: Option<&str>,
-) -> Vec<(String, String)> {
     let source = source_path.to_string_lossy();
-    let provenance = Provenance::local_file(source.as_ref(), imported_at)
-        .with_source_modified_at(source_modified_at);
+    let provenance = Provenance::local_file(source.as_ref(), &imported_at)
+        .with_source_modified_at(source_modified_at.as_deref());
     json_tables_core::manifest::build_provenance_comments(planned_tables, stem, &provenance)
 }
 
@@ -336,6 +331,7 @@ fn write_sql_schema(
     plans: &[PlannedTable],
     output_dir: &Path,
     stem: &str,
+    provenance_comments: &[(String, String)],
 ) -> Result<(), Box<dyn Error>> {
     let (create_stmts, constraint_stmts) = build_sql_schema(plans, stem);
 
@@ -357,27 +353,29 @@ fn write_sql_schema(
         ddl.push('\n');
     }
 
+    if !provenance_comments.is_empty() {
+        ddl.push_str("-- Provenance: keep these with the CREATE statements. A family without\n");
+        ddl.push_str("-- them is one a consumer can only guess about; see docs/ingest.md.\n");
+        for (table_name, comment) in provenance_comments {
+            ddl.push_str(&provenance_comment_statement(table_name, comment));
+            ddl.push('\n');
+        }
+        ddl.push('\n');
+    }
+
     let output_path = output_dir.join(format!("{stem}.sql"));
     std::fs::write(&output_path, ddl)?;
     println!("Wrote Exasol SQL schema to {:?}", output_path);
     Ok(())
 }
 
+/// Write the source manifest, always carrying the provenance comment per table.
+///
+/// The wrapper generator copies `tableComment` onto the public view, so a manifest
+/// written without it produces an unstamped wrapper even when the family itself is
+/// known — which is why the comments are attached on every route, not only when the
+/// CLI also imports into Exasol.
 fn write_source_manifest(
-    plans: &[PlannedTable],
-    output_path: &Path,
-    stem: &str,
-) -> Result<(), Box<dyn Error>> {
-    let manifest = build_source_manifest(plans, stem);
-    if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(output_path, serde_json::to_string_pretty(&manifest)? + "\n")?;
-    println!("Wrote source manifest to {:?}", output_path);
-    Ok(())
-}
-
-fn write_source_manifest_with_comments(
     plans: &[PlannedTable],
     output_path: &Path,
     stem: &str,
@@ -385,8 +383,11 @@ fn write_source_manifest_with_comments(
 ) -> Result<(), Box<dyn Error>> {
     let mut manifest = build_source_manifest(plans, stem);
     apply_table_comments(&mut manifest, comments);
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(output_path, serde_json::to_string_pretty(&manifest)? + "\n")?;
-    println!("Updated source manifest provenance at {:?}", output_path);
+    println!("Wrote source manifest to {:?}", output_path);
     Ok(())
 }
 

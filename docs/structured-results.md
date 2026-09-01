@@ -386,6 +386,19 @@ Use durable structured results when you want:
 
 Use the lower-level in-session path when the result family only needs to live inside the current session, for example on top of `LOCAL TEMPORARY` tables.
 
+## Provenance Of A Materialized Family
+
+A durable result family is the same contract as an ingested one, and the same
+consumers read it, so every table it creates carries the same
+`COPY provenance {...}` comment that ingest writes — with
+`"sourceConnection":"result-family"` and a `source` naming what it was built from:
+`table://<HELPER_SCHEMA>.<ROOT>` for a family-preserving subset, or
+`query://<schemas the selects read>` for a synthesized one. `tablePath` follows the
+family's own shape (`root`, `meta.info`, `items[]`).
+
+`LOCAL TEMPORARY` families are not stamped: they are session-scoped and cannot
+carry a comment. See [docs/ingest.md](ingest.md#every-route-stamps).
+
 ## See Also
 
 - [tests/test_wrapper_to_json.py](../tests/test_wrapper_to_json.py)
