@@ -13,8 +13,8 @@ crate-type = ["cdylib", "rlib"]
 json_tables_core = { path = "../json_tables_core" }
 # 0.23 exposes connect-back unconditionally; `emit-arrow` is its only feature
 # and this loader does not need Arrow.
-exasol-udf-sdk = "=0.21.3"
-exasol-udf-macros = "=0.21.3"
+exasol-udf-sdk = "=0.23.0"
+exasol-udf-macros = "=0.23.0"
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
 
 [profile.release]

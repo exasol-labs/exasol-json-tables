@@ -94,9 +94,10 @@ installed language container's fingerprint — a mismatch fails at load with
 running any script and reading the error.
 
 ```bash
-# Build in a Linux image whose glibc is at or below the container's floor.
+# Build in the Debian release the SLC stages its runtime from (trixie, glibc
+# floor 2.41), so the artifact links against the glibc it will load against.
 docker run --rm -v "$PWD:/build" -w /build/crates/json_tables_udf \
-  rust:1.94.1-bookworm bash -c 'cargo build --release'
+  rust:1.94.1-trixie bash -c 'cargo build --release'
 
 # Upload to BucketFS (Exasol Personal publishes no BucketFS endpoint, so copy
 # into the deployment VM; a normal cluster uses the BucketFS HTTP API).
