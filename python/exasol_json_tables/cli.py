@@ -16,6 +16,7 @@ from urllib.parse import parse_qsl, quote as url_quote, unquote, urlencode, urlp
 from . import structured_result_tool
 from . import wrapper_package_tool
 from .generate_preprocessor_sql import validate_identifier
+from . import compile_sql_tool
 from .wrapper_schema_support import (
     ROOT,
     connect_for_generation,
@@ -437,6 +438,8 @@ def _command_label(args: argparse.Namespace) -> str:
         return f"structured-results {args.structured_command}"
     if args.command == "describe":
         return f"describe {args.describe_command}"
+    if args.command == "compile":
+        return f"compile {args.compile_command}"
     return str(args.command)
 
 
@@ -1696,12 +1699,76 @@ def parse_args() -> argparse.Namespace:
     )
     add_describe_wrappers_arguments(describe_wrappers)
 
+    compile_parser = subparsers.add_parser(
+        "compile",
+        help="Compile JSON Tables SQL into physical SQL without a session preprocessor.",
+    )
+    compile_subparsers = compile_parser.add_subparsers(dest="compile_command", required=True)
+    compile_install = compile_subparsers.add_parser(
+        "install",
+        help="Install or refresh COMPILE_SQL for the installed wrapper packages.",
+    )
+    add_compile_install_arguments(compile_install)
+    compile_run = compile_subparsers.add_parser(
+        "run",
+        help="Compile one statement and print the compile result.",
+    )
+    add_compile_run_arguments(compile_run)
+
     validate_parser = subparsers.add_parser(
         "validate",
         help="Convenience alias for wrapper package validation.",
     )
     add_wrap_validate_arguments(validate_parser)
     return parser.parse_args()
+
+
+def add_compile_common_arguments(parser: argparse.ArgumentParser) -> None:
+    wrapper_package_tool.add_connection_arguments(parser)
+    parser.add_argument(
+        "--schema",
+        default=compile_sql_tool.DEFAULT_COMPILE_SCHEMA,
+        help=f"Schema holding the compile script. Default: {compile_sql_tool.DEFAULT_COMPILE_SCHEMA}.",
+    )
+    parser.add_argument(
+        "--script",
+        default=compile_sql_tool.DEFAULT_COMPILE_SCRIPT,
+        help=f"Compile script name. Default: {compile_sql_tool.DEFAULT_COMPILE_SCRIPT}.",
+    )
+    add_json_argument(parser)
+
+
+def add_compile_install_arguments(parser: argparse.ArgumentParser) -> None:
+    add_compile_common_arguments(parser)
+    parser.add_argument(
+        "--wrapper-schema",
+        action="append",
+        default=None,
+        dest="wrapper_schemas",
+        help=(
+            "Limit the compile script to this wrapper schema; repeatable. "
+            "Omit to serve every installed package, which is what allows one statement "
+            "to span two packages."
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Also write the generated compile script SQL to this path.",
+    )
+
+
+def add_compile_run_arguments(parser: argparse.ArgumentParser) -> None:
+    add_compile_common_arguments(parser)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--sql", default=None, help="The statement to compile.")
+    source.add_argument("--sql-file", type=Path, default=None, help="Read the statement from this file.")
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Run the compiled SQL and print its rows. Compilation alone changes nothing.",
+    )
 
 
 def command_ingest(args: argparse.Namespace) -> None:
@@ -2330,6 +2397,96 @@ def command_describe(args: argparse.Namespace) -> None:
         raise SystemExit(f"Unknown describe command: {args.describe_command}")
 
 
+def command_compile(args: argparse.Namespace) -> None:
+    con = connect_for_generation(
+        args.dsn,
+        args.user,
+        args.password,
+        validate_certificate=bool(getattr(args, "validate_server_certificate", False)),
+    )
+    try:
+        if args.compile_command == "install":
+            try:
+                sql_text, manifests = compile_sql_tool.generate_compile_sql_for_packages(
+                    con,
+                    schema=args.schema,
+                    script=args.script,
+                    wrapper_schemas=args.wrapper_schemas,
+                )
+            except ValueError as exc:
+                raise CliCommandError(
+                    code="COMPILE-NO-PACKAGES",
+                    message=str(exc),
+                    hint="Install a wrapper package first, then re-run compile install.",
+                ) from exc
+            compile_sql_tool.apply_compile_sql(con, sql_text, schema=args.schema)
+            packages = [
+                {"publicSchema": manifest["publicSchema"], "helperSchema": manifest["helperSchema"]}
+                for manifest in manifests
+            ]
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(sql_text)
+            if args.json:
+                _emit_json_summary(
+                    _json_success_payload(
+                        "compile install",
+                        compile={
+                            "schema": args.schema,
+                            "script": args.script,
+                            "callSql": _compile_call_sql(args),
+                            "packages": packages,
+                        },
+                        artifacts=[str(args.output)] if args.output is not None else [],
+                    )
+                )
+            else:
+                print(f"Installed {args.schema}.{args.script} for {len(packages)} package(s):")
+                for package in packages:
+                    print(f"  {package['publicSchema']} -> {package['helperSchema']}")
+                if args.output is not None:
+                    print(f"Wrote {args.output}")
+                print("Call it with:")
+                print(f"  {_compile_call_sql(args)}")
+                print("No session preprocessor is needed, so one statement may span these packages.")
+            return
+
+        statement = args.sql if args.sql is not None else args.sql_file.read_text()
+        result = compile_sql_tool.compile_sql(con, statement, schema=args.schema, script=args.script)
+        rows = None
+        if args.execute and result["STATUS"] == "OK":
+            rows = con.execute(str(result["GENERATED_SQL"])).fetchall()
+    finally:
+        con.close()
+
+    if args.json:
+        _emit_json_summary(
+            _json_success_payload(
+                "compile run",
+                compile={key: result[key] for key in compile_sql_tool.COMPILE_RESULT_COLUMNS},
+                rows=rows,
+            )
+        )
+        return
+    print(f"STATUS: {result['STATUS']}")
+    if result["STATUS"] == "OK":
+        print(f"PLAN_JSON: {result['PLAN_JSON']}")
+        print("GENERATED_SQL:")
+        print(result["GENERATED_SQL"])
+        if rows is not None:
+            print("Rows:")
+            for row in rows:
+                print(f"  {row}")
+    else:
+        print(f"ERROR_CODE: {result['ERROR_CODE']}")
+        print(f"ERROR_MESSAGE: {result['ERROR_MESSAGE']}")
+        print(f"CLARIFICATION_JSON: {result['CLARIFICATION_JSON']}")
+
+
+def _compile_call_sql(args: argparse.Namespace) -> str:
+    return f"EXECUTE SCRIPT {args.schema}.{args.script}('<your statement>');"
+
+
 def main() -> None:
     wants_json = "--json" in sys.argv[1:]
     try:
@@ -2358,6 +2515,8 @@ def main() -> None:
             command_structured_results(args)
         elif args.command == "describe":
             command_describe(args)
+        elif args.command == "compile":
+            command_compile(args)
         elif args.command == "validate":
             command_validate(args)
         else:  # pragma: no cover - defensive

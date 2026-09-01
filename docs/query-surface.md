@@ -32,6 +32,52 @@ rows = stmt.fetchall()
 
 If you want `export_to_pandas()`, first publish an ordinary view or table with explicit casts and SQL-safe aliases, then export that durable object. See [python-dataframes.md](python-dataframes.md).
 
+### Without A Session Preprocessor: `COMPILE_SQL`
+
+The rewrite is a pure function of the statement text and the package metadata, so it is
+also reachable as an ordinary script. `COMPILE_SQL` takes JSON Tables SQL and returns
+physical SQL — no `ALTER SESSION`, nothing to activate, nothing to contend for:
+
+```sql
+EXECUTE SCRIPT JVS_COMPILE.COMPILE_SQL('SELECT "meta.info.note" FROM JSON_VIEW.SAMPLE');
+```
+
+It returns one row:
+
+| Column | Meaning |
+| --- | --- |
+| `STATUS` | `OK` or `ERROR` |
+| `ERROR_CODE` | the `JVS-…-ERROR` code, or NULL |
+| `ERROR_MESSAGE` | the message without the code prefix, or NULL |
+| `ORIGINAL_SQL` | the statement as given |
+| `GENERATED_SQL` | the physical SQL to run, or NULL on error |
+| `PLAN_JSON` | whether anything was rewritten, and which packages the statement reached |
+| `CLARIFICATION_JSON` | a refusal as data: `code`, `message`, the offending `path` when there is one, and the configured schemas |
+
+Run the returned `GENERATED_SQL` in any session. Compile once per statement edit, not per
+fetch: the compiled SQL serves the scroll, the refresh and the chart queries unchanged.
+
+Install or refresh it with:
+
+```bash
+exasol-json-tables compile install
+exasol-json-tables compile run --sql 'SELECT "tags[FIRST]" FROM JSON_VIEW.SAMPLE' --execute
+```
+
+`compile install` with no `--wrapper-schema` serves **every installed package**, so one
+statement may join two of them — see [Several wrappers in one session](#several-wrappers-in-one-session).
+Because the package metadata is baked into the script, re-run `compile install` after
+installing or regenerating any package.
+
+Two things it is deliberately not:
+
+- It does not validate that the statement runs. A compile is a rewrite, so a `STATUS` of
+  `OK` still leaves ordinary SQL errors — a mistyped table, a type mismatch — to the
+  statement itself.
+- `PLAN_JSON` names the packages the statement referenced, matched by schema name over
+  the text. It is provenance for a reader, not an access decision, and it does not yet
+  list the individual physical tables.
+
 ### Several wrappers in one session
 
 Exasol permits one active SQL preprocessor per session, but a generated JSON
@@ -58,6 +104,10 @@ that one script on every connection. The target preprocessor schema must already
 contain `JVS_PREPROCESSOR_LIB`; installing either wrapper with that same
 preprocessor schema creates it. Regenerate the combined script when an included
 wrapper changes.
+
+`COMPILE_SQL` is the lower-maintenance route to the same thing: `compile install` with no
+`--wrapper-schema` builds one entry point from every installed package, and there is no
+session to activate and no combined script to keep in step by hand.
 
 ## Identifier Discipline
 

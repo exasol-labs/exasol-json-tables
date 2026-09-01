@@ -15,12 +15,16 @@ from .generate_json_export_views_sql import (
     json_export_view_name,
 )
 from .generate_preprocessor_sql import (
+    DEFAULT_PREPROCESSOR_LIBRARY_SCRIPT,
     WrapperGroupConfig,
     WrapperToJsonConfig,
     WrapperVisibleColumnConfig,
+    build_preprocessor_config,
+    render_compile_script_sql,
     render_sql,
     validate_identifier,
 )
+from .provenance import CONTRACT_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -409,6 +413,157 @@ def _add_helper_kind(mapping: dict[str, str], function_name: str, helper_kind: s
     mapping[function_name] = helper_kind
 
 
+def _build_wrapper_rewrite_inputs(
+    *,
+    wrapper_schemas: list[str] | None,
+    helper_schemas: list[str] | None,
+    manifests: list[dict] | None,
+    function_names: list[str] | None,
+    variant_typeof_function_names: list[str] | None,
+    variant_varchar_function_names: list[str] | None,
+    variant_decimal_function_names: list[str] | None,
+    variant_boolean_function_names: list[str] | None,
+    to_json_function_names: list[str] | None,
+    blocked_helper_names: list[str] | None,
+) -> dict[str, object]:
+    """Everything the rewriter needs, independent of how it is reached.
+
+    The preprocessor and the compile script are two front ends onto the same rewrite, so
+    they derive their configuration here rather than twice.
+    """
+    normalized_wrapper_schemas, normalized_helper_schemas = _normalize_wrapper_config(wrapper_schemas, helper_schemas)
+    if manifests is None:
+        raise SystemExit("Wrapper semantic helper generation requires manifest data.")
+    normalized_function_names = [
+        validate_identifier("Function name", value)
+        for value in (function_names or DEFAULT_EXPLICIT_NULL_FUNCTION_NAMES)
+    ]
+    kinds_by_names = [
+        ("explicit_null", normalized_function_names),
+        (
+            "variant_typeof",
+            [
+                validate_identifier("Variant typeof function name", value)
+                for value in (variant_typeof_function_names or DEFAULT_VARIANT_TYPEOF_FUNCTION_NAMES)
+            ],
+        ),
+        (
+            "variant_as_varchar",
+            [
+                validate_identifier("Variant VARCHAR function name", value)
+                for value in (variant_varchar_function_names or DEFAULT_VARIANT_VARCHAR_FUNCTION_NAMES)
+            ],
+        ),
+        (
+            "variant_as_decimal",
+            [
+                validate_identifier("Variant DECIMAL function name", value)
+                for value in (variant_decimal_function_names or DEFAULT_VARIANT_DECIMAL_FUNCTION_NAMES)
+            ],
+        ),
+        (
+            "variant_as_boolean",
+            [
+                validate_identifier("Variant BOOLEAN function name", value)
+                for value in (variant_boolean_function_names or DEFAULT_VARIANT_BOOLEAN_FUNCTION_NAMES)
+            ],
+        ),
+        (
+            "to_json",
+            [
+                validate_identifier("TO_JSON function name", value)
+                for value in (to_json_function_names or DEFAULT_TO_JSON_FUNCTION_NAMES)
+            ],
+        ),
+    ]
+    helper_function_kinds: dict[str, str] = {}
+    for helper_kind, names in kinds_by_names:
+        for function_name in names:
+            _add_helper_kind(helper_function_kinds, function_name, helper_kind)
+    return {
+        "wrapper_schemas": normalized_wrapper_schemas,
+        "helper_schemas": normalized_helper_schemas,
+        "helper_schema_map": {
+            wrapper_schema: helper_schema
+            for wrapper_schema, helper_schema in zip(normalized_wrapper_schemas, normalized_helper_schemas)
+        },
+        "group_config": _build_group_config(manifests),
+        "visible_column_config": _build_visible_column_config(manifests),
+        "to_json_config": _build_to_json_config(manifests),
+        "helper_function_kinds": helper_function_kinds,
+        "blocked_helper_names": [
+            validate_identifier("Blocked helper name", value)
+            for value in (blocked_helper_names or [])
+        ],
+        "regular_to_json_row_object_function": helper_names(
+            normalized_helper_schemas[0]
+        ).json_object_from_name_value_pairs,
+    }
+
+
+def generate_wrapper_compile_sql_text(
+    *,
+    schema: str = "JVS_WRAP_PP",
+    script: str = "COMPILE_SQL",
+    wrapper_schemas: list[str] | None = None,
+    helper_schemas: list[str] | None = None,
+    manifests: list[dict] | None = None,
+    function_names: list[str] | None = None,
+    variant_typeof_function_names: list[str] | None = None,
+    variant_varchar_function_names: list[str] | None = None,
+    variant_decimal_function_names: list[str] | None = None,
+    variant_boolean_function_names: list[str] | None = None,
+    to_json_function_names: list[str] | None = None,
+    blocked_helper_names: list[str] | None = None,
+    blocked_helper_message: str = "This helper is not available on the wrapper surface yet.",
+    library_script: str = DEFAULT_PREPROCESSOR_LIBRARY_SCRIPT,
+) -> str:
+    """Generate `COMPILE_SQL` for the given packages.
+
+    Pass every installed package to get one compile entry point for the whole database:
+    a statement may then span two packages, which one session preprocessor cannot do.
+    """
+    inputs = _build_wrapper_rewrite_inputs(
+        wrapper_schemas=wrapper_schemas,
+        helper_schemas=helper_schemas,
+        manifests=manifests,
+        function_names=function_names,
+        variant_typeof_function_names=variant_typeof_function_names,
+        variant_varchar_function_names=variant_varchar_function_names,
+        variant_decimal_function_names=variant_decimal_function_names,
+        variant_boolean_function_names=variant_boolean_function_names,
+        to_json_function_names=to_json_function_names,
+        blocked_helper_names=blocked_helper_names,
+    )
+    allowed_schemas = list(inputs["wrapper_schemas"])
+    config = build_preprocessor_config(
+        function_names=list(inputs["helper_function_kinds"].keys()),
+        blocked_function_names=list(inputs["blocked_helper_names"]),
+        blocked_function_message=blocked_helper_message,
+        allowed_schemas=allowed_schemas,
+        helper_schema_map=dict(inputs["helper_schema_map"]),
+        wrapper_group_config=inputs["group_config"],
+        wrapper_visible_column_config=inputs["visible_column_config"],
+        wrapper_to_json_config=inputs["to_json_config"],
+        regular_to_json_row_object_function=str(inputs["regular_to_json_row_object_function"]),
+        rewrite_path_identifiers=True,
+        helper_function_kinds=dict(inputs["helper_function_kinds"]),
+    )
+    packages = [
+        {"publicSchema": wrapper_schema, "helperSchema": inputs["helper_schema_map"][wrapper_schema]}
+        for wrapper_schema in allowed_schemas
+    ]
+    return render_compile_script_sql(
+        schema,
+        script,
+        config=config,
+        packages=packages,
+        allowed_schemas=allowed_schemas,
+        contract_version=CONTRACT_VERSION,
+        library_script=library_script,
+    )
+
+
 def generate_wrapper_preprocessor_sql_text(
     *,
     schema: str = "JVS_WRAP_PP",
@@ -428,70 +583,31 @@ def generate_wrapper_preprocessor_sql_text(
 ) -> str:
     normalized_schema = validate_identifier("Schema", schema)
     normalized_script = validate_identifier("Script name", script)
-    normalized_wrapper_schemas, normalized_helper_schemas = _normalize_wrapper_config(wrapper_schemas, helper_schemas)
-    if manifests is None:
-        raise SystemExit("Wrapper semantic helper generation requires manifest data.")
-    group_config = _build_group_config(manifests)
-    visible_column_config = _build_visible_column_config(manifests)
-    to_json_config = _build_to_json_config(manifests)
-    normalized_function_names = [
-        validate_identifier("Function name", value)
-        for value in (function_names or DEFAULT_EXPLICIT_NULL_FUNCTION_NAMES)
-    ]
-    normalized_variant_typeof_function_names = [
-        validate_identifier("Variant typeof function name", value)
-        for value in (variant_typeof_function_names or DEFAULT_VARIANT_TYPEOF_FUNCTION_NAMES)
-    ]
-    normalized_variant_varchar_function_names = [
-        validate_identifier("Variant VARCHAR function name", value)
-        for value in (variant_varchar_function_names or DEFAULT_VARIANT_VARCHAR_FUNCTION_NAMES)
-    ]
-    normalized_variant_decimal_function_names = [
-        validate_identifier("Variant DECIMAL function name", value)
-        for value in (variant_decimal_function_names or DEFAULT_VARIANT_DECIMAL_FUNCTION_NAMES)
-    ]
-    normalized_variant_boolean_function_names = [
-        validate_identifier("Variant BOOLEAN function name", value)
-        for value in (variant_boolean_function_names or DEFAULT_VARIANT_BOOLEAN_FUNCTION_NAMES)
-    ]
-    normalized_to_json_function_names = [
-        validate_identifier("TO_JSON function name", value)
-        for value in (to_json_function_names or DEFAULT_TO_JSON_FUNCTION_NAMES)
-    ]
-    helper_function_kinds: dict[str, str] = {}
-    for function_name in normalized_function_names:
-        _add_helper_kind(helper_function_kinds, function_name, "explicit_null")
-    for function_name in normalized_variant_typeof_function_names:
-        _add_helper_kind(helper_function_kinds, function_name, "variant_typeof")
-    for function_name in normalized_variant_varchar_function_names:
-        _add_helper_kind(helper_function_kinds, function_name, "variant_as_varchar")
-    for function_name in normalized_variant_decimal_function_names:
-        _add_helper_kind(helper_function_kinds, function_name, "variant_as_decimal")
-    for function_name in normalized_variant_boolean_function_names:
-        _add_helper_kind(helper_function_kinds, function_name, "variant_as_boolean")
-    for function_name in normalized_to_json_function_names:
-        _add_helper_kind(helper_function_kinds, function_name, "to_json")
-    normalized_blocked_helpers = [
-        validate_identifier("Blocked helper name", value)
-        for value in (blocked_helper_names or [])
-    ]
-    helper_schema_map = {
-        wrapper_schema: helper_schema
-        for wrapper_schema, helper_schema in zip(normalized_wrapper_schemas, normalized_helper_schemas)
-    }
-    regular_to_json_row_object_function = helper_names(normalized_helper_schemas[0]).json_object_from_name_value_pairs
+    inputs = _build_wrapper_rewrite_inputs(
+        wrapper_schemas=wrapper_schemas,
+        helper_schemas=helper_schemas,
+        manifests=manifests,
+        function_names=function_names,
+        variant_typeof_function_names=variant_typeof_function_names,
+        variant_varchar_function_names=variant_varchar_function_names,
+        variant_decimal_function_names=variant_decimal_function_names,
+        variant_boolean_function_names=variant_boolean_function_names,
+        to_json_function_names=to_json_function_names,
+        blocked_helper_names=blocked_helper_names,
+    )
+    helper_function_kinds = dict(inputs["helper_function_kinds"])
     return render_sql(
         normalized_schema,
         normalized_script,
         list(helper_function_kinds.keys()),
-        normalized_blocked_helpers,
+        list(inputs["blocked_helper_names"]),
         blocked_helper_message,
-        normalized_wrapper_schemas,
-        helper_schema_map,
-        group_config,
-        visible_column_config,
-        to_json_config,
-        regular_to_json_row_object_function,
+        list(inputs["wrapper_schemas"]),
+        dict(inputs["helper_schema_map"]),
+        inputs["group_config"],
+        inputs["visible_column_config"],
+        inputs["to_json_config"],
+        str(inputs["regular_to_json_row_object_function"]),
         True,
         activate_session,
         helper_function_kinds,

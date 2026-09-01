@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from pathlib import Path
 
@@ -138,6 +139,36 @@ def render_lua_value(value: object, indent: int = 0) -> str:
 
 def render_lua_string_table(mapping: dict[str, object], indent: int = 0) -> str:
     return render_lua_value(mapping, indent)
+
+
+def build_preprocessor_config(
+    *,
+    function_names: list[str],
+    blocked_function_names: list[str],
+    blocked_function_message: str,
+    allowed_schemas: list[str],
+    helper_schema_map: dict[str, str],
+    wrapper_group_config: WrapperGroupConfig | None,
+    wrapper_visible_column_config: WrapperVisibleColumnConfig | None,
+    wrapper_to_json_config: WrapperToJsonConfig | None,
+    regular_to_json_row_object_function: str | None,
+    rewrite_path_identifiers: bool,
+    helper_function_kinds: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """The CONFIG table both the preprocessor and the compile script are built around."""
+    return _build_preprocessor_config(
+        function_names=function_names,
+        blocked_function_names=blocked_function_names,
+        blocked_function_message=blocked_function_message,
+        allowed_schemas=allowed_schemas,
+        helper_schema_map=helper_schema_map,
+        wrapper_group_config=wrapper_group_config,
+        wrapper_visible_column_config=wrapper_visible_column_config,
+        wrapper_to_json_config=wrapper_to_json_config,
+        regular_to_json_row_object_function=regular_to_json_row_object_function,
+        rewrite_path_identifiers=rewrite_path_identifiers,
+        helper_function_kinds=helper_function_kinds,
+    )
 
 
 def _build_preprocessor_config(
@@ -4351,6 +4382,146 @@ DISABLED_MODE_LUA = """
     local function rewrite_path_identifiers_in_sql(sqltext)
         return sqltext
     end
+"""
+
+
+#: The result contract of the compile entry point. `STATUS` is `OK` or `ERROR`;
+#: `GENERATED_SQL` is the physical SQL to run; `CLARIFICATION_JSON` is the structured
+#: form of a refusal, so a caller can react before executing anything. The semantic
+#: layer's `VALIDATION_RUN_ID` and `AGENT_REQUEST_ID` have no analogue here and are
+#: deliberately absent rather than always NULL.
+COMPILE_SCRIPT_COLUMNS = (
+    "STATUS VARCHAR(20), "
+    "ERROR_CODE VARCHAR(40), "
+    "ERROR_MESSAGE VARCHAR(2000000), "
+    "ORIGINAL_SQL VARCHAR(2000000), "
+    "GENERATED_SQL VARCHAR(2000000), "
+    "PLAN_JSON VARCHAR(2000000), "
+    "CLARIFICATION_JSON VARCHAR(2000000)"
+)
+
+COMPILE_SCRIPT_LUA = r"""
+    local function json_escape(value)
+        local out = string.gsub(tostring(value), "\\", "\\\\")
+        out = string.gsub(out, '"', '\\"')
+        out = string.gsub(out, "\n", "\\n")
+        out = string.gsub(out, "\r", "\\r")
+        out = string.gsub(out, "\t", "\\t")
+        return out
+    end
+
+    local function json_string(value)
+        return '"' .. json_escape(value) .. '"'
+    end
+
+    local original_sql = input_sql
+    if original_sql == nil then
+        original_sql = ''
+    end
+
+    -- The rewriter is a pure function of (text, config), which is what makes a compile
+    -- entry point possible at all: no session state, and the caller runs the result.
+    local ok, result = pcall(JVS_PREPROCESSOR_LIB.rewrite, original_sql, CONFIG)
+
+    local row = {}
+    if ok then
+        row[1] = 'OK'
+        row[5] = result
+    else
+        local text = tostring(result)
+        local code, message = string.match(text, '(JVS%-[A-Z_]+%-ERROR): (.*)$')
+        if code == nil then
+            code = 'JVS-COMPILE-ERROR'
+            message = text
+        end
+        -- The path errors lead with the offending path, so a caller can point at it
+        -- instead of re-parsing the sentence.
+        local path = string.match(message, '^"([^"]*)":')
+        local clarification = '{"code":' .. json_string(code)
+                .. ',"message":' .. json_string(message)
+        if path ~= nil then
+            clarification = clarification .. ',"path":' .. json_string(path)
+        end
+        clarification = clarification .. ',"allowedSchemas":' .. ALLOWED_SCHEMAS_JSON .. '}'
+        row[1] = 'ERROR'
+        row[2] = code
+        row[3] = message
+        row[7] = clarification
+    end
+    row[4] = original_sql
+
+    -- Which packages this statement actually reached, rather than every package the
+    -- script was built for: with one compile entry point per database that list would
+    -- otherwise drown the answer. Matched by name over the statement text, so treat it
+    -- as provenance for a reader, not as an access decision.
+    local haystack = string.upper(original_sql .. ' ' .. tostring(row[5] or ''))
+    local referenced = {}
+    for _, package in ipairs(PACKAGES) do
+        if string.find(haystack, package.publicSchema, 1, true) ~= nil
+                or string.find(haystack, package.helperSchema, 1, true) ~= nil then
+            referenced[#referenced + 1] = '{"publicSchema":' .. json_string(package.publicSchema)
+                    .. ',"helperSchema":' .. json_string(package.helperSchema) .. '}'
+        end
+    end
+    row[6] = '{"tool":"exasol-json-tables","contractVersion":' .. CONTRACT_VERSION
+            .. ',"rewritten":' .. tostring(row[5] ~= nil and row[5] ~= original_sql)
+            .. ',"packageCount":' .. tostring(#PACKAGES)
+            .. ',"referencedPackages":[' .. table.concat(referenced, ',') .. ']}'
+
+    exit({row}, COLUMNS)
+"""
+
+
+def render_compile_script_sql(
+    schema: str,
+    script: str,
+    *,
+    config: dict[str, object],
+    packages: list[dict[str, str]],
+    allowed_schemas: list[str],
+    contract_version: int,
+    library_script: str = DEFAULT_PREPROCESSOR_LIBRARY_SCRIPT,
+) -> str:
+    """Render `COMPILE_SQL`: text in, physical SQL out, no session state.
+
+    The same rewriter the preprocessor runs, reached as an ordinary script instead of
+    through `ALTER SESSION`. That matters for callers that cannot set a preprocessor at
+    all, for callers that must not fight another project for the one session slot, and
+    for statements spanning two wrapper packages -- which one preprocessor per session
+    cannot express, but a compile whose config covers both packages can.
+    """
+    validated_schema = validate_identifier("Schema", schema)
+    validated_script = validate_identifier("Script name", script)
+    validated_library_script = validate_identifier("Library script", library_script)
+    config_lua = render_lua_string_table(config, 4)
+    packages_lua = render_lua_value(packages, 4)
+    allowed_schemas_json = json.dumps(allowed_schemas, separators=(",", ":"))
+    package_comment = ", ".join(
+        f"{package['publicSchema']}->{package['helperSchema']}" for package in packages
+    ) or "(none)"
+
+    return f"""-- Generated by tools/generate_preprocessor_sql.py
+-- Compiles JSON Tables SQL into physical Exasol SQL without any session state.
+-- Packages served: {package_comment}
+-- Result columns: {COMPILE_SCRIPT_COLUMNS}
+-- Imported library script: {validated_schema}.{validated_library_script}
+
+CREATE SCHEMA IF NOT EXISTS {validated_schema};
+
+CREATE OR REPLACE LUA SCRIPT {validated_schema}.{validated_script} (input_sql) RETURNS TABLE AS
+    exa.import("{validated_schema}.{validated_library_script}", "JVS_PREPROCESSOR_LIB")
+    local CONFIG = {config_lua}
+    local COLUMNS = {lua_quote_string(COMPILE_SCRIPT_COLUMNS)}
+    local PACKAGES = {packages_lua}
+    local ALLOWED_SCHEMAS_JSON = {lua_quote_string(allowed_schemas_json)}
+    local CONTRACT_VERSION = {int(contract_version)}
+{COMPILE_SCRIPT_LUA}
+/
+
+-- Example:
+-- EXECUTE SCRIPT {validated_schema}.{validated_script}(
+--     'SELECT "location.region" FROM {allowed_schemas[0] if allowed_schemas else "JSON_VIEW"}."device_telemetry"'
+-- );
 """
 
 
