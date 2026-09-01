@@ -61,9 +61,11 @@ The JSON summary includes:
 - `artifacts`
   Package config and generated file paths
 - `objects`
-  Source, wrapper, helper, and preprocessor names
+  Source, wrapper, helper, flat, and preprocessor names
 - `nextActions`
-  `activationSql` and `smokeTestSql`
+  `activationSql` and `smokeTestSql` for the wrapper surface, plus `flatSchema`,
+  `flatViews`, `flatSmokeTestSql`, and `joinKeys` for the preprocessor-free
+  flattened surface
 - `wrapper`
   The detailed wrapper package summary
 - `validation`
@@ -74,6 +76,11 @@ reports `existingSchemas`; a replacement reports the schemas found in
 `replacedSchemas`.
 
 For wrapper-installing workflows, `objects.publicViews`, `nextActions.publicViews`, and `wrapper.publicViews` expose the actual public view names created inside the wrapper schema. `--name` controls the derived schema/package names, not the public view names themselves.
+
+`nextActions.joinKeys` reports the join columns between the generated flattened
+views, derived from the same relationships the ingest layer records in
+`<name>.source_manifest.json`. Automation should read those instead of inferring
+join keys from column names.
 
 ### `validate --json`
 
@@ -177,6 +184,11 @@ Automation should treat `nextActions.activationSql` as required setup before usi
 - rowset iterators
 - JSON helper functions
 - recursive `TO_JSON(*)` on wrapped roots
+
+If the consumer cannot set session state, use the flattened views in
+`nextActions.flatSchema` instead. They are plain SQL with UPPERCASE
+unquoted-safe columns and need no activation. See
+[flat-views.md](flat-views.md).
 
 ## Failure Envelopes
 

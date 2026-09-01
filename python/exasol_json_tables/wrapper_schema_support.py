@@ -69,6 +69,10 @@ class WrapperArtifacts:
     public_schema: str
     helper_schema: str
     root_tables: list[str]
+    source_schema: str = ""
+    table_models: dict[str, "TableModel"] = field(default_factory=dict)
+    relationships: list["Relationship"] = field(default_factory=list)
+    root_by_table: dict[str, str] = field(default_factory=dict)
 
 
 def connect_for_generation(
@@ -841,6 +845,10 @@ def generate_wrapper_artifacts_from_source_columns(
         public_schema=public_schema,
         helper_schema=helper_schema,
         root_tables=root_tables,
+        source_schema=source_schema,
+        table_models=table_models,
+        relationships=relationships,
+        root_by_table=root_by_table,
     )
 
 

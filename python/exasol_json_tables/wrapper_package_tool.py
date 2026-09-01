@@ -7,6 +7,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .generate_flat_views_sql import (
+    FlatSurface,
+    build_join_key_lines,
+    default_flat_schema,
+    generate_flat_surface,
+)
 from .generate_json_export_helper_sql import (
     JSON_ARRAY_FROM_JSON_SORTED_SCRIPT,
     JSON_OBJECT_FROM_FRAGMENTS_SCRIPT,
@@ -39,7 +45,7 @@ from .result_family_materializer import (
     result_family_spec_to_dict,
     validate_result_family_spec,
 )
-from .wrapper_schema_support import ROOT, connect_for_generation, generate_wrapper_artifacts
+from .wrapper_schema_support import ROOT, WrapperArtifacts, connect_for_generation, generate_wrapper_artifacts
 from .wrapper_schema_support import generate_wrapper_artifacts_from_source_manifest
 
 
@@ -120,6 +126,11 @@ def parse_args() -> argparse.Namespace:
         "--skip-views",
         action="store_true",
         help="Do not install the wrapper views/helper schema SQL.",
+    )
+    install_parser.add_argument(
+        "--skip-flat-views",
+        action="store_true",
+        help="Do not install the preprocessor-free flattened views.",
     )
     install_parser.add_argument(
         "--skip-source-family",
@@ -230,6 +241,21 @@ def add_generation_arguments(parser: argparse.ArgumentParser) -> None:
         help="Generated internal helper schema. Default: <wrapper-schema>_INTERNAL.",
     )
     parser.add_argument(
+        "--flat-schema",
+        default=None,
+        help=(
+            "Schema for the preprocessor-free flattened views. "
+            "Default: <wrapper-schema without a trailing _VIEW>_FLAT."
+        ),
+    )
+    parser.add_argument(
+        "--no-flat-views",
+        dest="flat_views",
+        action="store_false",
+        default=True,
+        help="Do not generate the preprocessor-free flattened views.",
+    )
+    parser.add_argument(
         "--preprocessor-schema",
         default="JVS_WRAP_PP",
         help="Schema that will own the generated wrapper preprocessor script.",
@@ -338,6 +364,7 @@ def build_package_paths(output_dir: Path, package_name: str) -> dict[str, Path]:
         raise SystemExit("Package name must not be empty.")
     return {
         "viewsSql": output_dir / f"{package_name}_views.sql",
+        "flatViewsSql": output_dir / f"{package_name}_flat_views.sql",
         "manifest": output_dir / f"{package_name}_manifest.json",
         "preprocessorLibrarySql": output_dir / f"{package_name}_preprocessor_library.sql",
         "preprocessorSql": output_dir / f"{package_name}_preprocessor.sql",
@@ -384,6 +411,18 @@ def package_config_from_args(args: argparse.Namespace, paths: dict[str, Path]) -
     validate_distinct_schemas(source_schema, wrapper_schema, helper_schema)
     preprocessor_schema = validate_identifier("Preprocessor schema", args.preprocessor_schema)
     preprocessor_script = validate_identifier("Preprocessor script", args.preprocessor_script)
+    flat_views_enabled = bool(getattr(args, "flat_views", True))
+    flat_schema: str | None = None
+    if flat_views_enabled:
+        flat_schema = validate_identifier(
+            "Flat schema",
+            getattr(args, "flat_schema", None) or default_flat_schema(wrapper_schema),
+        )
+        if flat_schema in {source_schema, wrapper_schema, helper_schema, preprocessor_schema}:
+            raise SystemExit(
+                "Flat schema must differ from the source, wrapper, helper, and preprocessor schemas "
+                f"(got flat={flat_schema})."
+            )
 
     function_names = [
         validate_identifier("Function name", value)
@@ -421,6 +460,7 @@ def package_config_from_args(args: argparse.Namespace, paths: dict[str, Path]) -
         "sourceSchema": source_schema,
         "wrapperSchema": wrapper_schema,
         "helperSchema": helper_schema,
+        "flatSchema": flat_schema,
         "sourceManifest": (
             str(args.source_manifest.resolve())
             if getattr(args, "source_manifest", None) is not None
@@ -444,6 +484,11 @@ def package_config_from_args(args: argparse.Namespace, paths: dict[str, Path]) -
         },
         "generatedFiles": {
             "viewsSql": relative_path_text(paths["viewsSql"], base_dir=output_dir),
+            "flatViewsSql": (
+                relative_path_text(paths["flatViewsSql"], base_dir=output_dir)
+                if flat_schema is not None
+                else None
+            ),
             "manifest": relative_path_text(paths["manifest"], base_dir=output_dir),
             "preprocessorLibrarySql": relative_path_text(paths["preprocessorLibrarySql"], base_dir=output_dir),
             "preprocessorSql": relative_path_text(paths["preprocessorSql"], base_dir=output_dir),
@@ -499,6 +544,47 @@ def resolve_result_family_manifest_path(config_path: Path, config: dict[str, Any
     if not has_result_family(config):
         return None
     return resolve_configured_path(config_path, config["resultFamily"]["materializedFamilyManifest"]).resolve()
+
+
+def flat_schema_for_config(config: dict[str, Any]) -> str | None:
+    flat_schema = config.get("flatSchema")
+    return str(flat_schema) if flat_schema else None
+
+
+def resolve_flat_views_sql_path(config_path: Path, config: dict[str, Any]) -> Path | None:
+    if flat_schema_for_config(config) is None:
+        return None
+    relative_path = config.get("generatedFiles", {}).get("flatViewsSql")
+    if relative_path is None:
+        return None
+    return resolve_configured_path(config_path, relative_path).resolve()
+
+
+def flat_manifest_for_manifest(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    flat_surface = manifest.get("flatSurface")
+    if isinstance(flat_surface, dict):
+        return flat_surface
+    return None
+
+
+def build_flat_surface_for_artifacts(
+    config: dict[str, Any], artifacts: WrapperArtifacts
+) -> FlatSurface | None:
+    """Generate the preprocessor-free flat surface for a wrapper package.
+
+    Returns ``None`` when the package config has flat views turned off.
+    """
+    flat_schema = flat_schema_for_config(config)
+    if flat_schema is None:
+        return None
+    return generate_flat_surface(
+        source_schema=config["sourceSchema"],
+        flat_schema=flat_schema,
+        table_models=artifacts.table_models,
+        relationships=artifacts.relationships,
+        root_tables=artifacts.root_tables,
+        root_by_table=artifacts.root_by_table,
+    )
 
 
 def resolve_preprocessor_library_sql_path(config_path: Path, config: dict[str, Any]) -> Path | None:
@@ -791,10 +877,61 @@ def build_smoke_test_query(config: dict[str, Any], manifest: dict[str, Any]) -> 
     raise SystemExit("Manifest does not contain any root views for the wrapper package.")
 
 
-def print_install_next_steps(config: dict[str, Any], smoke_test_sql: str) -> None:
+def build_flat_smoke_test_query(flat_manifest: dict[str, Any]) -> str | None:
+    """A plain-SQL sample query against the flat surface, no activation needed."""
+    schema = str(flat_manifest["schema"])
+    for entity in flat_manifest["entities"]:
+        if entity["kind"] != "root":
+            continue
+        column_names = [str(column["name"]) for column in entity["columns"]][:5]
+        if not column_names:
+            continue
+        return f'SELECT {", ".join(column_names)} FROM {schema}.{entity["view"]} LIMIT 5;'
+    return None
+
+
+def print_flat_surface_next_steps(config: dict[str, Any], manifest: dict[str, Any]) -> None:
+    """Report the preprocessor-free surface and the join keys between its views.
+
+    The join keys come from the ingested table family (the same `relationships`
+    the ingest layer records in `<name>.source_manifest.json`). Printing them
+    here means nobody has to rediscover them by reading the manifest, or by
+    guessing from column names.
+    """
+    flat_manifest = flat_manifest_for_manifest(manifest)
+    if flat_manifest is None:
+        return
+    entities = flat_manifest["entities"]
+    if not entities:
+        return
+    schema = str(flat_manifest["schema"])
+    print()
+    print(f"Flattened views (plain SQL, no ALTER SESSION, UPPERCASE columns) in {schema}:")
+    for entity in entities:
+        label = "root documents" if entity["kind"] == "root" else f'array {entity["jsonPath"]}'
+        print(f'  {schema}.{entity["view"]}   ({label}, {len(entity["columns"])} columns)')
+    flat_smoke_test_sql = build_flat_smoke_test_query(flat_manifest)
+    if flat_smoke_test_sql is not None:
+        print(flat_smoke_test_sql)
+    join_key_lines = build_join_key_lines(flat_manifest)
+    if join_key_lines:
+        source_manifest = config.get("sourceManifest")
+        origin = f" (also in {source_manifest})" if source_manifest else ""
+        print(f"Join keys{origin}:")
+        for line in join_key_lines:
+            print(f"  {line}")
+
+
+def print_install_next_steps(
+    config: dict[str, Any],
+    smoke_test_sql: str,
+    manifest: dict[str, Any] | None = None,
+) -> None:
     print("Next steps:")
     print(build_activation_sql(config, include_semicolon=True))
     print(smoke_test_sql)
+    if manifest is not None:
+        print_flat_surface_next_steps(config, manifest)
 
 
 def print_activation_reminder(config: dict[str, Any], smoke_test_sql: str) -> None:
@@ -1001,9 +1138,12 @@ def validate_package_files(
     views_sql_path: Path,
     preprocessor_sql_path: Path,
     preprocessor_library_sql_path: Path | None = None,
+    flat_views_sql_path: Path | None = None,
 ) -> None:
     if not views_sql_path.exists():
         raise SystemExit(f"Wrapper views SQL file does not exist: {views_sql_path}")
+    if flat_views_sql_path is not None and not flat_views_sql_path.exists():
+        raise SystemExit(f"Flat views SQL file does not exist: {flat_views_sql_path}")
     if not manifest_path.exists():
         raise SystemExit(f"Manifest file does not exist: {manifest_path}")
     if not preprocessor_sql_path.exists():
@@ -1111,6 +1251,50 @@ def build_installed_metadata_summary(con, manifest: dict[str, Any]) -> dict[str,
     }
 
 
+def validate_installed_flat_surface(con, flat_manifest: dict[str, Any]) -> dict[str, Any]:
+    """Prove the flat surface works without any preprocessor activation.
+
+    The point of the flat surface is that a consumer which cannot set session
+    state can still use it, so this probe explicitly clears
+    `SQL_PREPROCESSOR_SCRIPT` and then queries a generated view using plain
+    unquoted UPPERCASE identifiers.
+    """
+    schema = str(flat_manifest["schema"])
+    expected_views = sorted(str(entity["view"]) for entity in flat_manifest["entities"])
+    present_views = sorted(
+        str(row[0])
+        for row in con.execute(
+            f"""
+            SELECT VIEW_NAME
+            FROM SYS.EXA_ALL_VIEWS
+            WHERE VIEW_SCHEMA = '{schema}'
+            """
+        ).fetchall()
+    )
+    missing_views = [view for view in expected_views if view not in present_views]
+    if missing_views:
+        raise SystemExit(f"Installed flat schema {schema} is missing expected views: {missing_views}")
+
+    probe_sql = build_flat_smoke_test_query(flat_manifest)
+    probe: dict[str, Any] | None = None
+    if probe_sql is not None:
+        con.execute("ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = NULL")
+        rows = con.execute(probe_sql).fetchall()
+        probe = {
+            "name": "flat-plain-sql",
+            "ok": True,
+            "sql": probe_sql,
+            "rowCount": len(rows),
+            "rowsPreview": json_safe_rows(rows),
+        }
+    return {
+        "schema": schema,
+        "activationRequired": False,
+        "views": expected_views,
+        "probe": probe,
+    }
+
+
 def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     wrapper_schema = config["wrapperSchema"]
     helper_schema = config["helperSchema"]
@@ -1158,6 +1342,9 @@ def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, 
     if missing_helper_scripts:
         raise SystemExit(f"Installed helper schema is missing expected JSON export scripts: {missing_helper_scripts}")
 
+    flat_manifest = flat_manifest_for_manifest(manifest)
+    flat_status = validate_installed_flat_surface(con, flat_manifest) if flat_manifest is not None else None
+
     capabilities = capability_status_template()
     executed_probes: list[dict[str, Any]] = []
     query_probes = build_installed_query_probes(config, manifest)
@@ -1200,6 +1387,7 @@ def validate_installed_package(con, config: dict[str, Any], manifest: dict[str, 
             "script": config["preprocessor"]["script"],
         },
         "roots": roots,
+        "flatSurface": flat_status,
         "metadata": metadata_summary,
         "capabilities": capabilities,
         "probes": executed_probes,
@@ -1233,6 +1421,7 @@ def build_validation_report(args: argparse.Namespace) -> tuple[dict[str, Any], d
     config = load_package_config(config_path)
     manifest_path = (args.manifest or resolve_configured_path(config_path, config["generatedFiles"]["manifest"])).resolve()
     views_sql_path = (args.views_sql or resolve_configured_path(config_path, config["generatedFiles"]["viewsSql"])).resolve()
+    flat_views_sql_path = resolve_flat_views_sql_path(config_path, config)
     preprocessor_library_sql_path = resolve_preprocessor_library_sql_path(config_path, config)
     preprocessor_sql_path = (
         args.preprocessor_sql or resolve_configured_path(config_path, config["generatedFiles"]["preprocessorSql"])
@@ -1244,6 +1433,7 @@ def build_validation_report(args: argparse.Namespace) -> tuple[dict[str, Any], d
         views_sql_path,
         preprocessor_sql_path,
         preprocessor_library_sql_path,
+        flat_views_sql_path,
     )
     manifest = load_manifest_and_validate(config, manifest_path)
     result_family_manifest_path = resolve_result_family_manifest_path(config_path, config)
@@ -1301,6 +1491,11 @@ def print_validation_report(config: dict[str, Any], manifest: dict[str, Any], re
         installed = report.get("installed")
         if installed is not None:
             executed_probe_labels = [probe["name"] for probe in installed["probes"]]
+            flat_status = installed.get("flatSurface")
+            if flat_status is not None and flat_status.get("probe") is not None:
+                executed_probe_labels.append(
+                    f'{flat_status["probe"]["name"]} (no activation)'
+                )
             if executed_probe_labels:
                 print("Validated installed query probes: " + ", ".join(executed_probe_labels))
         print_activation_reminder(config, build_smoke_test_query(config, manifest))
@@ -1336,12 +1531,18 @@ def command_generate(args: argparse.Namespace) -> None:
 
     paths["viewsSql"].parent.mkdir(parents=True, exist_ok=True)
     paths["viewsSql"].write_text(artifacts.sql)
+    flat_surface = build_flat_surface_for_artifacts(config, artifacts)
+    if flat_surface is not None:
+        artifacts.manifest["flatSurface"] = flat_surface.manifest
+        paths["flatViewsSql"].write_text(flat_surface.sql)
     write_json(paths["manifest"], artifacts.manifest)
     paths["preprocessorLibrarySql"].write_text(generate_preprocessor_library_from_package_config(config))
     paths["preprocessorSql"].write_text(generate_preprocessor_from_package_config(config, artifacts.manifest))
     write_json(paths["packageConfig"], config)
 
     print(f"Wrote {paths['viewsSql']}")
+    if flat_surface is not None:
+        print(f"Wrote {paths['flatViewsSql']}")
     print(f"Wrote {paths['manifest']}")
     print(f"Wrote {paths['preprocessorLibrarySql']}")
     print(f"Wrote {paths['preprocessorSql']}")
@@ -1382,6 +1583,10 @@ def command_generate_result_family_package(args: argparse.Namespace) -> None:
     write_json(paths["resultFamilyConfig"], result_family_spec_to_dict(result_family_spec))
     write_json(paths["resultFamilyManifest"], materialized_family_result_to_dict(materialized_family))
     paths["viewsSql"].write_text(artifacts.sql)
+    flat_surface = build_flat_surface_for_artifacts(config, artifacts)
+    if flat_surface is not None:
+        artifacts.manifest["flatSurface"] = flat_surface.manifest
+        paths["flatViewsSql"].write_text(flat_surface.sql)
     write_json(paths["manifest"], artifacts.manifest)
     paths["preprocessorLibrarySql"].write_text(generate_preprocessor_library_from_package_config(config))
     paths["preprocessorSql"].write_text(generate_preprocessor_from_package_config(config, artifacts.manifest))
@@ -1390,6 +1595,8 @@ def command_generate_result_family_package(args: argparse.Namespace) -> None:
     print(f"Wrote {paths['resultFamilyConfig']}")
     print(f"Wrote {paths['resultFamilyManifest']}")
     print(f"Wrote {paths['viewsSql']}")
+    if flat_surface is not None:
+        print(f"Wrote {paths['flatViewsSql']}")
     print(f"Wrote {paths['manifest']}")
     print(f"Wrote {paths['preprocessorLibrarySql']}")
     print(f"Wrote {paths['preprocessorSql']}")
@@ -1419,6 +1626,7 @@ def command_install(args: argparse.Namespace) -> None:
     config_path = args.package_config.resolve()
     config = load_package_config(config_path)
     views_sql_path = (args.views_sql or resolve_configured_path(config_path, config["generatedFiles"]["viewsSql"])).resolve()
+    flat_views_sql_path = resolve_flat_views_sql_path(config_path, config)
     preprocessor_library_sql_path = resolve_preprocessor_library_sql_path(config_path, config)
     preprocessor_sql_path = (
         args.preprocessor_sql or resolve_configured_path(config_path, config["generatedFiles"]["preprocessorSql"])
@@ -1431,6 +1639,7 @@ def command_install(args: argparse.Namespace) -> None:
         views_sql_path,
         preprocessor_sql_path,
         preprocessor_library_sql_path,
+        flat_views_sql_path,
     )
     manifest = load_manifest_and_validate(config, manifest_path)
     result_family_config_path = resolve_result_family_config_path(config_path, config)
@@ -1455,6 +1664,8 @@ def command_install(args: argparse.Namespace) -> None:
             )
         if not args.skip_views:
             execute_plain_sql_file(con, views_sql_path.read_text())
+        if flat_views_sql_path is not None and not getattr(args, "skip_flat_views", False):
+            execute_plain_sql_file(con, flat_views_sql_path.read_text())
         if not args.skip_preprocessor:
             install_json_export_helpers(con, config["helperSchema"])
             install_json_export_views(
@@ -1482,11 +1693,13 @@ def command_install(args: argparse.Namespace) -> None:
         print(f"Installed durable result family into source schema {config['sourceSchema']}")
     if not args.skip_views:
         print(f"Installed {views_sql_path}")
+    if flat_views_sql_path is not None and not getattr(args, "skip_flat_views", False):
+        print(f"Installed {flat_views_sql_path}")
     if not args.skip_preprocessor:
         if preprocessor_library_sql_path is not None:
             print(f"Installed {preprocessor_library_sql_path}")
         print(f"Installed {preprocessor_sql_path}")
-    print_install_next_steps(config, smoke_test_sql)
+    print_install_next_steps(config, smoke_test_sql, manifest)
     if args.activate_session:
         print("Activated preprocessor in the installer session and ran the smoke test.")
         print("Activation note: this activation is session-local and ends when the install command exits.")

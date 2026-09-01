@@ -6,6 +6,37 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+### Added
+
+- Added a preprocessor-free flattened view surface. Every wrapper package now
+  also generates one ordinary view per entity in a `_FLAT` schema, with
+  UPPERCASE column names that are safe to type unquoted, nested objects folded
+  into the owning entity, and arrays kept as separate views joined on plain
+  `PARENT_ID` / `ROW_ID` columns. Consumers that cannot run
+  `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = ...` -- BI tools, dashboard
+  servers, pooled connections, generated SQL -- can now query ingested
+  documents without hand-quoting source identifiers such as
+  `"dimensions|object"`. Control it with `--flat-schema` and `--no-flat-views`
+  on `wrap generate`, `ingest-and-wrap` and `structured-results package`, and
+  with `--skip-flat-views` on `wrap install` / `wrap deploy`.
+- Added a `flatSurface` block to the generated wrapper manifest, describing each
+  flattened view, its parent join key, and every column with the JSON path and
+  source columns it came from. `--json` runs also carry `objects.flatSchema`,
+  `objects.flatViews`, `nextActions.flatViews`, `nextActions.flatSmokeTestSql`
+  and `nextActions.joinKeys`.
+- Added JSON paths as column comments and a description as the view comment on
+  every flattened view, so the mapping is discoverable from the Exasol catalog.
+- Added an installed-package validation probe that queries a flattened view with
+  no preprocessor active, so `validate --check-installed` proves the
+  activation-free path really works.
+
+### Changed
+
+- `wrap install` "Next steps" output now also lists the flattened views and the
+  join keys between them. Those join keys come from the same relationships the
+  ingest layer records in `<name>.source_manifest.json`, which previously had to
+  be rediscovered by hand.
+
 ## [0.2] - 2026-08-19
 
 ### Added

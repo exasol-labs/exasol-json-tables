@@ -42,13 +42,18 @@ They are intentionally thin wrappers over the package modules, not a second impl
 
 ## Generated Artifacts
 
-The wrapper package generator produces four main artifacts:
+The wrapper package generator produces five main artifacts:
 
 - wrapper SQL
   Public root views plus helper schema objects.
 
+- flat views SQL
+  Preprocessor-free flattened views, one per entity, in their own schema.
+  Skipped when the package was generated with `--no-flat-views`.
+
 - manifest JSON
-  Machine-readable description of roots, tables, relationships, and folded column families.
+  Machine-readable description of roots, tables, relationships, folded column
+  families, and the flattened surface under `flatSurface`.
 
 - preprocessor SQL
   The scoped wrapper preprocessor.

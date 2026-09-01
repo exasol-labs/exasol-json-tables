@@ -22,6 +22,11 @@ ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSO
 
 Without that activation, the wrapper views still exist, but the extra JSON syntax sugar such as dotted paths and bracket access will not be rewritten.
 
+If the consumer cannot set session state at all, do not fall back to the raw
+source tables. Every wrapper package also installs preprocessor-free flattened
+views with UPPERCASE, unquoted-safe column names in a `_FLAT` schema. See
+[flat-views.md](flat-views.md).
+
 If you query wrapper views from Python via PyExasol, treat `execute()` plus `fetchall()` as the primary interface for wrapper-syntax queries. PyExasol implements `export_to_pandas()` through `EXPORT ... INTO CSV`. On the current stack, simple root-wrapper queries can work when the preprocessor is active, but iterator-heavy wrapper syntax is still unreliable there and often degrades into an opaque `EmptyDataError` / `ExaExportError` chain. For notebook work, execute the wrapper query directly and build the DataFrame yourself:
 
 ```python
@@ -99,7 +104,7 @@ If you instead publish lowercase quoted aliases such as `"doc_id"`, later SQL mu
 
 Also treat names such as `source`, `schema`, `value`, and `type` as risky durable aliases. They may work when quoted, but a safer default is a SQL-friendly alias such as `SOURCE_SITE`, `VALUE_TEXT`, or `EVENT_TYPE`.
 
-For a fuller set of conventions, see [identifier-conventions.md](identifier-conventions.md).
+For a fuller set of conventions, see [identifier-conventions.md](identifier-conventions.md). The generated flattened views already apply them; see [flat-views.md](flat-views.md).
 
 ## Supported Surface
 
@@ -383,6 +388,7 @@ JOIN JVS_DIM.DOC_FLAGS f
 
 ## Where To Go Next
 
+- Flattened views without a preprocessor: [flat-views.md](flat-views.md)
 - Installation and setup: [installation.md](installation.md)
 - Ingest details: [ingest.md](ingest.md)
 - Structured outputs: [structured-results.md](structured-results.md)

@@ -72,6 +72,13 @@ The maintained query surface is:
 
 Users query wrapper views, not raw source/helper tables.
 
+There is a second, additive surface next to it: preprocessor-free flattened
+views in a `_FLAT` schema, one per entity, with UPPERCASE unquoted-safe column
+names, nested objects folded in, and arrays joined on `PARENT_ID` = `ROW_ID`.
+That is the surface for consumers that cannot set session state. It never
+replaces the wrapper surface, and it does not carry JSON semantics such as
+missing vs explicit `null`. See `docs/flat-views.md`.
+
 The preprocessor is not optional sugar from a product perspective. It is part of the supported query surface.
 
 `TO_JSON(...)` is part of that supported surface. It is now the primary way users get final JSON back out of wrapper-root queries.
@@ -197,11 +204,19 @@ Run Nano-backed tests sequentially when they rebuild the same schemas.
 - When a user complains about quoting friction, first decide whether they need:
   - a wrapper query in the current session
   - or a durable published SQL object
+  - or the generated `_FLAT` views, when the consumer cannot run `ALTER SESSION` at all
   The fix is often alias strategy, not query-surface behavior.
+- Never send a consumer back to the raw `_SRC` tables to dodge activation. The
+  `_FLAT` views exist for that case, and `nextActions.joinKeys` in `--json`
+  output already gives the join columns.
 
 ## Current Boundaries
 
-- Preprocessor activation is session-local.
+- Preprocessor activation is session-local. The `_FLAT` views are the supported
+  answer when it is unavailable, at the cost of JSON-specific semantics.
+- Flattening is lossy by design: it drops the missing vs explicit `null`
+  distinction and cannot reconstruct documents. Colliding flattened names get a
+  deterministic `_2`, `_3`, ... suffix.
 - Derived-table roots are still a narrower surface than direct wrapper roots.
 - Joined wrapper-root `TO_JSON(*)` is not supported; use qualified top-level subsets instead.
 - `TO_JSON(alias.*)` is for ordinary tables/views, not the recursive wrapper-root path.
