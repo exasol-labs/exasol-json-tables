@@ -116,6 +116,8 @@ def test_unified_cli_ingest_wrap_validate_with_manifest_handoff() -> None:
             assert provenance_by_table["NESTED"]["tablePath"] == "root"
             assert provenance_by_table["NESTED"]["importedAt"].endswith("Z")
             assert provenance_by_table["NESTED"]["sourceModifiedAt"].endswith("Z")
+            for table_name, provenance in provenance_by_table.items():
+                assert provenance["contractVersion"] == 1, table_name
             assert provenance_by_table["NESTED_child"]["tablePath"] == "child"
 
             generate = subprocess.run(

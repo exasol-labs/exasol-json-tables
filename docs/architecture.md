@@ -203,6 +203,20 @@ Because arrays, objects, variants, and explicit nulls all have stable relational
 project can round-trip between JSON-shaped data and Exasol SQL without falling back to opaque JSON
 text as the primary storage model.
 
+### Contract Version
+
+Because consumers outside this repository parse the encoding themselves, the contract carries a
+version: `CONTRACT_VERSION` in
+[crates/json_tables_core/src/contract.rs](../crates/json_tables_core/src/contract.rs), stamped as
+`contractVersion` on every table's `COPY provenance {...}` comment (see
+[docs/ingest.md](ingest.md)).
+
+Bump it whenever the encoding a consumer parses changes shape — a new or renamed `|` marker, a
+different separator, a change to the structural columns, or a change to how objects, arrays,
+variants and null masks are named. Purely additive changes that leave existing names meaning what
+they meant do not need a bump. The point of the field is that a grammar change becomes a loud
+failure for a downstream reader instead of a silent misparse.
+
 ## Ingest Layer
 
 The ingest layer is three Rust crates: one normalisation core and two front ends.

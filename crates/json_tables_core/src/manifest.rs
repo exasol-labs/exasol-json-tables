@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use crate::contract::{
-    column_type_metadata, sanitize_ident, table_raw_name, PlannedTable, TablePath,
+    column_type_metadata, sanitize_ident, table_raw_name, PlannedTable, TablePath, CONTRACT_VERSION,
 };
 
 /// Where a loaded family came from. Stamped onto every table as a
@@ -40,6 +40,11 @@ impl<'a> Provenance<'a> {
 }
 
 /// One `(table_name, comment)` pair per planned table.
+///
+/// The comment carries the source locator, the connection kind, the import and source
+/// modification timestamps, the JSON path this table represents, and
+/// `contractVersion` — the [`CONTRACT_VERSION`] of the column encoding used, so a
+/// consumer can detect a grammar it does not know rather than misparse it.
 pub fn build_provenance_comments(
     plans: &[PlannedTable],
     stem: &str,
@@ -54,6 +59,7 @@ pub fn build_provenance_comments(
                 "importedAt": provenance.imported_at,
                 "tablePath": plan.path.to_string(),
                 "tool": "exasol-json-tables",
+                "contractVersion": CONTRACT_VERSION,
             });
             if let Some(modified_at) = provenance.source_modified_at {
                 fields["sourceModifiedAt"] = Value::String(modified_at.to_string());

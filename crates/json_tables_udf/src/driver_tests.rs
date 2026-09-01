@@ -220,6 +220,7 @@ fn provenance_records_the_original_source_not_the_landing_table() {
         "{comment}"
     );
     assert!(comment.contains("2026-09-01T10:00:00Z"), "{comment}");
+    assert!(comment.contains("\"contractVersion\":1"), "{comment}");
 }
 
 #[test]

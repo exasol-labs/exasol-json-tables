@@ -161,6 +161,10 @@ def test_ingest_manifest_can_drive_wrapper_generation() -> None:
                 ).fetchval()
                 assert source_comment == root_manifest_table["tableComment"]
                 assert wrapper_comment == source_comment
+                catalog_provenance = json.loads(
+                    source_comment.removeprefix("COPY provenance ")
+                )
+                assert catalog_provenance["contractVersion"] == 1
                 con.execute(
                     f'ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = "{PREPROCESSOR_SCHEMA}"."{PREPROCESSOR_SCRIPT}"'
                 )

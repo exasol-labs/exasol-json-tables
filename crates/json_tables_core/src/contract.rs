@@ -8,6 +8,19 @@ use std::fmt;
 
 use serde_json::Value;
 
+/// The version of the shared table contract this build writes.
+///
+/// Consumers read it from the `contractVersion` field of the `COPY provenance {...}`
+/// comment (see [`crate::manifest`]) and can refuse to parse a family they do not
+/// understand instead of silently misreading it.
+///
+/// Bump this whenever the encoding a consumer parses changes shape: a new or renamed
+/// `|` marker, a different separator, a change to the structural columns (`_id`,
+/// `_parent`, `_pos`) or to how objects, arrays, variants and null masks are named.
+/// Purely additive changes that leave existing names meaning what they meant do not
+/// need a bump.
+pub const CONTRACT_VERSION: u32 = 1;
+
 /// The scalar families the contract distinguishes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SimpleType {

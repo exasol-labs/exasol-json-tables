@@ -1254,6 +1254,7 @@ fn exasol_import_emits_catalog_provenance_comments() {
             && statement.contains(r#""importedAt":"2026-08-10T09:45:00Z""#)
             && statement.contains(r#""sourceModifiedAt":"2026-08-10T09:40:00Z""#)
             && statement.contains(r#""tablePath":"root""#)
+            && statement.contains(r#""contractVersion":1"#)
     }));
     assert!(statements.iter().any(|statement| {
         statement.starts_with("COMMENT ON TABLE \"NESTED_child\" IS 'COPY provenance ")

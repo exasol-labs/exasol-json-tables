@@ -77,9 +77,23 @@ cargo run --manifest-path crates/json_tables_ingest/Cargo.toml -- \
 When ingest writes copied tables into Exasol, it also stamps every table with a
 `COPY provenance {...}` comment. `SYS.EXA_ALL_TABLES.TABLE_COMMENT` therefore
 exposes the source file, the `local-file` source connection kind, the import
-timestamp, the source file modification timestamp when available, and the JSON
-path represented by each generated table. The comment intentionally excludes
-Exasol connection credentials.
+timestamp, the source file modification timestamp when available, the JSON
+path represented by each generated table, and the contract version. The comment
+intentionally excludes Exasol connection credentials.
+
+```json
+{"source":"/imports/orders.json","sourceConnection":"local-file",
+ "importedAt":"2026-09-01T10:00:00Z","tablePath":"root",
+ "tool":"exasol-json-tables","contractVersion":1,
+ "sourceModifiedAt":"2026-09-01T09:40:00Z"}
+```
+
+`contractVersion` is the version of the shared table contract — the `|` column
+grammar and the structural columns — that wrote the family. A consumer that
+parses column names should check it and refuse a version it does not know rather
+than misread the encoding; the value is bumped whenever a marker, separator or
+structural column changes meaning. See
+[The Shared Table Contract](architecture.md#the-shared-table-contract).
 
 When a wrapper package is generated from that source manifest, the root source
 table's comment is copied onto the public wrapper view. Consumers can therefore

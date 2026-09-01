@@ -36,7 +36,8 @@ def main() -> None:
         install_source_fixture(con, include_deep_fixture=True)
         live_source_comment = (
             'COPY provenance {"source":"live-generation.json","sourceConnection":"local-file",'
-            '"importedAt":"2026-08-11T08:00:00Z","tablePath":"root","tool":"exasol-json-tables"}'
+            '"importedAt":"2026-08-11T08:00:00Z","tablePath":"root","tool":"exasol-json-tables",'
+            '"contractVersion":1}'
         )
         con.execute(f"COMMENT ON TABLE JVS_SRC.SAMPLE IS '{live_source_comment}'")
         manifest = install_wrapper_views(
