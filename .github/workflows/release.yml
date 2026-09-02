@@ -1,0 +1,161 @@
+name: release
+
+# Builds the deployable artifacts for a tagged release and attaches them to it:
+# the ingest CLI, the in-database loader library, and the Python distributions.
+# Run it by hand with `tag` to rebuild the assets of an existing release.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and upload assets for (e.g. v0.3)."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  cli:
+    name: json_to_parquet (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x86_64
+          - os: macos-14
+            label: macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      # exarrow-rs pulls in aws-lc-sys, which builds C and assembly from source.
+      - name: Install build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake clang nasm
+
+      - name: Pin the toolchain
+        run: rustup update stable --no-self-update && rustup default stable
+
+      - name: Build
+        run: cargo build --release --locked --manifest-path crates/json_tables_ingest/Cargo.toml
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          staging="json_to_parquet-${TAG}-${{ matrix.label }}"
+          mkdir -p "out/${staging}"
+          cp crates/json_tables_ingest/target/release/json_to_parquet "out/${staging}/"
+          cp crates/json_tables_ingest/README.md "out/${staging}/README.md"
+          cp LICENSE "out/${staging}/"
+          tar -czf "out/${staging}.tar.gz" -C out "${staging}"
+          rm -rf "out/${staging}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.label }}
+          path: out/*.tar.gz
+          if-no-files-found: error
+
+  udf:
+    name: json_tables_udf (linux-x86_64)
+    runs-on: ubuntu-latest
+    # The loader is dlopened by the script language container, so it has to link
+    # against that container's glibc. Trixie (glibc 2.41) is the Debian release the
+    # SLC stages its runtime from; see crates/json_tables_udf/README.md.
+    container: rust:1.94.1-trixie
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Build
+        run: cargo build --release --locked --manifest-path crates/json_tables_udf/Cargo.toml
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          staging="json_tables_udf-${TAG}-linux-x86_64"
+          mkdir -p "out/${staging}"
+          cp crates/json_tables_udf/target/release/libjson_tables_udf.so "out/${staging}/"
+          cp crates/json_tables_udf/sql/install.sql "out/${staging}/"
+          cp crates/json_tables_udf/README.md "out/${staging}/README.md"
+          cp LICENSE "out/${staging}/"
+          tar -czf "out/${staging}.tar.gz" -C out "${staging}"
+          rm -rf "out/${staging}"
+
+      - name: Record the glibc it was built against
+        run: |
+          ldd --version | head -1
+          objdump -T crates/json_tables_udf/target/release/libjson_tables_udf.so \
+            | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: udf-linux-x86_64
+          path: out/*.tar.gz
+          if-no-files-found: error
+
+  python:
+    name: exasol-json-tables (sdist + wheel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        # --outdir is explicit because the repository already has a tracked dist/.
+        run: |
+          python -m pip install --upgrade build
+          python -m build --outdir dist-release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-dists
+          path: dist-release/*
+          if-no-files-found: error
+
+  publish:
+    name: Attach to the release
+    needs: [cli, udf, python]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+          merge-multiple: true
+
+      - name: Checksum
+        run: |
+          set -euo pipefail
+          cd staged
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "$TAG" --generate-notes
+          gh release upload "$TAG" staged/* --clobber

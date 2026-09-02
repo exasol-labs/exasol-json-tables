@@ -1,6 +1,6 @@
 [package]
 name = "json_tables_udf"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "In-database JSON Tables loader: an Exasol Rust UDF that ingests JSON into the shared table contract."
 license = "MIT"

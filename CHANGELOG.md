@@ -6,6 +6,8 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+## [0.3] - 2026-09-02
+
 ### Added
 
 - Added in-database ingest: [crates/json_tables_udf](crates/json_tables_udf), a
@@ -34,6 +36,50 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 - Added support for the MongoDB connector's `sourceDocumentColumn` manifest
   extension during offline wrapper generation.
 
+- Added `COMPILE_SQL`, a preprocessor-free route to the same rewrite. The JSON Tables
+  rewrite is a pure function of the statement text and the package metadata, so it is now
+  also reachable as an ordinary script:
+  `EXECUTE SCRIPT JVS_COMPILE.COMPILE_SQL('SELECT "meta.info.note" FROM JSON_VIEW.SAMPLE')`
+  returns one row carrying `STATUS`, `ERROR_CODE`, `ERROR_MESSAGE`, `ORIGINAL_SQL`,
+  `GENERATED_SQL`, `PLAN_JSON` and `CLARIFICATION_JSON`. The returned SQL runs in any
+  session: no `ALTER SESSION`, nothing to activate, and no single-preprocessor slot to
+  contend for. `exasol-json-tables compile install` and `exasol-json-tables compile run`
+  install and exercise it; with no `--wrapper-schema`, `compile install` builds one entry
+  point serving every installed package, so a single statement may join two of them. The
+  package metadata is baked into the script, so re-run `compile install` after installing
+  or regenerating a package.
+
+  It is a rewrite, not a validation: a `STATUS` of `OK` still leaves ordinary SQL errors —
+  a mistyped table, a type mismatch — to the statement itself, and `PLAN_JSON` names the
+  packages a statement reached as provenance for a reader, not as an access decision.
+
+- Added `contractVersion` to the `COPY provenance {...}` comment, from `CONTRACT_VERSION`
+  in [crates/json_tables_core/src/contract.rs](crates/json_tables_core/src/contract.rs).
+  Consumers outside this repository parse the `|` column grammar themselves, so a family
+  now records which version of that grammar wrote it and a downstream reader can refuse a
+  version it does not know instead of silently misreading it. The value is bumped whenever
+  a marker, separator or structural column changes meaning; purely additive changes that
+  leave existing names meaning what they meant do not bump it.
+
+- Added provenance stamping to every route that produces a family, not only direct import.
+  The comments are derived once per run and now travel on the `--schema-sql` DDL (as a
+  `-- Provenance` section after the creates), on `tableComment` in the `--manifest-output`
+  source manifest, and on materialized result families (with
+  `"sourceConnection":"result-family"` and a `table://` or `query://` source). Because the
+  manifest carries the comment, a wrapper package generated from a purely local run stamps
+  its public view too. `PLAN_JSON` is the deliberate exception — its DDL is a review
+  artifact with no load to timestamp — and `LOCAL TEMPORARY` families cannot carry a
+  comment. Keep the `-- Provenance` statements with the `CREATE TABLE` statements when
+  applying DDL by hand: dropping them is what produces a family the catalog cannot
+  describe.
+
+- Added prebuilt release artifacts, built by
+  [.github/workflows/release.yml](.github/workflows/release.yml) when a `v*` tag is pushed.
+  A release now carries the `json_to_parquet` ingest CLI for Linux x86_64 and macOS arm64,
+  the `json_tables_udf` in-database loader (`libjson_tables_udf.so`, built in the Debian
+  release the script language container stages its runtime from and packaged with its
+  `install.sql`), and the Python sdist and wheel — each with a SHA-256 checksum.
+
 ### Fixed
 
 - Fixed the diagnostics for a `table://` source in the in-database loader (BUG-135). A table source is
@@ -58,6 +104,17 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
   `HashMap` order, so the `Wrote Parquet file for table …` lines varied per run. They are now written
   in table-path order. The Parquet files themselves, the source manifest, and the `CREATE TABLE`
   order were already stable and are unchanged.
+
+- Fixed `VALUE` iteration over an array of objects. `VALUE` binds an array's scalar
+  element, which only exists where the array child table carries the contract's `_value`
+  column; over an array of objects the generated SQL asked for a `_value` that does not
+  exist and the database answered with an internal alias. It is now refused by name with a
+  `JVS-ITER-ERROR` that says the array is an array of objects and shows the row-iterator
+  form to use instead. A property that happens to be called `value` is an ordinary
+  property — the physical column decides — and the value-object shape, where an element
+  table has `_value` alongside its own columns, still supports both forms.
+
+- Fixed the Python package's `__version__`, which still reported `0.1.0` after the 0.2 cut.
 
 ### Changed
 
@@ -88,6 +145,12 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
   No user-visible behavior changes: the CLI's flags, generated Parquet, DDL,
   manifest and provenance comments are byte-identical, and the manifest still
   reports `"generator": "json_to_parquet"`.
+
+- Upgraded the in-database loader from `exasol-udf-sdk` / `exasol-udf-macros` `0.21.3` to
+  `0.23.0`, which exposes connect-back unconditionally. The documented build image moves
+  from `rust:1.94.1-bookworm` to `rust:1.94.1-trixie` — the Debian release the script
+  language container stages its runtime from, glibc floor 2.41 — so the artifact links
+  against the glibc it will load against.
 
 ## [0.2] - 2026-08-19
 
