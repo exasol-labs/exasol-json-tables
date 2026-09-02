@@ -33,7 +33,7 @@ jobs:
           - os: macos-14
             label: macos-arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
 
@@ -61,7 +61,7 @@ jobs:
           tar -czf "out/${staging}.tar.gz" -C out "${staging}"
           rm -rf "out/${staging}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.label }}
           path: out/*.tar.gz
@@ -75,7 +75,7 @@ jobs:
     # SLC stages its runtime from; see crates/json_tables_udf/README.md.
     container: rust:1.94.1-trixie
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
 
@@ -100,7 +100,7 @@ jobs:
           objdump -T crates/json_tables_udf/target/release/libjson_tables_udf.so \
             | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: udf-linux-x86_64
           path: out/*.tar.gz
@@ -110,11 +110,11 @@ jobs:
     name: exasol-json-tables (sdist + wheel)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -124,7 +124,7 @@ jobs:
           python -m pip install --upgrade build
           python -m build --outdir dist-release
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: python-dists
           path: dist-release/*
@@ -135,11 +135,11 @@ jobs:
     needs: [cli, udf, python]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: staged
           merge-multiple: true
