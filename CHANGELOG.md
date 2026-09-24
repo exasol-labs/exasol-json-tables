@@ -6,6 +6,8 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-24
+
 ### Fixed
 
 - Documented that the session's single `SQL_PREPROCESSOR_SCRIPT` slot is shared with
