@@ -27,6 +27,9 @@ package-dir = {"" = "python"}
 [tool.setuptools.packages.find]
 where = ["python"]
 
+[tool.setuptools.package-data]
+exasol_json_tables = ["preprocessor_assets/*.lua"]
+
 [tool.mypy]
 python_version = "3.10"
 files = ["python/exasol_json_tables"]

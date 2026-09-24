@@ -21,7 +21,20 @@ If you only want to install wrapper views on top of an existing source schema, t
 
 ## Standard Install
 
-Install the Python package:
+Create and activate a virtual environment first:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Many system Pythons, including Homebrew Python on macOS and recent Debian/Ubuntu
+releases, refuse a bare `pip install` with `externally-managed-environment`
+(PEP 668). A virtual environment avoids that and keeps the package isolated.
+Re-run `source .venv/bin/activate` in each new shell, or call the tools directly as
+`.venv/bin/exasol-json-tables`.
+
+Install the Python package into it:
 
 ```bash
 python3 -m pip install .
@@ -46,6 +59,8 @@ If the console script is not on your shell path yet, `python3 -m exasol_json_tab
 For repo-local development, the simplest setup is:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 python3 -m pip install -r requirements-dev.txt
 cargo build --manifest-path crates/json_tables_ingest/Cargo.toml
 ```

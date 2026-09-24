@@ -119,10 +119,13 @@ The supported product entrypoint is:
 
 - `exasol-json-tables`
 
-Install the Python package:
+Install the Python package into a virtual environment (system Pythons such as
+Homebrew's refuse a bare `pip install` under PEP 668):
 
 ```bash
-python3 -m pip install -e .
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install .
 ```
 
 Build the Rust ingest engine:

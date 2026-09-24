@@ -26,6 +26,8 @@ venv/
 
 # Generated build artifacts
 dist/
+build/
+*.egg-info/
 **/target/
 
 # Logs

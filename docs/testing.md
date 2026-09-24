@@ -4,9 +4,11 @@ This page covers the executable validation surface for Exasol JSON Tables.
 
 ## Prerequisites
 
-Install the Python test dependencies first:
+Install the Python test dependencies into a virtual environment first:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 python3 -m pip install -r requirements-dev.txt
 ```
 
