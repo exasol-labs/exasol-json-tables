@@ -6,6 +6,21 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-24
+
+### Fixed
+
+- Fixed the Python wheel and sdist omitting `preprocessor_assets/jvs_preprocessor_lib.lua`
+  (BUG-02). A non-editable `pip install .` produced a package whose `ingest-and-wrap`
+  imported the data and then failed with `FileNotFoundError` while generating the
+  preprocessor library, leaving a half-built family behind. Editable installs were
+  unaffected, which is why this went unnoticed. The asset is now declared as package data.
+- Fixed the documented install failing on Homebrew Python and other PEP 668
+  externally-managed Pythons with `externally-managed-environment` (BUG-11). The install
+  steps in `README.md`, `docs/installation.md` and `docs/testing.md` now create and
+  activate a virtual environment first, and the README's install step is no longer
+  editable, matching `docs/installation.md`.
+
 ## [0.3] - 2026-09-02
 
 ### Added
