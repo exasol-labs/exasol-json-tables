@@ -200,6 +200,12 @@ JSON paths can be used on both sides of a cross-schema join. Generate a combined
 script from the wrapper manifests as described in
 [Several wrappers in one session](docs/query-surface.md#several-wrappers-in-one-session).
 
+The session has only one preprocessor slot, so another preprocessor-driven extension such
+as Exasol Semantic Views competes for it. If a JSON path you know exists fails with
+`object "..." not found`, the session is probably running a different preprocessor. See
+[Sharing the preprocessor slot](docs/installation.md#sharing-the-preprocessor-slot) for
+`COMPILE_SQL`, per-task switching, and a dispatcher that serves both.
+
 ### 3. Published Permanent Surfaces
 
 When a wrapped family becomes part of a long-lived downstream workflow, use the wrapper as the authoring surface and publish ordinary views or tables from it.

@@ -20,7 +20,7 @@ Make sure the wrapper package has been installed, then activate the preprocessor
 ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = JVS_WRAP_PP.JSON_WRAPPER_PREPROCESSOR;
 ```
 
-Without that activation, the wrapper views still exist, but the extra JSON syntax sugar such as dotted paths and bracket access will not be rewritten.
+Without that activation, the wrapper views still exist, but the extra JSON syntax sugar such as dotted paths and bracket access will not be rewritten. Exasol then rejects the statement with its generic column error, for example `object "profile.region" not found`. That looks like a typo in the path, but it means the session has a different preprocessor or none at all. Check `SELECT SESSION_VALUE FROM EXA_PARAMETERS WHERE PARAMETER_NAME = 'SQL_PREPROCESSOR_SCRIPT'` before checking the column name. If another extension needs the preprocessor in the same session, see [Sharing the preprocessor slot](installation.md#sharing-the-preprocessor-slot).
 
 If you query wrapper views from Python via PyExasol, treat `execute()` plus `fetchall()` as the primary interface for wrapper-syntax queries. PyExasol implements `export_to_pandas()` through `EXPORT ... INTO CSV`. On the current stack, simple root-wrapper queries can work when the preprocessor is active, but iterator-heavy wrapper syntax is still unreliable there and often degrades into an opaque `EmptyDataError` / `ExaExportError` chain. For notebook work, execute the wrapper query directly and build the DataFrame yourself:
 

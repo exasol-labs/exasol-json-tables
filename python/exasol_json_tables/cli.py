@@ -277,6 +277,12 @@ def _wrapper_agent_warnings() -> list[str]:
     return [
         "Wrapper JSON syntax is session-scoped: activate the preprocessor in each SQL session before using path, bracket, iterator, or helper syntax.",
         "Wrapper JSON syntax applies on wrapper schemas only, not on the raw source schema or helper schema.",
+        (
+            "A session has one preprocessor slot: activating another extension's preprocessor turns wrapper syntax "
+            'off, and path references then fail with Exasol\'s generic object "<path>" not found. To use wrapper '
+            "syntax without the slot, run `exasol-json-tables compile install` and compile statements with "
+            "COMPILE_SQL."
+        ),
     ]
 
 

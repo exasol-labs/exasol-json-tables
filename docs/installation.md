@@ -106,8 +106,6 @@ FROM JSON_VIEW.CUSTOMER_EVENTS;
 
 If you want to continue from that generated wrapper into a nested modeled result and finish with `TO_JSON(*)` again on the wrapped result family, see the end-to-end example in [structured-results.md](structured-results.md#quickstart-example).
 
-If your environment already uses another SQL preprocessor, remember that Exasol only allows one active `SQL_PREPROCESSOR_SCRIPT` per session. Activating the JSON Tables preprocessor will replace the currently active one for that session.
-
 One JSON Tables preprocessor can cover several installed wrappers. Generate the
 wrapper packages individually, then pass each wrapper schema, helper schema, and
 generated manifest to `python3 -m
@@ -116,7 +114,89 @@ use matching order. See [query-surface.md](query-surface.md#several-wrappers-in-
 for a complete cross-schema example. `wrap generate` accepts one
 `--source-schema` per package and rejects repeated values.
 
-In that case, use a small master preprocessor script as the single active entrypoint. Keep the real rewrite logic in helper functions or helper scripts, have the master script call the existing preprocessor logic and the JSON Tables preprocessor logic in the required order, and activate the master script instead of trying to enable multiple preprocessors separately.
+## Sharing The Preprocessor Slot
+
+`SQL_PREPROCESSOR_SCRIPT` holds exactly one script per session. Other extensions that
+drive their SQL through a preprocessor, such as
+[Exasol Semantic Views](https://github.com/exasol-labs/exasol-semantic-views), want the
+same slot. Whichever one was activated last wins, and the other one's syntax stops
+working in that session:
+
+| Active preprocessor | JSON Tables path query | Semantic Views query |
+|---|---|---|
+| JSON Tables | works | `SEMANTIC_SURFACE_001` |
+| Semantic Views | `object "profile.region" not found` | works |
+| none | `object "profile.region" not found` | `SEMANTIC_SURFACE_001` |
+
+The JSON Tables failure is Exasol's generic column error, so it looks like a typo in the
+path. When a path you know exists is reported as not found, check the session's
+preprocessor first:
+
+```sql
+SELECT SESSION_VALUE FROM EXA_PARAMETERS WHERE PARAMETER_NAME = 'SQL_PREPROCESSOR_SCRIPT';
+```
+
+An `ALTER SESSION` also overrides a database-wide `ALTER SYSTEM` preprocessor for that
+session, so activating JSON Tables in a database where an administrator set up Semantic
+Views database-wide turns Semantic Views off for that session only.
+
+There are three ways to use both extensions against the same database.
+
+### 1. Compile instead of activating (recommended)
+
+Both extensions ship a `COMPILE_SQL` script that returns the rewritten statement as plain
+SQL. The compiled SQL runs in any session, whichever preprocessor is active or none, so
+nothing competes for the slot:
+
+```sql
+EXECUTE SCRIPT JVS_COMPILE.COMPILE_SQL('SELECT "profile.region" FROM JSON_VIEW.SUPPLIERS');
+EXECUTE SCRIPT SEMANTIC_ADMIN.COMPILE_SQL('SELECT * FROM SEMANTIC_SALES.SALES');
+```
+
+`JVS_COMPILE` is not created by `wrap install` or `ingest-and-wrap`. Install it once with
+`exasol-json-tables compile install`, and re-run that after installing or changing a
+wrapper package, because the package metadata is baked into the script. See
+[Without A Session Preprocessor](query-surface.md#without-a-session-preprocessor-compile_sql).
+
+### 2. Switch the active preprocessor per task
+
+Activate the preprocessor that the next statements need, and switch when you change
+surfaces. For AI agents, the [Exasol MCP Server](https://github.com/exasol/mcp-server)
+makes this an explicit choice: `list_exasol_preprocessors` shows the installed scripts
+and `set_exasol_preprocessor` activates one on the agent's session.
+
+### 3. One dispatcher preprocessor
+
+A single preprocessor script can run both rewrites. The JSON Tables part is small: the
+generated preprocessor script (`generatedFiles.preprocessorSql` in the package config)
+imports `JVS_PREPROCESSOR_LIB`, defines a `CONFIG` table, and ends with one rewrite call:
+
+```lua
+exa.import("JVS_WRAP_PP.JVS_PREPROCESSOR_LIB", "JVS_PREPROCESSOR_LIB")
+local CONFIG = { ... }  -- copied from the generated preprocessor script
+sqlparsing.setsqltext(JVS_PREPROCESSOR_LIB.rewrite(sqlparsing.getsqltext(), CONFIG))
+```
+
+For Semantic Views, start from a copy of `SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR` and put
+those JSON Tables lines, with `original_sql` in place of `sqlparsing.getsqltext()`, in
+the branch where its result is `UNCHANGED`, which it returns for every statement that
+does not reference a semantic schema. Activate the dispatcher instead of either original
+script. JSON Tables paths, semantic queries and plain SQL then all work in one session.
+
+This copies both extensions' preprocessor code, so regenerate the dispatcher after
+upgrading either extension or changing an included wrapper.
+
+### One statement over both surfaces
+
+These options let both extensions work in one session, not in one statement. By default,
+Semantic Views refuses a statement that joins a semantic object to another relation,
+such as a JSON Tables wrapper, with `SEMANTIC_QUERY_012`, because the join can repeat
+rows and double-count a governed metric. Query each surface separately. A model owner who
+wants ordinary-SQL semantics for such joins can opt the model in with
+`EXECUTE SCRIPT SEMANTIC_ADMIN.SET_MODEL_DERIVED_COMPOSITION('<model>', 'TRUE')`; see the
+Semantic Views
+[governance docs](https://github.com/exasol-labs/exasol-semantic-views/blob/main/docs/governance.md)
+before doing that.
 
 ## Access Modes
 

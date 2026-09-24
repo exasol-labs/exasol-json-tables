@@ -738,6 +738,7 @@ def test_unified_cli_ingest_and_wrap_json_summary() -> None:
             assert len(wrapper["warnings"]) >= 2
             assert any("session-scoped" in warning for warning in wrapper["warnings"])
             assert any("wrapper schemas only" in warning for warning in wrapper["warnings"])
+            assert any("compile install" in warning for warning in wrapper["warnings"])
             assert payload["nextActions"]["activationSql"] == wrapper["preprocessor"]["activationSql"]
             assert payload["nextActions"]["smokeTestSql"] == wrapper["smokeTestSql"]
             assert payload["nextActions"]["publicViews"] == ["NESTED"]

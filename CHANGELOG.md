@@ -6,6 +6,17 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+### Fixed
+
+- Documented that the session's single `SQL_PREPROCESSOR_SCRIPT` slot is shared with
+  other preprocessor-driven extensions such as Exasol Semantic Views (BUG-12). The new
+  [Sharing the preprocessor slot](docs/installation.md#sharing-the-preprocessor-slot)
+  section names the misleading `object "<path>" not found` symptom and gives three
+  routes: `COMPILE_SQL` (which is not installed by default), per-task switching
+  including the Exasol MCP Server's `set_exasol_preprocessor`, and a dispatcher
+  preprocessor that serves both extensions in one session. Wrapper install output now
+  carries a warning with the same symptom and the `compile install` fix.
+
 ## [0.3.1] - 2026-09-24
 
 ### Fixed
