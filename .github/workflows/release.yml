@@ -47,6 +47,10 @@ jobs:
       - name: Pin the toolchain
         run: rustup update stable --no-self-update && rustup default stable
 
+      # The live-database e2e tests are #[ignore]d; they need a running Exasol.
+      - name: Test
+        run: cargo test --locked --manifest-path crates/json_tables_ingest/Cargo.toml
+
       - name: Build
         run: cargo build --release --locked --manifest-path crates/json_tables_ingest/Cargo.toml
 
@@ -78,6 +82,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
+
+      # Tested on the same toolchain and glibc the loader is built with.
+      - name: Test
+        run: |
+          cargo test --locked --manifest-path crates/json_tables_core/Cargo.toml
+          cargo test --locked --manifest-path crates/json_tables_udf/Cargo.toml
 
       - name: Build
         run: cargo build --release --locked --manifest-path crates/json_tables_udf/Cargo.toml
