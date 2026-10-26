@@ -77,7 +77,7 @@ jobs:
     # The loader is dlopened by the script language container, so it has to link
     # against that container's glibc. Trixie (glibc 2.41) is the Debian release the
     # SLC stages its runtime from; see crates/json_tables_udf/README.md.
-    container: rust:1.94.1-trixie
+    container: rust:1.98.1-trixie
     steps:
       - uses: actions/checkout@v7
         with:

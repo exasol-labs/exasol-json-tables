@@ -43,6 +43,7 @@ pub mod load;
 pub mod plan_wire;
 pub mod source;
 pub mod sql;
+pub mod wire;
 
 use exasol_udf_macros::exasol_udf;
 use exasol_udf_sdk::connect_back::ExaConnection;
@@ -85,20 +86,22 @@ pub fn ingest_json(ctx: &mut dyn UdfContext) -> Result<(), UdfError> {
     let mut connection = open_connection(ctx, &connection_name)?;
     let report = ingest(&mut connection, &source, &target_schema, &options)?;
 
+    let report_types = wire::output_types(&*ctx, 3);
     for TableReport {
         table_name,
         rows_loaded,
         status,
     } in report
     {
-        ctx.emit(vec![
+        let row = vec![
             Value::String(table_name),
             Value::Numeric(Decimal {
                 unscaled: rows_loaded as i128,
                 scale: 0,
             }),
             Value::String(status),
-        ])?;
+        ];
+        ctx.emit(wire::fit_row(row, &report_types)?)?;
     }
     Ok(())
 }

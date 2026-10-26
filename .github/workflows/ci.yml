@@ -73,7 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     # Same image as the release build in release.yml: catches a dependency that
     # outgrows the pinned toolchain on the PR rather than at release time.
-    container: rust:1.94.1-trixie
+    container: rust:1.98.1-trixie
     steps:
       - uses: actions/checkout@v7
 

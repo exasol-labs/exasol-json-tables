@@ -8,8 +8,18 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ### Changed
 
-- Updated dependencies: `pyexasol` 3.x, `exarrow-rs` 0.29 (with `arrow`/`parquet` 59.3),
-  and `exasol-udf-sdk` 0.33.
+- Updated dependencies: `pyexasol` 3.x and `exarrow-rs` 0.29 (with `arrow`/`parquet` 59.3).
+  The update clears five open RustSec advisories in the `json_to_parquet` CLI's TLS stack
+  (`rustls`, `rustls-webpki`) and one in `tokio`.
+- The in-database loader (`json_tables_udf`) now targets the Rust language container
+  **v0.33** (`exasol-udf-sdk` 0.33, built with rustc 1.98.1). **Migration:** the loader
+  only loads in a matching container; update it first (on Exasol Personal:
+  `exasol slc update rust`), otherwise every call fails with
+  `F-UDF-CL-RUST-9001: Fingerprint mismatch`. The previous loader, built for container
+  0.23, cannot load in current containers either.
+- The loader now emits each integer in the wire type its output column declares
+  (`Int64` for the contract's `DECIMAL(18,0)`). Containers since 0.26 validate emitted
+  values, and rejected the `NUMERIC` form the loader used to send.
 - Disabled the anonymous usage telemetry that `pyexasol` 3 sends on connect. Note that the
   switch is process-wide, so it also covers other `pyexasol` connections in the same process.
 - Release gates: the release workflow attaches no assets unless `mypy` is clean and no Rust
