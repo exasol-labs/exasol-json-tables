@@ -6,6 +6,8 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-26
+
 ### Changed
 
 - Updated dependencies: `pyexasol` 3.x and `exarrow-rs` 0.29 (with `arrow`/`parquet` 59.3).
