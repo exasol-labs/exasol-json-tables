@@ -1,0 +1,29 @@
+name: advisories
+
+# Checks every crate's Cargo.lock against the RustSec advisory database
+# (vulnerable, unsound, unmaintained or yanked crates). Runs weekly as well as on
+# pull requests, since advisories are published against code that has not changed.
+on:
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: ${{ matrix.crate }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [json_tables_core, json_tables_ingest, json_tables_udf]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: EmbarkStudios/cargo-deny-action@v2.1.1
+        with:
+          command: check advisories
+          manifest-path: crates/${{ matrix.crate }}/Cargo.toml
