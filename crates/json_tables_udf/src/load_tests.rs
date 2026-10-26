@@ -11,7 +11,7 @@ struct RecordingCtx {
 }
 
 impl UdfContext for RecordingCtx {
-    fn num_columns(&self) -> usize {
+    fn input_column_count(&self) -> usize {
         self.input.len()
     }
 
@@ -21,8 +21,8 @@ impl UdfContext for RecordingCtx {
             .ok_or_else(|| UdfError::User(format!("no input column {col}")))
     }
 
-    fn emit(&mut self, values: &[ExaValue]) -> Result<(), UdfError> {
-        self.emitted.push(values.to_vec());
+    fn emit(&mut self, values: Vec<ExaValue>) -> Result<(), UdfError> {
+        self.emitted.push(values);
         Ok(())
     }
 

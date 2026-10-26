@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import TypedDict
 
 from .generate_json_export_helper_sql import helper_names
 from .generate_json_export_views_sql import (
@@ -413,6 +414,18 @@ def _add_helper_kind(mapping: dict[str, str], function_name: str, helper_kind: s
     mapping[function_name] = helper_kind
 
 
+class WrapperRewriteInputs(TypedDict):
+    wrapper_schemas: list[str]
+    helper_schemas: list[str]
+    helper_schema_map: dict[str, str]
+    group_config: WrapperGroupConfig
+    visible_column_config: WrapperVisibleColumnConfig
+    to_json_config: WrapperToJsonConfig
+    helper_function_kinds: dict[str, str]
+    blocked_helper_names: list[str]
+    regular_to_json_row_object_function: str
+
+
 def _build_wrapper_rewrite_inputs(
     *,
     wrapper_schemas: list[str] | None,
@@ -425,7 +438,7 @@ def _build_wrapper_rewrite_inputs(
     variant_boolean_function_names: list[str] | None,
     to_json_function_names: list[str] | None,
     blocked_helper_names: list[str] | None,
-) -> dict[str, object]:
+) -> WrapperRewriteInputs:
     """Everything the rewriter needs, independent of how it is reached.
 
     The preprocessor and the compile script are two front ends onto the same rewrite, so

@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from exasol.telemetry.client import config as telemetry_config
+
 import _bootstrap  # noqa: F401
 
 from exasol_json_tables import cli as cli_module
@@ -1839,6 +1841,33 @@ def test_personal_support_connection_ssl_options() -> None:
     assert captured[0]["websocket_sslopt"]["cert_reqs"] == ssl.CERT_NONE
 
 
+def test_connect_paths_disable_pyexasol_telemetry() -> None:
+    original_wrapper_connect = wrapper_schema_support.pyexasol.connect
+    original_personal_connect = personal_support_module.pyexasol.connect
+    original_config = telemetry_config.get()
+    try:
+        def fake_connect(**kwargs):
+            class DummyConnection:
+                pass
+            return DummyConnection()
+
+        wrapper_schema_support.pyexasol.connect = fake_connect
+        personal_support_module.pyexasol.connect = fake_connect
+
+        for open_connection in [
+            lambda: wrapper_schema_support.connect_for_generation("dsn", "user", "password"),
+            personal_support_module.connect,
+        ]:
+            telemetry_config.store(None)
+            open_connection()
+            assert telemetry_config.was_setup()
+            assert not telemetry_config.was_enabled()
+    finally:
+        wrapper_schema_support.pyexasol.connect = original_wrapper_connect
+        personal_support_module.pyexasol.connect = original_personal_connect
+        telemetry_config.store(original_config)
+
+
 def test_unified_cli_schema_ensure_propagates_certificate_validation() -> None:
     calls: list[bool] = []
 
@@ -1978,6 +2007,7 @@ if __name__ == "__main__":
     test_unified_cli_ingest_error_codes()
     test_wrapper_generation_connection_ssl_options()
     test_personal_support_connection_ssl_options()
+    test_connect_paths_disable_pyexasol_telemetry()
     test_unified_cli_schema_ensure_propagates_certificate_validation()
     test_ingest_and_wrap_destination_if_exists_policies()
     test_wrap_generate_rejects_repeated_source_schema()

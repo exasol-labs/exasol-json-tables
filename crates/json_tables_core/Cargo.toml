@@ -6,4 +6,4 @@ description = "Normalisation core for Exasol JSON Tables: JSON documents in, rel
 license = "MIT"
 
 [dependencies]
-serde_json = { version = "1.0.150", features = ["preserve_order"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }

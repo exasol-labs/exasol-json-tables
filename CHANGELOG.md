@@ -6,6 +6,14 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+### Changed
+
+- Updated dependencies: `pyexasol` 3.x, `exarrow-rs` 0.29 (with `arrow`/`parquet` 59.3),
+  and `exasol-udf-sdk` 0.33.
+- Disabled the anonymous usage telemetry that `pyexasol` 3 sends on connect. Note that the
+  switch is process-wide, so it also covers other `pyexasol` connections in the same process.
+- A clean `mypy` run is now a release gate: the release workflow attaches no assets unless it passes.
+
 ## [0.3.2] - 2026-09-24
 
 ### Fixed

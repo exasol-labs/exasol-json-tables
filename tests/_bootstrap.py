@@ -18,7 +18,8 @@ sys.path.insert(1, str(TOOLS))
 
 # Keep subprocess-based test helpers on the same interpreter as the parent
 # test run, even when the host `python3` points at an older unsupported build.
-python_bin = str(Path(sys.executable).resolve().parent)
+# Not resolved: a venv's interpreter is a symlink, and following it would leave the venv.
+python_bin = str(Path(sys.executable).parent)
 path_entries = os.environ.get("PATH", "").split(os.pathsep) if os.environ.get("PATH") else []
 if not path_entries or path_entries[0] != python_bin:
     os.environ["PATH"] = os.pathsep.join([python_bin, *path_entries] if path_entries else [python_bin])
