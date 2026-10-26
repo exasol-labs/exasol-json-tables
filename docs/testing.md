@@ -50,6 +50,13 @@ python3 -m ruff check .
 Runs the bug-focused `ruff` lint configured in `pyproject.toml` (formatting is not enforced).
 Both checks also run on every pull request via `.github/workflows/ci.yml`.
 
+```bash
+cargo deny --manifest-path crates/json_tables_ingest/Cargo.toml check advisories
+```
+
+Checks a crate's `Cargo.lock` against the RustSec advisory database. CI runs it for all three
+crates on every pull request and weekly via `.github/workflows/advisories.yml`.
+
 ## Packaging Surface
 
 ```bash
