@@ -1,0 +1,31 @@
+name: ci
+
+# Static checks on every pull request: mypy (also a release gate, see release.yml)
+# and ruff lint. Both are configured in pyproject.toml.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: mypy + ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Type-check
+        run: python -m mypy
+
+      - name: Lint
+        # Runs even when mypy fails, so one push reports both.
+        if: ${{ !cancelled() }}
+        run: python -m ruff check --output-format=github .

@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "mypy==2.4.*",
+  "ruff==0.17.*",
 ]
 
 [project.scripts]
@@ -30,6 +31,18 @@ where = ["python"]
 
 [tool.setuptools.package-data]
 exasol_json_tables = ["preprocessor_assets/*.lua"]
+
+[tool.ruff]
+target-version = "py310"
+extend-exclude = ["build", "dist"]
+
+[tool.ruff.lint]
+# Bug-focused: pyflakes, pycodestyle errors, bugbear. Formatting is not enforced.
+select = ["E4", "E7", "E9", "F", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Compatibility wrappers re-export the package module with `import *`.
+"tools/*.py" = ["F405"]
 
 [tool.mypy]
 python_version = "3.10"

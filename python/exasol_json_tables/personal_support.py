@@ -99,7 +99,7 @@ def install_wrapper_preprocessor(
         raise ValueError("wrapper_schemas and helper_schemas must have the same length")
     if len(manifest_paths) != len(wrapper_schemas):
         raise ValueError("wrapper_schemas and manifest_paths must have the same length")
-    for wrapper_schema, helper_schema in zip(wrapper_schemas, helper_schemas):
+    for wrapper_schema, helper_schema in zip(wrapper_schemas, helper_schemas, strict=True):
         if wrapper_schema.upper() == helper_schema.upper():
             raise ValueError("wrapper_schemas and helper_schemas must differ for every schema pair")
     cmd = [
@@ -123,7 +123,7 @@ def install_wrapper_preprocessor(
     subprocess.run(cmd, check=True)
 
     manifests = [json.loads(path.read_text()) for path in manifest_paths]
-    for helper_schema, manifest in zip(helper_schemas, manifests):
+    for helper_schema, manifest in zip(helper_schemas, manifests, strict=True):
         install_json_export_helpers(con, helper_schema)
         install_json_export_views(
             con,

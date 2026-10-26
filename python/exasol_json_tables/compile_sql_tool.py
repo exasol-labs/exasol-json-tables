@@ -142,7 +142,7 @@ def compile_sql(
     ).fetchall()
     if not rows:
         raise AssertionError("COMPILE_SQL returned no rows.")
-    return dict(zip(COMPILE_RESULT_COLUMNS, rows[0]))
+    return dict(zip(COMPILE_RESULT_COLUMNS, rows[0], strict=True))
 
 
 def compile_or_raise(
