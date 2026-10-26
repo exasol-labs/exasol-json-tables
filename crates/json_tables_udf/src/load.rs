@@ -14,11 +14,13 @@ use std::collections::HashMap;
 
 use exasol_udf_sdk::context::UdfContext;
 use exasol_udf_sdk::error::UdfError;
-use exasol_udf_sdk::value::{Decimal, Value as ExaValue};
+use exasol_udf_sdk::value::{ExaType, Value as ExaValue};
 use json_tables_core::contract::{ColumnPlan, PlannedTable, SimpleType, TablePath};
 use json_tables_core::sink::{RowRef, RowSink};
 use json_tables_core::{CoreError, CoreResult};
 use serde_json::Value as JsonValue;
+
+use crate::wire;
 
 /// Emits the rows of one table from a walk over the whole family.
 pub struct EmitSink<'ctx> {
@@ -26,6 +28,8 @@ pub struct EmitSink<'ctx> {
     plans: HashMap<TablePath, PlannedTable>,
     target: TablePath,
     target_columns: Vec<ColumnPlan>,
+    /// The wire type the host declared for each target column, read once.
+    output_types: Vec<Option<ExaType>>,
     column_index: HashMap<String, usize>,
     next_id: HashMap<TablePath, i64>,
     open_row: Option<Vec<ExaValue>>,
@@ -63,6 +67,7 @@ impl<'ctx> EmitSink<'ctx> {
             .enumerate()
             .map(|(index, column)| (column.name.clone(), index))
             .collect();
+        let output_types = wire::output_types(&*ctx, target_columns.len());
 
         Ok(Self {
             ctx,
@@ -72,6 +77,7 @@ impl<'ctx> EmitSink<'ctx> {
                 .collect(),
             target: target.clone(),
             target_columns,
+            output_types,
             column_index,
             next_id: HashMap::new(),
             open_row: None,
@@ -91,7 +97,7 @@ impl<'ctx> EmitSink<'ctx> {
 
     fn flush(&mut self) -> Result<(), UdfError> {
         if let Some(row) = self.open_row.take() {
-            self.ctx.emit(row)?;
+            self.ctx.emit(wire::fit_row(row, &self.output_types)?)?;
             self.emitted += 1;
         }
         Ok(())
@@ -143,11 +149,8 @@ fn take_id(next_id: &mut HashMap<TablePath, i64>, path: &TablePath) -> i64 {
 }
 
 fn integer(value: i64) -> ExaValue {
-    // Exasol DECIMAL/BIGINT travel as NUMERIC on the wire, not as Int64.
-    ExaValue::Numeric(Decimal {
-        unscaled: value as i128,
-        scale: 0,
-    })
+    // Fitted to the column's wire block (Int32, Int64 or Numeric) at flush.
+    ExaValue::Int64(value)
 }
 
 impl RowSink for EmitSink<'_> {

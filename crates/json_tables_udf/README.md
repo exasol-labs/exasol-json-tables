@@ -93,18 +93,26 @@ installed language container's fingerprint — a mismatch fails at load with
 `F-UDF-CL-RUST-9001: Fingerprint mismatch`. Check the container's expectation by
 running any script and reading the error.
 
+This crate targets
+[language-container-rs](https://github.com/exasol-labs/language-container-rs)
+**v0.33**: SDK `=0.33.0`, built with rustc **1.98.1**. Moving to another container
+release means moving both together. On Exasol Personal, `exasol slc list` shows the
+installed release and `exasol slc update rust` moves to the latest.
+
 ```bash
 # Build in the Debian release the SLC stages its runtime from (trixie, glibc
 # floor 2.41), so the artifact links against the glibc it will load against.
+# Exasol Personal on Apple Silicon runs an aarch64 VM: add --platform linux/arm64
+# (the release artifact is x86_64 only).
 docker run --rm -v "$PWD:/build" -w /build/crates/json_tables_udf \
-  rust:1.94.1-trixie bash -c 'cargo build --release'
+  rust:1.98.1-trixie bash -c 'cargo build --release'
 
-# Upload to BucketFS (Exasol Personal publishes no BucketFS endpoint, so copy
-# into the deployment VM; a normal cluster uses the BucketFS HTTP API).
+# Upload to BucketFS. Exasol Personal publishes no BucketFS endpoint; a local
+# deployment shares its BucketFS with the host, so copy the file in. A normal
+# cluster uses the BucketFS HTTP API.
 D=~/.exasol/personal/deployments/default
-scp -i $D/local/node_access.pem -P "$(jq -r .connection.sshPort $D/deployment.json)" \
-  target/release/libjson_tables_udf.so \
-  root@127.0.0.1:/var/lib/exa/bucketfs/bfsdefault/rust/
+cp target/release/libjson_tables_udf.so \
+  $D/local/runtime/vm-shared/exa/bucketfs/bfsdefault/rust/
 
 # Register the connection and the three scripts.
 exasol connect -f sql/install.sql

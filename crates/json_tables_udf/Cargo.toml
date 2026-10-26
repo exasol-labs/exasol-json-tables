@@ -13,6 +13,9 @@ crate-type = ["cdylib", "rlib"]
 json_tables_core = { path = "../json_tables_core" }
 # 0.33 exposes connect-back unconditionally; this loader needs none of the
 # optional features (`emit-arrow`, `import`, `export`).
+# Exact pins: the language container accepts only a loader built with its own
+# SDK version and rustc (see README "Build and deploy"). 0.33 pairs with rustc
+# 1.98.1, the rust:1.98.1-trixie image in the CI and release workflows.
 exasol-udf-sdk = "=0.33.0"
 exasol-udf-macros = "=0.33.0"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }

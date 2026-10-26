@@ -1,5 +1,6 @@
 use super::*;
 use crate::driver::plan_text;
+use exasol_udf_sdk::value::ColumnInfo;
 use json_tables_core::read::{detect_format, for_each_document};
 use std::io::Cursor;
 
@@ -7,12 +8,20 @@ use std::io::Cursor;
 #[derive(Default)]
 struct RecordingCtx {
     input: Vec<ExaValue>,
+    /// Declared output columns; empty means the context reports no metadata.
+    output: Vec<ColumnInfo>,
     emitted: Vec<Vec<ExaValue>>,
 }
 
 impl UdfContext for RecordingCtx {
     fn input_column_count(&self) -> usize {
         self.input.len()
+    }
+
+    fn output_column(&self, idx: usize) -> Result<&ColumnInfo, UdfError> {
+        self.output
+            .get(idx)
+            .ok_or_else(|| UdfError::Unimplemented(format!("output column {idx}")))
     }
 
     fn get(&self, col: usize) -> Result<&ExaValue, UdfError> {
@@ -37,6 +46,10 @@ const INPUT: &str = r#"[
 ]"#;
 
 fn emit_table(input: &str, path: &str) -> Vec<Vec<ExaValue>> {
+    emit_table_into(RecordingCtx::default(), input, path)
+}
+
+fn emit_table_into(mut ctx: RecordingCtx, input: &str, path: &str) -> Vec<Vec<ExaValue>> {
     let plans = plan_text(input).expect("plan");
     let target = plans
         .iter()
@@ -45,7 +58,6 @@ fn emit_table(input: &str, path: &str) -> Vec<Vec<ExaValue>> {
         .path
         .clone();
 
-    let mut ctx = RecordingCtx::default();
     {
         let mut sink = EmitSink::new(&mut ctx, &plans, &target).expect("sink");
         let mut cursor = Cursor::new(input.as_bytes());
@@ -60,11 +72,19 @@ fn emit_table(input: &str, path: &str) -> Vec<Vec<ExaValue>> {
     ctx.emitted
 }
 
-fn numeric(value: i64) -> ExaValue {
-    ExaValue::Numeric(Decimal {
-        unscaled: value as i128,
-        scale: 0,
-    })
+fn int(value: i64) -> ExaValue {
+    ExaValue::Int64(value)
+}
+
+fn decimal_column(name: &str, precision: u32, typ: ExaType) -> ColumnInfo {
+    ColumnInfo {
+        name: name.to_string(),
+        typ,
+        type_name: format!("DECIMAL({precision},0)"),
+        size: None,
+        precision: Some(precision),
+        scale: Some(0),
+    }
 }
 
 #[test]
@@ -76,23 +96,31 @@ fn emits_only_the_target_tables_rows() {
 }
 
 #[test]
-fn integers_go_out_as_numeric_not_int64() {
-    // Exasol DECIMAL/BIGINT travel in the string block as NUMERIC; emitting
-    // Int64 for a DECIMAL column is the classic wire-type mistake.
-    let rows = emit_table(INPUT, "root");
-    assert_eq!(rows[0][0], numeric(1), "_id");
-    assert!(matches!(rows[0][1], ExaValue::Numeric(_)), "id");
+fn integers_are_fitted_to_the_declared_output_columns() {
+    // The container rejects a value outside its column's wire block, so an
+    // integer has to follow the declaration: DECIMAL(18,0) is Int64, while a
+    // narrower DECIMAL(9,0) travels as Int32.
+    let ctx = RecordingCtx {
+        output: vec![
+            decimal_column("_id", 18, ExaType::Int64),
+            decimal_column("id", 9, ExaType::Int32),
+        ],
+        ..RecordingCtx::default()
+    };
+    let rows = emit_table_into(ctx, INPUT, "root");
+    assert_eq!(rows[0][0], ExaValue::Int64(1), "_id");
+    assert_eq!(rows[0][1], ExaValue::Int32(1), "id");
 }
 
 #[test]
 fn identities_are_assigned_per_table_in_document_order() {
     let root = emit_table(INPUT, "root");
-    assert_eq!(root[0][0], numeric(1));
-    assert_eq!(root[1][0], numeric(2));
+    assert_eq!(root[0][0], int(1));
+    assert_eq!(root[1][0], int(2));
 
     let hours = emit_table(INPUT, "hours");
-    assert_eq!(hours[0][0], numeric(1));
-    assert_eq!(hours[1][0], numeric(2));
+    assert_eq!(hours[0][0], int(1));
+    assert_eq!(hours[1][0], int(2));
 }
 
 /// The property that makes multi-statement loading correct: a parent's object
@@ -127,10 +155,10 @@ fn array_children_carry_parent_and_position() {
     assert_eq!(names, vec!["_parent", "_pos", "_value"]);
 
     let rows = emit_table(INPUT, "tags[]");
-    assert_eq!(rows[0][0], numeric(1), "_parent");
-    assert_eq!(rows[0][1], numeric(0), "_pos");
+    assert_eq!(rows[0][0], int(1), "_parent");
+    assert_eq!(rows[0][1], int(0), "_pos");
     assert_eq!(rows[0][2], ExaValue::String("coffee".to_string()));
-    assert_eq!(rows[1][1], numeric(1), "_pos of the second element");
+    assert_eq!(rows[1][1], int(1), "_pos of the second element");
 }
 
 #[test]
