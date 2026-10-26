@@ -55,7 +55,8 @@ cargo deny --manifest-path crates/json_tables_ingest/Cargo.toml check advisories
 ```
 
 Checks a crate's `Cargo.lock` against the RustSec advisory database. CI runs it for all three
-crates on every pull request and weekly via `.github/workflows/advisories.yml`.
+crates on every pull request and weekly via `.github/workflows/advisories.yml`. It is also a
+release gate: `release.yml` attaches no assets while any crate has an open advisory.
 
 ## Packaging Surface
 
