@@ -1,7 +1,8 @@
 name: ci
 
-# Static checks on every pull request: mypy (also a release gate, see release.yml)
-# and ruff lint. Both are configured in pyproject.toml.
+# Checks on every pull request: mypy (also a release gate, see release.yml) and
+# ruff lint, both configured in pyproject.toml, plus fmt, clippy and tests for
+# each Rust crate.
 on:
   pull_request:
 
@@ -29,3 +30,54 @@ jobs:
         # Runs even when mypy fails, so one push reports both.
         if: ${{ !cancelled() }}
         run: python -m ruff check --output-format=github .
+
+  rust:
+    name: ${{ matrix.crate }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [json_tables_core, json_tables_ingest, json_tables_udf]
+    defaults:
+      run:
+        working-directory: crates/${{ matrix.crate }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # exarrow-rs pulls in aws-lc-sys, which builds C and assembly from source.
+      - name: Install build dependencies
+        if: matrix.crate == 'json_tables_ingest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake clang nasm
+
+      # Same floating stable as the release CLI build. A new stable can bring new
+      # clippy lints, so an untouched crate may start failing here after a Rust release.
+      - name: Pin the toolchain
+        run: |
+          rustup update stable --no-self-update && rustup default stable
+          rustup component add clippy rustfmt
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # The live-database e2e tests are #[ignore]d; they need a running Exasol.
+      - name: Test
+        run: cargo test --locked
+
+  udf-release-toolchain:
+    name: json_tables_udf (release toolchain)
+    runs-on: ubuntu-latest
+    # Same image as the release build in release.yml: catches a dependency that
+    # outgrows the pinned toolchain on the PR rather than at release time.
+    container: rust:1.94.1-trixie
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Test
+        run: |
+          cargo test --locked --manifest-path crates/json_tables_core/Cargo.toml
+          cargo test --locked --manifest-path crates/json_tables_udf/Cargo.toml

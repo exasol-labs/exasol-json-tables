@@ -94,7 +94,7 @@ pub fn build_sql_schema(plans: &[PlannedTable], stem: &str) -> (Vec<String>, Vec
         // `fk_<table>_<property>` and the table part is fixed inside this loop, so
         // ordering by property name orders the statements by constraint name.
         let mut properties: Vec<(&String, &PropertyColumns)> = plan.properties.iter().collect();
-        properties.sort_by(|(left, _), (right, _)| left.cmp(right));
+        properties.sort_by_key(|(left, _)| *left);
 
         for (prop, cols) in properties {
             if let Some(object_fk) = cols.object_fk.as_ref() {

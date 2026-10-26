@@ -80,7 +80,7 @@ impl StatsCollector {
     /// Per-table statistics, sorted by path so output is deterministic.
     pub fn finish(self) -> Vec<TableStats> {
         let mut result: Vec<TableStats> = self.tables.into_values().collect();
-        result.sort_by(|a, b| a.path.to_string().cmp(&b.path.to_string()));
+        result.sort_by_key(|a| a.path.to_string());
         result
     }
 
