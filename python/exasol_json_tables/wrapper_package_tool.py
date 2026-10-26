@@ -733,7 +733,8 @@ def build_smoke_test_query(config: dict[str, Any], manifest: dict[str, Any]) -> 
         def find_object_scalar_paths(table_name: str, prefix: list[str]) -> list[list[str]]:
             out: list[list[str]] = []
             object_relationships = [
-                relationship for relationship in relationship_lookup.get(table_name, [])
+                # Called only within this iteration, so it always sees the current lookup.
+                relationship for relationship in relationship_lookup.get(table_name, [])  # noqa: B023
                 if relationship["relationKind"] == "object"
             ]
             for relationship in object_relationships:

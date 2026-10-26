@@ -148,7 +148,7 @@ def _normalize_wrapper_config(
     normalized_helper_schemas = [validate_identifier("Helper schema", value) for value in raw_helper_schemas]
 
     mappings: dict[str, str] = {}
-    for wrapper_schema, helper_schema in zip(normalized_wrapper_schemas, normalized_helper_schemas):
+    for wrapper_schema, helper_schema in zip(normalized_wrapper_schemas, normalized_helper_schemas, strict=True):
         if wrapper_schema == helper_schema:
             raise SystemExit(
                 f'Wrapper schema "{wrapper_schema}" must differ from its helper schema "{helper_schema}".'
@@ -173,7 +173,7 @@ def _load_manifests(
         raise SystemExit("--manifest must be provided the same number of times as --wrapper-schema.")
 
     manifests: list[dict] = []
-    for manifest_path, wrapper_schema, helper_schema in zip(manifest_paths, wrapper_schemas, helper_schemas):
+    for manifest_path, wrapper_schema, helper_schema in zip(manifest_paths, wrapper_schemas, helper_schemas, strict=True):
         manifest = json.loads(manifest_path.read_text())
         manifest_public_schema = validate_identifier("Manifest public schema", manifest["publicSchema"])
         manifest_helper_schema = validate_identifier("Manifest helper schema", manifest["helperSchema"])
@@ -498,7 +498,7 @@ def _build_wrapper_rewrite_inputs(
         "helper_schemas": normalized_helper_schemas,
         "helper_schema_map": {
             wrapper_schema: helper_schema
-            for wrapper_schema, helper_schema in zip(normalized_wrapper_schemas, normalized_helper_schemas)
+            for wrapper_schema, helper_schema in zip(normalized_wrapper_schemas, normalized_helper_schemas, strict=True)
         },
         "group_config": _build_group_config(manifests),
         "visible_column_config": _build_visible_column_config(manifests),

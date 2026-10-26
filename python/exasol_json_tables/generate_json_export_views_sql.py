@@ -351,7 +351,6 @@ def _build_table_export_select_sql(
 
     for table_name in postorder:
         model = table_models[table_name]
-        child_relationships = relationships_by_parent.get(table_name, [])
         row_cte = _cte_name("rowjson", table_name)
         row_ctes[table_name] = row_cte
         source_qtable = quote_qualified(source_schema, table_name)

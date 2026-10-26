@@ -43,6 +43,13 @@ Runs the repo-configured `mypy` lane for `python/exasol_json_tables`. This is a 
 the `typecheck` job in `.github/workflows/release.yml` must pass before any assets are
 attached to a release, so keep it clean.
 
+```bash
+python3 -m ruff check .
+```
+
+Runs the bug-focused `ruff` lint configured in `pyproject.toml` (formatting is not enforced).
+Both checks also run on every pull request via `.github/workflows/ci.yml`.
+
 ## Packaging Surface
 
 ```bash
