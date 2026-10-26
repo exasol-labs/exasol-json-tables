@@ -91,7 +91,7 @@ impl<'ctx> EmitSink<'ctx> {
 
     fn flush(&mut self) -> Result<(), UdfError> {
         if let Some(row) = self.open_row.take() {
-            self.ctx.emit(&row)?;
+            self.ctx.emit(row)?;
             self.emitted += 1;
         }
         Ok(())

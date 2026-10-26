@@ -91,7 +91,7 @@ pub fn ingest_json(ctx: &mut dyn UdfContext) -> Result<(), UdfError> {
         status,
     } in report
     {
-        ctx.emit(&[
+        ctx.emit(vec![
             Value::String(table_name),
             Value::Numeric(Decimal {
                 unscaled: rows_loaded as i128,
@@ -177,7 +177,7 @@ pub fn plan_json(ctx: &mut dyn UdfContext) -> Result<(), UdfError> {
         .collect::<Vec<_>>()
         .join("\n");
 
-    ctx.emit(&[Value::String(plan), Value::String(ddl)])?;
+    ctx.emit(vec![Value::String(plan), Value::String(ddl)])?;
     Ok(())
 }
 
@@ -299,7 +299,7 @@ fn required_string(ctx: &dyn UdfContext, col: usize, name: &str) -> Result<Strin
 }
 
 fn optional_string(ctx: &dyn UdfContext, col: usize) -> Result<Option<String>, UdfError> {
-    if col >= ctx.num_columns() {
+    if col >= ctx.input_column_count() {
         return Ok(None);
     }
     Ok(ctx

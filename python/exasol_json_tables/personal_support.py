@@ -6,6 +6,7 @@ import ssl
 import subprocess
 from typing import Optional
 
+from exasol.telemetry import client as telemetry
 import pyexasol
 
 from .generate_json_export_helper_sql import install_json_export_helpers
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def connect():
+    telemetry.disable()
     return pyexasol.connect(
         dsn="127.0.0.1:8563",
         user="sys",

@@ -39,7 +39,9 @@ Important: many deployment-backed tests reuse shared schemas and fixtures, so th
 python3 -m mypy
 ```
 
-Runs the repo-configured `mypy` lane for `python/exasol_json_tables`.
+Runs the repo-configured `mypy` lane for `python/exasol_json_tables`. This is a release gate:
+the `typecheck` job in `.github/workflows/release.yml` must pass before any assets are
+attached to a release, so keep it clean.
 
 ## Packaging Surface
 

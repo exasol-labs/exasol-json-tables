@@ -10,12 +10,13 @@ readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
 dependencies = [
-  "pyexasol>=2.2.0,<3",
+  "pyexasol>=3.0.1,<4",
+  "exasol-telemetry-client>=0.2.1,<0.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "mypy==2.3.*",
+  "mypy==2.4.*",
 ]
 
 [project.scripts]

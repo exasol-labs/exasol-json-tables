@@ -8,12 +8,12 @@ license = "MIT"
 [dependencies]
 json_tables_core = { path = "../json_tables_core" }
 chrono = "0.4.45"
-clap = { version = "4.6", features = ["derive"] }
-serde_json = { version = "1.0.150", features = ["preserve_order"] }
-parquet = "58.3"
-tokio = { version = "1.53", features = ["rt-multi-thread", "sync"] }
-exarrow-rs = "0.16.0"
+clap = { version = "4.6.7", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+parquet = "59.3"
+tokio = { version = "1.54", features = ["rt-multi-thread", "sync"] }
+exarrow-rs = "0.29.0"
 
 [dev-dependencies]
-arrow = "58.3"
+arrow = "59.3"
 tempfile = "3.27"

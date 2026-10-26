@@ -8,6 +8,7 @@ import re
 import ssl
 from typing import Any, Iterable
 
+from exasol.telemetry import client as telemetry
 import pyexasol
 
 
@@ -82,6 +83,7 @@ def connect_for_generation(
     options: dict[str, Any] = {}
     if not validate_certificate:
         options["websocket_sslopt"] = {"cert_reqs": ssl.CERT_NONE}
+    telemetry.disable()
     return pyexasol.connect(dsn=dsn, user=user, password=password, schema=schema, **options)
 
 
