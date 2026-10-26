@@ -159,9 +159,28 @@ jobs:
       - name: Type-check
         run: python -m mypy
 
+  # Release gate: nothing is attached while a shipped crate has an open RustSec
+  # advisory. The same check runs on PRs and weekly in advisories.yml.
+  advisories:
+    name: cargo-deny (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [json_tables_core, json_tables_ingest, json_tables_udf]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: EmbarkStudios/cargo-deny-action@v2.1.1
+        with:
+          command: check advisories
+          manifest-path: crates/${{ matrix.crate }}/Cargo.toml
+
   publish:
     name: Attach to the release
-    needs: [typecheck, cli, udf, python]
+    needs: [typecheck, advisories, cli, udf, python]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

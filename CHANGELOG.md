@@ -12,7 +12,8 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
   and `exasol-udf-sdk` 0.33.
 - Disabled the anonymous usage telemetry that `pyexasol` 3 sends on connect. Note that the
   switch is process-wide, so it also covers other `pyexasol` connections in the same process.
-- A clean `mypy` run is now a release gate: the release workflow attaches no assets unless it passes.
+- Release gates: the release workflow attaches no assets unless `mypy` is clean and no Rust
+  crate has an open RustSec advisory (`cargo deny check advisories`).
 
 ## [0.3.2] - 2026-09-24
 
