@@ -6,6 +6,8 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-28
+
 ### Added
 
 - Releases now carry the in-database loader (`json_tables_udf`) for Linux aarch64 as well
