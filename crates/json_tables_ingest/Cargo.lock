@@ -992,14 +992,14 @@ dependencies = [
 
 [[package]]
 name = "json_tables_core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "json_to_parquet"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "arrow",
  "chrono",
