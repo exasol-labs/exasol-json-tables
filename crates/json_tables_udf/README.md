@@ -103,7 +103,7 @@ installed release and `exasol slc update rust` moves to the latest.
 # Build in the Debian release the SLC stages its runtime from (trixie, glibc
 # floor 2.41), so the artifact links against the glibc it will load against.
 # Exasol Personal on Apple Silicon runs an aarch64 VM: add --platform linux/arm64
-# (the release artifact is x86_64 only).
+# (or take the linux-aarch64 release artifact).
 docker run --rm -v "$PWD:/build" -w /build/crates/json_tables_udf \
   rust:1.98.1-trixie bash -c 'cargo build --release'
 

@@ -72,8 +72,18 @@ jobs:
           if-no-files-found: error
 
   udf:
-    name: json_tables_udf (linux-x86_64)
-    runs-on: ubuntu-latest
+    name: json_tables_udf (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x86_64
+          # Exasol Personal on Apple Silicon runs an aarch64 VM. Built natively:
+          # the container image is multi-arch, so the glibc floor is the same.
+          - os: ubuntu-24.04-arm
+            label: linux-aarch64
     # The loader is dlopened by the script language container, so it has to link
     # against that container's glibc. Trixie (glibc 2.41) is the Debian release the
     # SLC stages its runtime from; see crates/json_tables_udf/README.md.
@@ -95,7 +105,7 @@ jobs:
       - name: Package
         run: |
           set -euo pipefail
-          staging="json_tables_udf-${TAG}-linux-x86_64"
+          staging="json_tables_udf-${TAG}-${{ matrix.label }}"
           mkdir -p "out/${staging}"
           cp crates/json_tables_udf/target/release/libjson_tables_udf.so "out/${staging}/"
           cp crates/json_tables_udf/sql/install.sql "out/${staging}/"
@@ -112,7 +122,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: udf-linux-x86_64
+          name: udf-${{ matrix.label }}
           path: out/*.tar.gz
           if-no-files-found: error
 
