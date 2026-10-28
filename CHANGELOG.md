@@ -6,6 +6,12 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+### Changed
+
+- Updated dependencies: `exarrow-rs` 0.30 with `arrow`/`parquet` 60.1. The update clears
+  three open RustSec advisories in the `json_to_parquet` CLI's `zstd` compression
+  (RUSTSEC-2026-0391, RUSTSEC-2026-0398, RUSTSEC-2026-0403).
+
 ## [0.4.0] - 2026-10-26
 
 ### Changed

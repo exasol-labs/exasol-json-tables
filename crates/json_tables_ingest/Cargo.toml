@@ -10,10 +10,10 @@ json_tables_core = { path = "../json_tables_core" }
 chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
-parquet = "59.3"
+parquet = "60.1"
 tokio = { version = "1.54", features = ["rt-multi-thread", "sync"] }
-exarrow-rs = "0.29.0"
+exarrow-rs = "0.30.0"
 
 [dev-dependencies]
-arrow = "59.3"
+arrow = "60.1"
 tempfile = "3.27"
