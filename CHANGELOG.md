@@ -6,6 +6,12 @@ The format is loosely based on Keep a Changelog and focuses on user-visible beha
 
 ## [Unreleased]
 
+### Added
+
+- Releases now carry the in-database loader (`json_tables_udf`) for Linux aarch64 as well
+  as x86_64, so Exasol Personal on Apple Silicon (an aarch64 VM) can use a prebuilt
+  `libjson_tables_udf.so` instead of building one.
+
 ### Changed
 
 - Updated dependencies: `exarrow-rs` 0.30 with `arrow`/`parquet` 60.1. The update clears

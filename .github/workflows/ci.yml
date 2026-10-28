@@ -69,8 +69,12 @@ jobs:
         run: cargo test --locked
 
   udf-release-toolchain:
-    name: json_tables_udf (release toolchain)
-    runs-on: ubuntu-latest
+    name: json_tables_udf (release toolchain, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
     # Same image as the release build in release.yml: catches a dependency that
     # outgrows the pinned toolchain on the PR rather than at release time.
     container: rust:1.98.1-trixie
